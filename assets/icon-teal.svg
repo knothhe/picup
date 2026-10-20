@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none" role="img" aria-labelledby="picup-title picup-desc">
+  <title id="picup-title">Picup</title>
+  <desc id="picup-desc">A deep teal photograph with a sun and a mountain landscape cut out in negative space. The taller peak forms an upward arrow for image uploads.</desc>
+  <rect x="24" y="24" width="464" height="464" rx="108" fill="#EDF6F2"/>
+  <path fill="#147D73" fill-rule="evenodd" clip-rule="evenodd" d="
+    M152 104H360
+    C390.928 104 416 129.072 416 160
+    V352C416 382.928 390.928 408 360 408
+    H152C121.072 408 96 382.928 96 352
+    V160C96 129.072 121.072 104 152 104Z
+
+    M194 176
+    A22 22 0 1 1 150 176
+    A22 22 0 1 1 194 176Z
+
+    M279 177
+    Q284 172 289 177
+    L361 249Q368 256 358 256
+    H313V337Q313 345 305 345
+    H153Q145 345 151 338
+    L199 282Q204 276 210 282
+    L255 331V256H210
+    Q200 256 207 249Z
+  "/>
+</svg>

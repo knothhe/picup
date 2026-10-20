@@ -1,0 +1,9 @@
+{
+  "version_file": "mygo.json",
+  "branch": "main",
+  "remote": "origin",
+  "tag_prefix": "v",
+  "checks": [["make", "check"]],
+  "check_phase": "before-bump",
+  "github_release": false
+}

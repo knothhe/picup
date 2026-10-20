@@ -1,0 +1,10 @@
+{
+  "name": "Picup",
+  "identifier": "me.knothhe.picup",
+  "version": "0.1.0",
+  "main": "./cmd/picup-gui",
+  "icon": "assets/icon.png",
+  "out": "build/dist",
+  "resources": ["build/bin/picup"],
+  "macos": {"minimumSystemVersion": "13.0"}
+}

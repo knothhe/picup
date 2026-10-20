@@ -1,0 +1,5 @@
+for(const container of document.querySelectorAll('.photos')) {
+ const cards=[...container.querySelectorAll('.photo')],canvas=document.createElement('div');canvas.className='photo-canvas';cards.forEach(card=>canvas.append(card));container.replaceChildren(canvas);
+ function layout(){const width=container.clientWidth,gap=8,target=208;let group=[],sum=0,y=0;function flush(last){if(!group.length)return;const scale=(!last||group.length>1||group[0].w>width)?(width-gap*(group.length-1))/sum:1;let x=0;for(const item of group){Object.assign(item.card.style,{left:x+'px',top:y+'px',width:item.w*scale+'px',height:target*scale+'px'});x+=item.w*scale+gap;}y+=target*scale+gap;group=[];sum=0;}for(const card of cards){const img=card.querySelector('img'),w=target*(img.naturalWidth||384)/(img.naturalHeight||208);if(group.length&&sum+w+gap*group.length>width)flush(false);group.push({card,w});sum+=w;}flush(true);canvas.style.height=Math.max(0,y-gap)+'px';}
+ for(const img of container.querySelectorAll('img'))img.addEventListener('load',layout);new ResizeObserver(layout).observe(container);layout();
+}
