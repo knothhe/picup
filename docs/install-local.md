@@ -2,15 +2,26 @@
 
 在仓库根目录运行以下命令。需要 Go 1.27.1 或更新版本及 Make；macOS 桌面应用需要 macOS 13 或更新版本。项目通过 `go.mod` 中的 Go tool 声明使用 MyGo，无需另行安装 MyGo CLI。
 
+## 从 Release 安装
+
+从 [GitHub Releases](https://github.com/knothhe/picup/releases) 下载适合本机架构的 `Picup-<version>-darwin-<arch>.zip`，解压后将 `Picup.app` 移至 `~/Applications` 或 `/Applications`，再打开应用。安装包包含 CLI，可按下文「在桌面端安装 CLI」操作；安装成品包无需 Go。
+
+当前发布流程只生成构建机器所用的 macOS 架构，目前已验证 macOS arm64。Release 中未提供的架构或平台需要自行构建并验证。
+
+当前安装包使用 MyGo 默认的本地 ad-hoc 签名，尚未配置 Developer ID 签名与 Apple 公证。
+
 ## 构建与打包
 
 ```sh
-make build      # 构建 CLI 和桌面应用
-make run        # 构建并运行桌面应用
-make package    # 构建并打包当前平台
+make build            # 构建 CLI 和桌面应用
+make run              # 构建并运行桌面应用
+make package          # 构建并打包当前平台
+make package-release  # 构建本机 macOS 发布 ZIP
 ```
 
 构建产物是 `build/bin/picup` 和 `build/bin/picup-gui`。开发运行时，将两个程序放在同一目录，桌面端才能找到附带的 CLI。打包产物位于 `build/dist/`，应用包会包含 CLI。
+
+`make package-release` 将经过版本与内容校验的应用包输出为 `build/release/Picup-<version>-darwin-<arch>.zip`，不生成 DMG。版本来自 `mygo.json`；可传 `VERSION=0.1.0` 校验预期版本，版本不符时停止，不改写源码版本。此命令只打包，不安装或发布。
 
 跨平台包需在对应平台构建。目前已验证 macOS arm64；其他平台需另行验证。
 

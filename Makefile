@@ -5,8 +5,9 @@ RELEASE_COMMAND ?= $(PYTHON) scripts/release.py
 VERSION_BUMP ?= patch
 RELEASE_FLAGS ?=
 INSTALL_FLAGS ?=
+VERSION ?= $(shell $(PYTHON) -c 'import json; print(json.load(open("mygo.json"))["version"])')
 
-.PHONY: build test check run package release release-initial install icons
+.PHONY: build test check run package package-release release release-initial release-assets install icons
 build:
 	mkdir -p build/bin
 	$(GO) build -trimpath -o build/bin/picup ./cmd/picup
@@ -26,11 +27,17 @@ run: build
 package: build
 	$(GO) tool mygo build
 
+package-release:
+	GO="$(GO)" $(PYTHON) scripts/package_release.py --version "$(VERSION)"
+
 release:
-	$(RELEASE_COMMAND) $(VERSION_BUMP) $(RELEASE_FLAGS)
+	GO="$(GO)" $(RELEASE_COMMAND) $(VERSION_BUMP) $(RELEASE_FLAGS)
 
 release-initial:
-	$(RELEASE_COMMAND) initial $(RELEASE_FLAGS)
+	GO="$(GO)" $(RELEASE_COMMAND) initial $(RELEASE_FLAGS)
+
+release-assets:
+	GO="$(GO)" $(RELEASE_COMMAND) "$(VERSION)" --assets-only $(RELEASE_FLAGS)
 
 install:
 	GO="$(GO)" $(GO) run ./cmd/install-local $(INSTALL_FLAGS)

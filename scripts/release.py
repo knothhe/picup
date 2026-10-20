@@ -8,8 +8,11 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
+import tarfile
+import tempfile
 from urllib.parse import quote
 
 
@@ -125,6 +128,18 @@ def check_state():
     }
 
 
+def verify_state(before, versions):
+    after = check_state()
+    require(after['head'] == before['head'], 'A check changed HEAD. Inspect repository before continuing.')
+    require(after['branch'] == before['branch'], 'A check changed branches.')
+    require(after['refs'] == before['refs'], 'A check changed local branches or tags. Inspect repository before continuing.')
+    require(after['index'] == before['index'], 'A check changed the index. Inspect repository before continuing.')
+    require(all(Path(name).is_file() and not Path(name).is_symlink() and Path(name).read_bytes() == content
+                for name, content in versions.items()), 'A check changed version files. Inspect and resolve manually before retrying.')
+    require(after['status'] == before['status'] and after['diff'] == before['diff'],
+            'Checks changed the working tree. Inspect and resolve manually before retrying.')
+
+
 def run_checks(checks, files, phase):
     if not checks:
         return
@@ -132,15 +147,7 @@ def run_checks(checks, files, phase):
     versions = {name: Path(name).read_bytes() for name in files}
     for command in checks:
         result = subprocess.run(command)
-        after = check_state()
-        require(after['head'] == before['head'], 'A check changed HEAD. Inspect repository before continuing.')
-        require(after['branch'] == before['branch'], 'A check changed branches.')
-        require(after['refs'] == before['refs'], 'A check changed local branches or tags. Inspect repository before continuing.')
-        require(after['index'] == before['index'], 'A check changed the index. Inspect repository before continuing.')
-        require(all(Path(name).is_file() and not Path(name).is_symlink() and Path(name).read_bytes() == content
-                    for name, content in versions.items()), 'A check changed version files. Inspect and resolve manually before retrying.')
-        require(after['status'] == before['status'] and after['diff'] == before['diff'],
-                'Checks changed the working tree. Inspect and resolve manually before retrying.')
+        verify_state(before, versions)
         detail = ('Current version is unchanged' if phase == 'current-version' else
                   'Stopped before updating the version' if phase == 'before-bump' else 'Version edits remain for inspection')
         require(result.returncode == 0, f'Check failed: {command}. {detail}; no release commit/tag was created.')
@@ -168,9 +175,132 @@ def github_repo(url, required=True):
 
 def require_unpublished_release(repo, tag):
     # Include visible drafts; a failed listing must not be treated as absence.
-    tags = run('gh', 'api', '--hostname', 'github.com', '--paginate',
+    require(tag not in published_tags(repo), f'GitHub Release already exists: {tag}. Initial release must be unpublished.')
+
+
+def published_tags(repo):
+    return run('gh', 'api', '--hostname', 'github.com', '--paginate',
                f'repos/{repo}/releases', '--jq', '.[].tag_name').stdout.splitlines()
-    require(tag not in tags, f'GitHub Release already exists: {tag}. Initial release must be unpublished.')
+
+
+def package_command(target, output):
+    return [sys.executable, str(Path(__file__).resolve().with_name('package_release.py')),
+            '--version', target, '--output-dir', str(output)]
+
+
+def extract_source(commit, destination):
+    """Extract only this commit's tracked source, preserving safe source symlinks."""
+    destination = destination.resolve()
+    archive = destination.parent / 'source.tar'
+    git('archive', '--format=tar', '--output=' + str(archive), commit)
+    destination.mkdir()
+    with tarfile.open(archive) as source:
+        for member in source:
+            path = Path(member.name)
+            require(not path.is_absolute() and '..' not in path.parts, 'Unsafe path in source archive.')
+            target = destination / path
+            require(target.parent.resolve().is_relative_to(destination), 'Source archive escapes its directory.')
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+            elif member.issym():
+                link = Path(member.linkname)
+                require(not link.is_absolute() and (target.parent / link).resolve().is_relative_to(destination),
+                        'Source archive contains an external symlink.')
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.symlink_to(member.linkname)
+            else:
+                require(member.isfile(), 'Unsupported entry in source archive.')
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with source.extractfile(member) as content, target.open('xb') as output:
+                    shutil.copyfileobj(content, output)
+                target.chmod(member.mode & 0o777)
+
+
+def build_assets(target, files, source_commit=None):
+    output = Path.cwd() / 'build' / 'release'
+    output.mkdir(parents=True, exist_ok=True)
+    before = check_state()
+    versions = {name: Path(name).read_bytes() for name in files}
+    with tempfile.TemporaryDirectory(prefix='picup-release-') as temporary:
+        source = Path.cwd()
+        if source_commit:
+            source = Path(temporary) / 'source'
+            extract_source(source_commit, source)
+        print(f'Building release packages for {target} from {source_commit or "working tree"}...', flush=True)
+        result = subprocess.run(package_command(target, output), cwd=source, text=True, stdout=subprocess.PIPE)
+    verify_state(before, versions)
+    require(result.returncode == 0, 'Package build failed. Inspect version files before retrying; no new release commit/tag was created.')
+    assets = json.loads(result.stdout)
+    require(isinstance(assets, list) and assets and all(isinstance(path, str) for path in assets),
+            'Package command must return a nonempty JSON array of asset paths.')
+    paths = [Path(path) for path in assets]
+    require(len(set(paths)) == len(paths), 'Package command returned duplicate asset paths.')
+    for path in paths:
+        require(path.is_absolute() and path.parent.resolve() == output.resolve() and not path.is_symlink()
+                and path.is_file() and path.stat().st_size > 0 and path.suffix == '.zip'
+                and f'-{target}-' in path.name,
+                f'Invalid release asset (expected a versioned ZIP in {output}): {path}')
+    return paths
+
+
+def publish_github_release(repo, tag, target, notes, assets):
+    uploaded = []
+    if tag in published_tags(repo):
+        existing = json.loads(run('gh', 'release', 'view', tag, '--repo', repo, '--json', 'url,assets').stdout)
+        names = {asset['name'] for asset in existing['assets']}
+        uploaded = [path for path in assets if path.name not in names]
+        for path in assets:
+            if path.name in names:
+                print(f'Keeping existing release asset: {path.name}', flush=True)
+        if uploaded:
+            run('gh', 'release', 'upload', tag, *(str(path) for path in uploaded), '--repo', repo)
+    else:
+        command = ['gh', 'release', 'create', tag, *(str(path) for path in assets),
+                   '--repo', repo, '--verify-tag', '--notes-file', '-', '--title', tag]
+        if parse(target)[1] is not None:
+            command += ['--prerelease']
+        run(*command, input=notes)
+        uploaded = assets
+    release = json.loads(run('gh', 'release', 'view', tag, '--repo', repo, '--json', 'url,assets').stdout)
+    sizes = {asset['name']: asset['size'] for asset in release['assets']}
+    for path in uploaded:
+        require(sizes.get(path.name) == path.stat().st_size, f'Uploaded release asset is missing or has the wrong size: {path.name}')
+    print(release['url'], flush=True)
+
+
+def publish_existing_assets(args, config, github, with_assets, remote, prefix):
+    require(not args.resume and not args.no_push and github and with_assets,
+            '--assets-only requires GitHub Release and release_assets, and cannot be combined with --resume or --no-push.')
+    target = args.version
+    parse(target)
+    tag = prefix + target
+    git('check-ref-format', 'refs/tags/' + tag)
+    require(git('cat-file', '-t', 'refs/tags/' + tag) == 'tag', 'Asset backfill requires an existing annotated tag.')
+    commit = git('rev-parse', 'refs/tags/' + tag + '^{commit}')
+    filename = config.get('version_file', 'mygo.json')
+    require(filename == 'mygo.json', 'Release assets require mygo.json as the version source.')
+    manifest = json.loads(git('show', f'{commit}:mygo.json'))
+    require(manifest.get('version') == target, 'Tagged source version differs from the requested version.')
+    urls = git('remote', 'get-url', '--push', '--all', remote).splitlines()
+    require(len(urls) == 1, 'Exactly one push URL is required.')
+    repo = github_repo(urls[0])
+    reference = json.loads(run('gh', 'api', '--hostname', 'github.com',
+                               f'repos/{repo}/git/ref/tags/{quote(tag, safe="")}').stdout)
+    require(reference['object']['sha'] == git('rev-parse', 'refs/tags/' + tag),
+            'Remote tag differs from the local tag; never replace a published tag.')
+    # A successful listing is required even for preview; permission errors are not absence.
+    published_tags(repo)
+    notes = release_notes(repo, prefix, target, commit, tag)
+    print(json.dumps({'mode': 'execute' if args.apply else 'preview', 'release_type': 'assets-only',
+                      'target': target, 'tag': tag, 'source_commit': commit, 'push': False,
+                      'github_release': True, 'github_repo': repo, 'release_notes': notes,
+                      'package': package_command(target, Path.cwd() / 'build' / 'release')}, indent=2), flush=True)
+    if not args.apply:
+        return
+    run('gh', 'auth', 'status', '--hostname', 'github.com')
+    assets = build_assets(target, {}, source_commit=commit)
+    publish_github_release(repo, tag, target, notes, assets)
+    print(f'Release assets complete: {tag}', flush=True)
 
 
 def initial_tag_message(tag):
@@ -214,13 +344,14 @@ def main():
     group.add_argument('--no-github-release', dest='github', action='store_false')
     parser.set_defaults(github=None)
     parser.add_argument('--resume', action='store_true', help='Push an existing release at HEAD; exact version required, no bump')
+    parser.add_argument('--assets-only', action='store_true', help='Build an existing tagged version and add missing GitHub Release assets; no Git writes')
     args = parser.parse_args()
     require(not (args.resume and args.version == 'initial'), '--resume requires the exact existing version, not initial.')
     root = git('rev-parse', '--show-toplevel')
     os.chdir(root)
     config = json.loads(Path('.release.json').read_text()) if Path('.release.json').exists() else {}
     require(isinstance(config, dict), '.release.json must contain an object.')
-    require(not set(config) - {'version_file', 'branch', 'remote', 'tag_prefix', 'checks', 'check_phase', 'github_release'}, 'Unknown .release.json field.')
+    require(not set(config) - {'version_file', 'branch', 'remote', 'tag_prefix', 'checks', 'check_phase', 'github_release', 'release_assets'}, 'Unknown .release.json field.')
     branch = config.get('branch', 'main')
     remote = config.get('remote', 'origin')
     prefix = config.get('tag_prefix', 'v')
@@ -229,6 +360,12 @@ def main():
     github = args.github if args.github is not None else config.get('github_release', False)
     require(isinstance(github, bool), 'github_release must be boolean.')
     require(not (github and args.no_push), 'GitHub Release requires pushing. Use --no-github-release with --no-push.')
+    with_assets = config.get('release_assets', False)
+    require(isinstance(with_assets, bool), 'release_assets must be boolean.')
+    if args.assets_only:
+        publish_existing_assets(args, config, github, with_assets, remote, prefix)
+        return
+    require(not with_assets or config.get('version_file') == 'mygo.json', 'Release assets require mygo.json as the version source.')
     checks = config.get('checks', [])
     require(isinstance(checks, list) and all(isinstance(c, list) and c and all(isinstance(s, str) and s for s in c) for c in checks), 'checks must be arrays of command arguments.')
     check_phase = config.get('check_phase', 'before-bump')
@@ -280,41 +417,46 @@ def main():
                       'create_version_commit': not initial and not args.resume,
                       'checks': [] if args.resume else checks, 'check_phase': None if args.resume else phase, 'push': not args.no_push,
                       'github_release': github, 'github_repo': repo, 'release_notes': notes,
+                      'package': package_command(target, Path.cwd() / 'build' / 'release') if with_assets else None,
+                      'package_source': tag if args.resume else 'working-tree',
                       'resume': args.resume}, indent=2), flush=True)
     if not args.apply:
         return
     if github:
         run('gh', 'auth', 'status', '--hostname', 'github.com')
+    assets = []
     if not args.resume:
         if not initial and check_phase == 'after-bump':
             write_versions(files, target)
         run_checks(checks, files, phase)
+        if not initial and check_phase == 'before-bump':
+            write_versions(files, target)
+        if with_assets:
+            assets = build_assets(target, files)
         if not initial:
-            if check_phase == 'before-bump':
-                write_versions(files, target)
             changed = set(git('diff', '--name-only').splitlines())
             require(changed == set(files) and not git('ls-files', '--others', '--exclude-standard'),
                     'Unexpected changes after updating the version. Inspect and resolve manually before retrying.')
             checked_version, _ = version_files(config)
             require(checked_version == target, 'Release version differs from the target.')
             git('add', '--', *files)
+            expected_tree = git('write-tree')
             git('commit', '-m', f'chore(release): {tag}')
+            require(git('rev-parse', 'HEAD^{tree}') == expected_tree
+                    and git('rev-parse', 'HEAD^') == head
+                    and git('log', '-1', '--format=%s') == f'chore(release): {tag}',
+                    'A commit hook changed the packaged source or release commit. Inspect the commit; no tag was created.')
         clean()
         require(git('symbolic-ref', '--short', 'HEAD') == branch, 'A hook changed branches.')
         require(version_files(config)[0] == target, 'A commit hook changed the version.')
         git('tag', '-a', tag, '-m', initial_tag_message(tag) if initial else f'Release {tag}')
+    elif with_assets:
+        assets = build_assets(target, files, source_commit=head)
     if not args.no_push:
         # One transaction; never push unrelated tags or fall back to non-atomic writes.
         git('push', '--atomic', remote, f'HEAD:refs/heads/{branch}', f'refs/tags/{tag}:refs/tags/{tag}')
     if github:
-        existing = run('gh', 'release', 'view', tag, '--repo', repo, '--json', 'url', check=False)
-        if existing.returncode == 0:
-            print(existing.stdout.strip())
-        else:
-            command = ['gh', 'release', 'create', tag, '--repo', repo, '--verify-tag', '--notes-file', '-', '--title', tag]
-            if parse(target)[1] is not None:
-                command += ['--prerelease']
-            print(run(*command, input=notes).stdout.strip())
+        publish_github_release(repo, tag, target, notes, assets)
     print(f'Release complete: {tag}' + (' (local only)' if args.no_push else ''))
 
 

@@ -4,6 +4,8 @@
 
 ## 安装
 
+从 [GitHub Releases](https://github.com/knothhe/picup/releases) 下载适合本机架构的 macOS ZIP，解压后将 `Picup.app` 移至应用程序目录。安装包附带 CLI，可在「设置 → CLI」中安装。
+
 本地构建需要 Go 1.27.1+；macOS 需要 13+，目前已验证 macOS arm64。
 
 ```sh
@@ -40,8 +42,9 @@ make run              # 构建并运行桌面应用
 make check            # 静态检查与测试
 make test             # 竞态检测
 make package          # 打包当前平台到 build/dist/
+make package-release  # 生成当前 macOS 架构的发布 ZIP
 make release-initial  # 预览当前版本首次发布
 make release          # 预览 patch 升级
 ```
 
-发布默认仅预览，添加 `RELEASE_FLAGS=--apply` 才执行。首次发布直接为当前 HEAD 创建 tag；后续升级会先更新版本并提交。完整命令、GitHub Release 选项和失败恢复见[发布流程](docs/release.md)，代码结构、设计稿和图标维护见[开发指南](docs/development.md)。
+发布默认仅预览，添加 `RELEASE_FLAGS=--apply` 即可完成检查、构建打包、tag、推送和 GitHub Release 附件上传；后续升级还会更新版本并提交。完整命令、历史版本补包和失败恢复见[发布流程](docs/release.md)，代码结构、设计稿和图标维护见[开发指南](docs/development.md)。
