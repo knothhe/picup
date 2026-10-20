@@ -48,7 +48,7 @@ func run() error {
 	if err := json.Unmarshal(data, &config); err != nil {
 		return err
 	}
-	if config.Name != "Picup" || config.Identifier != "me.knothhe.picup" || config.Out == "" {
+	if config.Name != "Picup" || config.Identifier != "com.knothhe.picup" || config.Out == "" {
 		return fmt.Errorf("unexpected application configuration in mygo.json")
 	}
 	dst := filepath.Join(*appDir, config.Name+".app")
