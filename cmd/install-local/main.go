@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 
 	"github.com/knothhe/picup/internal/install"
@@ -135,12 +136,13 @@ func checkDestination(path, identifier string) error {
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("refusing to replace non-directory or symlink: %s", path)
 	}
-	return checkBundle(path, identifier)
+	// Allow upgrading installations created before the bundle identifier changed.
+	return checkBundle(path, identifier, "me.knothhe.picup")
 }
 
-func checkBundle(path, identifier string) error {
+func checkBundle(path string, identifiers ...string) error {
 	output, err := exec.Command("/usr/libexec/PlistBuddy", "-c", "Print :CFBundleIdentifier", filepath.Join(path, "Contents", "Info.plist")).Output()
-	if err != nil || strings.TrimSpace(string(output)) != identifier {
+	if err != nil || !slices.Contains(identifiers, strings.TrimSpace(string(output))) {
 		return fmt.Errorf("%s is not a Picup application; choose another app directory", path)
 	}
 	return nil

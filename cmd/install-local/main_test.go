@@ -37,3 +37,23 @@ func TestDestinationProtection(t *testing.T) {
 		t.Fatal("accepted a symlink destination")
 	}
 }
+
+func TestLegacyBundleUpgrade(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("macOS application bundles")
+	}
+	dst := filepath.Join(t.TempDir(), "Picup.app")
+	if err := os.MkdirAll(filepath.Join(dst, "Contents"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	plist := filepath.Join(dst, "Contents", "Info.plist")
+	if err := os.WriteFile(plist, []byte(`<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>me.knothhe.picup</string></dict></plist>`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkDestination(dst, "com.knothhe.picup"); err != nil {
+		t.Fatalf("cannot upgrade legacy Picup: %v", err)
+	}
+	if err := checkBundle(dst, "com.knothhe.picup"); err == nil {
+		t.Fatal("accepted legacy identifier for a newly built bundle")
+	}
+}
