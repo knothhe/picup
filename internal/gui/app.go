@@ -2,6 +2,7 @@ package gui
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"time"
@@ -14,7 +15,6 @@ import (
 	"github.com/knothhe/picup/internal/install"
 	"github.com/knothhe/picup/internal/service"
 	"github.com/knothhe/picup/internal/storage"
-	"github.com/oneo-me/onevra/source/shells/plain"
 )
 
 type job struct {
@@ -28,6 +28,7 @@ type job struct {
 	sourceWidth, sourceHeight   int
 }
 type application struct {
+	lifecycle                         lifecycleState
 	gallery                           galleryState
 	path                              string
 	config                            config.Config
@@ -70,7 +71,7 @@ func Run() error {
 	}
 	cfg, loadErr := config.Load(path)
 	cfg.EnsureProfiles()
-	a := &application{path: path, config: cfg, installDir: install.DefaultDir(), quality: float64(cfg.Quality), maxWidth: float64(cfg.MaxWidth)}
+	a := &application{path: path, config: cfg, installDir: install.DisplayPath(install.DefaultDir()), quality: float64(cfg.Quality), maxWidth: float64(cfg.MaxWidth)}
 	a.savedConfig = &cfg
 	a.initSettingsAutosave()
 	galleryPreferencesErr := a.restoreGalleryPreferences()
@@ -88,6 +89,7 @@ func Run() error {
 		}
 		a.flushGalleryPreferences()
 		a.quitting = true
+		a.stopLightweightTimer()
 		a.gallery.stop()
 		if a.uploadPreviewCancel != nil {
 			a.uploadPreviewCancel()
@@ -97,16 +99,18 @@ func Run() error {
 		}
 	})
 	mygo.App.OnSecondInstance(func(args []string, _ string) {
-		if a.win != nil {
-			a.win.Show()
-			a.win.Focus()
-			if len(args) > 1 {
-				a.addFiles(args[1:])
-			}
+		a.showWindow()
+		if len(args) > 1 {
+			a.addFiles(args[1:])
 		}
 	})
-	mygo.App.OnOpenFile(func(path string) { a.addFiles([]string{path}) })
+	mygo.App.OnOpenFile(func(path string) { a.showWindow(); a.addFiles([]string{path}) })
 	mygo.App.OnActivate(func(bool) { a.showWindow() })
+	mygo.App.OnWindowAllClosed(func() {
+		if !a.lifecycle.suspended {
+			mygo.App.Quit()
+		}
+	})
 	mygo.App.OnWillQuit(func(*mygo.QuitEvent) {
 		if a.quickUpload.window != nil {
 			a.quickUpload.window.Destroy()
@@ -124,18 +128,13 @@ func Run() error {
 			a.feedback("读取图库偏好失败", galleryPreferencesErr)
 		}
 		mygo.App.OnLocaleChanged(func(string) { a.refreshSystemLanguage() })
-		shell := plain.NewShell(plain.ShellOptions{Title: "Picup", Width: 1040, Height: 760, MinWidth: 760, MinHeight: 620, StateKey: "main", Theme: palette, Content: a.view, HeaderLeading: a.header, HeaderActions: a.headerActions})
-		a.win = shell.Window()
-		a.win.OnFocus(a.refreshUploadConfig)
+		a.newMainWindow()
 		a.setupMenus()
-		a.win.OnClose(func(e *mygo.CloseEvent) {
-			if a.tray != nil && !a.quitting {
-				e.PreventDefault()
-				a.win.Hide()
-			}
-		})
-		a.win.OnClosed(mygo.App.Quit)
-		a.win.OnFileDrop(func(e *mygo.FileDropEvent) { a.addFiles(e.Paths) })
+		a.startNativeSettings()
+		if !mygo.App.WasOpenedAtLogin() || a.tray == nil || len(os.Args) > 1 {
+			a.showWindow()
+		}
+		a.applyNativeSettings()
 		if len(os.Args) > 1 {
 			a.addFiles(os.Args[1:])
 		}
@@ -194,7 +193,7 @@ func (a *application) chooseFiles(quick bool) {
 		parent = nil
 		a.hideQuickUpload()
 	}
-	if a.win != nil {
+	if a.win != nil || a.tray != nil {
 		a.updateMenus()
 	}
 	a.invalidateWindows()
@@ -203,7 +202,7 @@ func (a *application) chooseFiles(quick bool) {
 		mygo.RunOnMain(func() {
 			a.busy = false
 			a.fileDialogOpen = false
-			if a.win != nil {
+			if a.win != nil || a.tray != nil {
 				a.updateMenus()
 			}
 			if quick {
@@ -422,10 +421,20 @@ func (a *application) uploadJobs(selected []*job) {
 func (a *application) save() {
 	current := a.currentSettings()
 	merged, err := a.settingsForSave()
+	var finishLogin func(bool) error
+	if err == nil {
+		finishLogin, err = a.prepareLaunchAtLogin(merged.LaunchAtLogin)
+	}
 	if err == nil {
 		err = config.Save(a.path, merged)
 	}
+	if finishLogin != nil {
+		err = errors.Join(err, finishLogin(err == nil))
+	}
 	if err != nil {
+		if a.lifecycle.setOpenAtLogin != nil {
+			current.LaunchAtLogin = a.lifecycle.openAtLogin
+		}
 		a.config = current
 		a.settingsSave.pending = false
 		a.settingsSave.failed = true
@@ -442,6 +451,7 @@ func (a *application) save() {
 	saved := cloneSettings(a.config)
 	a.uploadConfigGeneration++
 	a.savedConfig = &saved
+	a.applyNativeSettings()
 	if a.win != nil {
 		mygo.Theme.SetSource(mygo.ThemeSource(a.config.Appearance))
 	}
@@ -506,7 +516,7 @@ func (a *application) installCLI() {
 				a.feedback("安装 CLI 失败", err)
 				return
 			}
-			a.installMessage = tf("已安装到 %s", dst)
+			a.installMessage = tf("已安装到 %s", install.DisplayPath(dst))
 			if !install.OnPath(dir) {
 				a.installMessage += tr("。请将此目录添加到 PATH 后重新打开终端。")
 			}

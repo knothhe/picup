@@ -12,31 +12,36 @@ import (
 )
 
 type Config struct {
-	Profiles      []Profile         `json:"profiles,omitempty"`
-	ActiveProfile string            `json:"active_profile,omitempty"`
-	Provider      string            `json:"provider"`
-	Endpoint      string            `json:"endpoint"`
-	Region        string            `json:"region"`
-	Bucket        string            `json:"bucket"`
-	AccessKey     string            `json:"access_key"`
-	SecretKey     string            `json:"secret_key"`
-	SessionToken  string            `json:"session_token,omitempty"`
-	PublicURL     string            `json:"public_url"`
-	PathTemplate  string            `json:"path_template"`
-	PathStyle     bool              `json:"path_style"`
-	Compress      bool              `json:"compress"`
-	Quality       int               `json:"quality"`
-	Format        string            `json:"format"`
-	MaxWidth      int               `json:"max_width"`
-	Output        string            `json:"output"`
-	Copy          bool              `json:"copy"`
-	Appearance    string            `json:"appearance"`
-	Language      string            `json:"language"`
-	Shortcuts     map[string]string `json:"shortcuts,omitempty"`
+	Profiles        []Profile         `json:"profiles,omitempty"`
+	ActiveProfile   string            `json:"active_profile,omitempty"`
+	Provider        string            `json:"provider"`
+	Endpoint        string            `json:"endpoint"`
+	Region          string            `json:"region"`
+	Bucket          string            `json:"bucket"`
+	AccessKey       string            `json:"access_key"`
+	SecretKey       string            `json:"secret_key"`
+	SessionToken    string            `json:"session_token,omitempty"`
+	PublicURL       string            `json:"public_url"`
+	PathTemplate    string            `json:"path_template"`
+	PathStyle       bool              `json:"path_style"`
+	Compress        bool              `json:"compress"`
+	Quality         int               `json:"quality"`
+	Format          string            `json:"format"`
+	MaxWidth        int               `json:"max_width"`
+	Output          string            `json:"output"`
+	Copy            bool              `json:"copy"`
+	Appearance      string            `json:"appearance"`
+	Language        string            `json:"language"`
+	Shortcuts       map[string]string `json:"shortcuts,omitempty"`
+	CloseToTray     bool              `json:"close_to_tray"`
+	DockIcon        string            `json:"dock_icon"`
+	TrayClickAction string            `json:"tray_click_action"`
+	LightweightMode bool              `json:"lightweight_mode"`
+	LaunchAtLogin   bool              `json:"launch_at_login"`
 }
 
 func Default() Config {
-	return Config{Provider: "r2", Region: "auto", PathTemplate: "images/{sha256}.{extName}", PathStyle: true, Compress: true, Quality: 85, Format: "original", Output: "url", Copy: true, Appearance: "system", Language: "system"}
+	return Config{Provider: "r2", Region: "auto", PathTemplate: "images/{sha256}.{extName}", PathStyle: true, Compress: true, Quality: 85, Format: "original", Output: "url", Copy: true, Appearance: "system", Language: "system", CloseToTray: true, DockIcon: DockIconShow, TrayClickAction: TrayClickQuickPanel}
 }
 
 func Path() (string, error) {
@@ -128,12 +133,17 @@ func Save(path string, c Config) error {
 	// Persist profile settings once. The flat fields remain the active working
 	// configuration for upload, storage and existing callers.
 	b, err := json.MarshalIndent(struct {
-		Profiles      []Profile         `json:"profiles"`
-		ActiveProfile string            `json:"active_profile"`
-		Appearance    string            `json:"appearance"`
-		Language      string            `json:"language"`
-		Shortcuts     map[string]string `json:"shortcuts,omitempty"`
-	}{c.Profiles, c.ActiveProfile, c.Appearance, c.Language, c.Shortcuts}, "", "  ")
+		Profiles        []Profile         `json:"profiles"`
+		ActiveProfile   string            `json:"active_profile"`
+		Appearance      string            `json:"appearance"`
+		Language        string            `json:"language"`
+		Shortcuts       map[string]string `json:"shortcuts,omitempty"`
+		CloseToTray     bool              `json:"close_to_tray"`
+		DockIcon        string            `json:"dock_icon"`
+		TrayClickAction string            `json:"tray_click_action"`
+		LightweightMode bool              `json:"lightweight_mode"`
+		LaunchAtLogin   bool              `json:"launch_at_login"`
+	}{c.Profiles, c.ActiveProfile, c.Appearance, c.Language, c.Shortcuts, c.CloseToTray, c.DockIcon, c.TrayClickAction, c.LightweightMode, c.LaunchAtLogin}, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -199,7 +209,8 @@ func (c *Config) ApplyEnv() error {
 }
 
 func (c *Config) Set(key, value string) error {
-	switch strings.ReplaceAll(key, "-", "_") {
+	key = strings.ReplaceAll(key, "-", "_")
+	switch key {
 	case "provider":
 		c.Provider = value
 	case "endpoint":
@@ -226,11 +237,23 @@ func (c *Config) Set(key, value string) error {
 		c.Output = value
 	case "appearance":
 		c.Appearance = value
+	case "dock_icon":
+		if !validDockIcon(value) {
+			return errors.New("dock_icon must be show, hide or follow-window")
+		}
+		c.DockIcon = value
+	case "tray_click_action":
+		if !validTrayClickAction(value) {
+			return errors.New("tray_click_action must be quick-panel or main-window")
+		}
+		c.TrayClickAction = value
 	case "language":
 		if !validLanguage(value) {
 			return errors.New("language must be system, zh-CN or en")
 		}
 		c.Language = value
+	case "launch_at_login":
+		return errors.New("launch_at_login must be changed in the desktop app")
 	case "quality", "max_width":
 		n, err := strconv.Atoi(value)
 		if err != nil {
@@ -241,7 +264,7 @@ func (c *Config) Set(key, value string) error {
 		} else {
 			c.MaxWidth = n
 		}
-	case "compress", "copy", "path_style":
+	case "compress", "copy", "path_style", "close_to_tray", "lightweight_mode":
 		b, err := strconv.ParseBool(value)
 		if err != nil {
 			return fmt.Errorf("%s must be true or false", key)
@@ -253,6 +276,10 @@ func (c *Config) Set(key, value string) error {
 			c.Copy = b
 		case "path_style":
 			c.PathStyle = b
+		case "close_to_tray":
+			c.CloseToTray = b
+		case "lightweight_mode":
+			c.LightweightMode = b
 		}
 	default:
 		return fmt.Errorf("unknown setting %q", key)
@@ -287,6 +314,12 @@ func (c Config) ValidateOptions() error {
 	}
 	if !validLanguage(c.Language) {
 		return errors.New("language must be system, zh-CN or en")
+	}
+	if !validDockIcon(c.DockIcon) {
+		return errors.New("dock_icon must be show, hide or follow-window")
+	}
+	if !validTrayClickAction(c.TrayClickAction) {
+		return errors.New("tray_click_action must be quick-panel or main-window")
 	}
 	return validateObjectKey(strings.Trim(c.PathTemplate, "/"))
 }

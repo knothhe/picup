@@ -44,9 +44,8 @@ func (a *application) applyLanguage(preview bool) {
 		a.quickUpload.message = ""
 		a.installMessage = ""
 	}
-	if a.win != nil {
+	if a.win != nil || a.tray != nil {
 		a.updateMenus()
-		a.win.Invalidate()
 	}
 }
 
@@ -60,9 +59,8 @@ func (a *application) refreshSystemLanguage() {
 	if before != uiLanguage() {
 		a.message, a.installMessage = "", ""
 		a.quickUpload.message = ""
-		if a.win != nil {
+		if a.win != nil || a.tray != nil {
 			a.updateMenus()
-			a.win.Invalidate()
 		}
 	}
 }

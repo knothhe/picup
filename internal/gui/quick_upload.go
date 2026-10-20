@@ -3,6 +3,7 @@ package gui
 import (
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -33,6 +34,7 @@ func (a *application) showQuickUpload() {
 	if a.tray == nil || a.quitting {
 		return
 	}
+	a.resumeLightweightUI()
 	if a.quickUpload.window == nil {
 		w := mygo.NewFlyout(mygo.FlyoutOptions{
 			Tray: a.tray, Placement: mygo.PlacementBottom, Gap: 6,
@@ -40,6 +42,19 @@ func (a *application) showQuickUpload() {
 			Content: ui.View(a.quickUploadView),
 		})
 		a.quickUpload.window = w
+		w.OnShow(func() { a.quickUpload.visible = true; a.updateLightweightTimer(time.Now()) })
+		w.OnHide(func() {
+			a.quickUpload.visible = false
+			a.updateMenus()
+			a.updateLightweightTimer(time.Now())
+		})
+		w.OnClosed(func() {
+			if a.quickUpload.window == w {
+				a.quickUpload.window = nil
+				a.quickUpload.visible = false
+				a.updateLightweightTimer(time.Now())
+			}
+		})
 		w.OnClose(func(e *mygo.CloseEvent) {
 			if !a.quitting {
 				e.PreventDefault()
@@ -63,6 +78,7 @@ func (a *application) hideQuickUpload() {
 		a.quickUpload.visible = false
 		a.updateMenus()
 	}
+	a.updateLightweightTimer(time.Now())
 }
 
 func (a *application) toggleQuickUpload() {
@@ -275,7 +291,7 @@ func (a *application) quickUploadStatusView(c *ui.Context) {
 			components.Icon(c, icon).Size(14, 14).Shrink(0).TextColor(color)
 		}
 		ui.Column(c).Grow(1).MinWidth(0).FillHeight().Gap(4).Justify(ui.Center).Children(func() {
-			components.ScrollView(c, components.ScrollViewOptions{}).Key("quick-status").FillWidth().MinHeight(0).MaxHeight(36).Children(func() {
+			scrollView(c).Key("quick-status").FillWidth().MinHeight(0).MaxHeight(36).Children(func() {
 				components.Text(c, message).FillWidth().MinWidth(0).Wrap().FontSize(11).TextColor(color).Tooltip(message)
 			})
 			if detail != "" {

@@ -5,14 +5,25 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/knothhe/picup/assets"
+	"github.com/knothhe/picup/internal/config"
 )
 
 func (a *application) showWindow() {
+	if a.quitting {
+		return
+	}
+	a.resumeLightweightUI()
 	a.hideQuickUpload()
+	if a.win == nil && a.lifecycle.nativeReady {
+		a.newMainWindow()
+	}
 	if a.win != nil {
 		a.win.Show()
 		a.win.Focus()
 		a.win.Invalidate()
+		if a.tab == 4 && !a.gallery.loaded && !a.gallery.busy {
+			a.enterGallery()
+		}
 	}
 }
 
@@ -44,7 +55,10 @@ func (a *application) quickUploadItems() []*mygo.MenuItem {
 }
 
 func (a *application) trayMenu() *mygo.Menu {
-	// Linux tray hosts expose menus, so their sole item opens the same panel.
+	// Linux tray hosts expose menus; keep the configured destination reachable.
+	if a.config.TrayClickAction == config.TrayClickMainWindow {
+		return mygo.NewMenu([]*mygo.MenuItem{{ID: "main-window", Label: tr("打开主窗口"), Click: func(*mygo.MenuItem, *mygo.Window) { a.showWindow() }}})
+	}
 	return mygo.NewMenu([]*mygo.MenuItem{{ID: "quick-panel", Label: tr("快捷上传"), Click: func(*mygo.MenuItem, *mygo.Window) { a.showQuickUpload() }}})
 }
 
@@ -138,7 +152,7 @@ func (a *application) setupMenus() {
 		a.feedback("菜单栏不可用，请使用窗口上传", err)
 	} else {
 		a.tray = tray
-		tray.OnClick(a.toggleQuickUpload)
+		tray.OnClick(a.trayClicked)
 		tray.OnRightClick(a.toggleQuickUpload)
 	}
 	a.updateMenus()

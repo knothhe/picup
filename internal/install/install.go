@@ -46,6 +46,10 @@ type receipt struct {
 func hash(b []byte) string { return fmt.Sprintf("%x", sha256.Sum256(b)) }
 
 func Install(source, dir string) (string, error) {
+	dir, err := expandHome(dir)
+	if err != nil {
+		return "", err
+	}
 	if !filepath.IsAbs(dir) {
 		return "", fmt.Errorf("installation directory must be an absolute path")
 	}
@@ -81,6 +85,10 @@ func Install(source, dir string) (string, error) {
 	return dst, nil
 }
 func OnPath(dir string) bool {
+	dir, err := expandHome(dir)
+	if err != nil {
+		return false
+	}
 	for _, p := range filepath.SplitList(os.Getenv("PATH")) {
 		a, _ := filepath.Abs(p)
 		if filepath.Clean(a) == filepath.Clean(dir) {

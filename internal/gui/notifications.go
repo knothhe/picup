@@ -30,7 +30,7 @@ func (a *application) notificationView(c *ui.Context) {
 				Transition(ui.ElementTransition{Duration: 180 * time.Millisecond, Enter: &ui.Motion{Y: 8}, Exit: &ui.Motion{Y: 8}}).
 				Children(func() {
 					components.Icon(c, icon).Size(18, 18).Shrink(0).TextColor(color)
-					components.ScrollView(c, components.ScrollViewOptions{}).Grow(1).Shrink(1).MinWidth(0).MaxHeight(min(float32(160), height-120)).Children(func() {
+					scrollView(c).Grow(1).Shrink(1).MinWidth(0).MaxHeight(min(float32(160), height-120)).Children(func() {
 						components.Text(c, notice.Title).FillWidth().MinWidth(0).Wrap().FontSize(12)
 					})
 					if notice.Action != "" {

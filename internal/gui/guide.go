@@ -60,7 +60,7 @@ func (a *application) guideView(c *ui.Context) {
 			a.openSettings(0)
 		}
 	})
-	components.ScrollView(c, components.ScrollViewOptions{}).Key("guide-scroll").FillWidth().Grow(1).MinHeight(0).Children(func() {
+	scrollView(c).Key("guide-scroll").FillWidth().Grow(1).MinHeight(0).Children(func() {
 		ui.Column(c).FillWidth().MinWidth(0).Gap(16).Children(func() {
 			guideSection(c, "guide-connect", "01  连接你的存储", func() {
 				guideParagraph(c, "在设置中选择 S3 或 R2，填写存储桶、访问凭据和图片公开地址。")

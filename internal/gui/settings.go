@@ -1,10 +1,12 @@
 package gui
 
 import (
+	"runtime"
 	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+	"github.com/knothhe/picup/internal/config"
 	"github.com/knothhe/picup/internal/install"
 	"github.com/oneo-me/onevra/source/components"
 )
@@ -74,6 +76,33 @@ func (a *application) switchPreference(c *ui.Context, key, title, description st
 	}, func() { *value = !*value })
 }
 
+func (a *application) segmentedPreference(c *ui.Context, key, title, description string, value *string, choices, labels []string) {
+	width, _ := c.Size()
+	if !a.sidebarCollapsed {
+		width -= 188
+	}
+	row := ui.Row(c).Key(key).FillWidth().MinWidth(0).Padding(13, 16).Gap(16).AlignItems(ui.Center)
+	if width < 850 {
+		row.Column().Gap(9).AlignItems(ui.Stretch)
+	}
+	row.Children(func() {
+		ui.Column(c).Grow(1).Shrink(1).MinWidth(0).Gap(4).Children(func() {
+			components.Text(c, tr(title)).FontSize(12).Wrap()
+			components.Text(c, tr(description)).FontSize(11).TextColor(c.Theme().TextMuted).Wrap()
+		})
+		selected := 0
+		for i, choice := range choices {
+			if choice == *value {
+				selected = i
+				break
+			}
+		}
+		if ui.Segmented(c, &selected, trList(labels)...).Label(tr(title)).FontSize(12).AlignSelf(ui.Start).Changed() {
+			*value = choices[selected]
+		}
+	})
+}
+
 func (a *application) settingsView(c *ui.Context) {
 	ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
 		ui.Column(c).Grow(1).Shrink(1).MinWidth(0).Children(func() {
@@ -105,7 +134,7 @@ func (a *application) settingsView(c *ui.Context) {
 			}
 		})
 	}
-	components.ScrollView(c, components.ScrollViewOptions{}).Key(settingsScrollIdentity(a.settingsTab)).FillWidth().Grow(1).MinHeight(0).Children(func() {
+	scrollView(c).Key(settingsScrollIdentity(a.settingsTab)).FillWidth().Grow(1).MinHeight(0).Children(func() {
 		ui.Column(c).Key(a.settingsTab).FillWidth().MinWidth(0).Gap(20).Disabled(a.busy || a.gallery.busy).Transition(ui.ElementTransition{
 			Duration: 180 * time.Millisecond, Colors: true, Enter: &ui.Motion{Y: 4},
 		}).Children(func() {
@@ -188,6 +217,7 @@ func (a *application) appearanceSettings(c *ui.Context) {
 			}
 		})
 	})
+	a.windowSettings(c)
 	settingsGroup(c, "gallery-cache", "图库缓存", func() {
 		a.preference(c, "cache-clear", "本地缓存", "保存列表与缩略图，最多 256 MiB，自动清理较早使用的内容。", func() {
 			if components.Button(c, tr("清理图库缓存"), components.ButtonOutline).Clicked() {
@@ -198,9 +228,27 @@ func (a *application) appearanceSettings(c *ui.Context) {
 	components.Text(c, tr("清理缓存后，下次打开图库会重新加载。")).FillWidth().MinWidth(0).Wrap().FontSize(11).TextColor(c.Theme().TextMuted)
 }
 
+func (a *application) windowSettings(c *ui.Context) {
+	settingsGroup(c, "window-startup", "窗口与启动", func() {
+		a.switchPreference(c, "close-to-tray", "关闭窗口后继续运行", "关闭主窗口后保留托盘和后台上传；关闭此选项后退出应用。", &a.config.CloseToTray)
+		settingsDivider(c)
+		ui.Column(c).FillWidth().Disabled(runtime.GOOS != "darwin").Children(func() {
+			a.segmentedPreference(c, "dock-icon", "Dock 图标", "跟随窗口时，仅在主窗口打开时展示。", &a.config.DockIcon, []string{config.DockIconShow, config.DockIconHide, config.DockIconFollowWindow}, []string{"展示", "隐藏", "跟随窗口"})
+		})
+		settingsDivider(c)
+		a.segmentedPreference(c, "tray-click", "点击托盘图标", "选择点击菜单栏或托盘图标时打开的位置。", &a.config.TrayClickAction, []string{config.TrayClickQuickPanel, config.TrayClickMainWindow}, []string{"打开快捷面板", "打开主窗口"})
+		settingsDivider(c)
+		a.switchPreference(c, "lightweight", "轻量模式", "窗口和面板全部关闭一分钟后释放界面内存，再次打开时重新加载。", &a.config.LightweightMode)
+		settingsDivider(c)
+		ui.Column(c).FillWidth().Disabled(a.lifecycle.setOpenAtLogin == nil).Children(func() {
+			a.switchPreference(c, "launch-at-login", "开机自启", "登录系统后在后台启动 Picup。", &a.config.LaunchAtLogin)
+		})
+	})
+}
+
 func (a *application) cliSettings(c *ui.Context) {
 	settingsGroup(c, "cli-install", "命令行工具", func() {
-		a.textPreference(c, "install-dir", "安装目录", "默认安装到用户目录。", install.DefaultDir(), &a.installDir, false)
+		a.textPreference(c, "install-dir", "安装目录", "默认安装到用户目录。", install.DisplayPath(install.DefaultDir()), &a.installDir, false)
 		settingsDivider(c)
 		a.preference(c, "install", "安装或更新", "与桌面端共用配置。", func() {
 			if components.Button(c, tr("安装 / 更新 CLI"), components.ButtonPrimary).Clicked() {

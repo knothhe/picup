@@ -75,7 +75,7 @@ func (a *application) profileMenu(c *ui.Context, anchor ui.Element, compact bool
 		}
 		components.Text(c, tr("切换配置")).FontSize(10).TextColor(c.Theme().TextMuted).Padding(6, 10)
 		listHeight := min(float32(len(cfg.Profiles))*56, min(float32(320), max(float32(112), height-200)))
-		components.ScrollView(c, components.ScrollViewOptions{}).Key("profile-options").FillWidth().Height(listHeight).MinHeight(0).Children(func() {
+		scrollView(c).Key("profile-options").FillWidth().Height(listHeight).MinHeight(0).Children(func() {
 			ui.Column(c).FillWidth().Gap(2).Children(func() {
 				for _, profile := range cfg.Profiles {
 					option := ui.ButtonBase(c).Key(profile.ID).Label(profileName(profile.ID, profile.Name)).FillWidth().Height(54).Padding(8, 10).Gap(8).Radius(6).Background(ui.Color{}).AlignItems(ui.Center)

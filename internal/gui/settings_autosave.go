@@ -62,7 +62,12 @@ func (a *application) watchSettingsAutosave(c *ui.Context) {
 
 // Flush the last edit when quitting before the debounce deadline.
 func (a *application) flushSettingsAutosave() bool {
-	if a.settingsSave.initialized && !reflect.DeepEqual(a.currentSettings(), a.settingsSave.persisted) {
+	if a.settingsSave.initialized {
+		// A native preference can fail and roll back completely. Its error
+		// remains visible, but there is no unsaved edit to protect on close.
+		if reflect.DeepEqual(a.currentSettings(), a.settingsSave.persisted) {
+			return true
+		}
 		a.save()
 	}
 	return !a.settingsSave.failed

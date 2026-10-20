@@ -26,7 +26,7 @@ func (a *application) uploadDisplayConfig() config.Config {
 // Reload on returning from another app (including the CLI), never during a
 // render. A later Save or upload invalidates an older background read.
 func (a *application) refreshUploadConfig() {
-	if a.win == nil || a.quitting || a.uploading {
+	if (a.win == nil && a.quickUpload.window == nil) || a.quitting || a.uploading || a.lifecycle.suspended {
 		return
 	}
 	a.uploadConfigGeneration++
@@ -34,13 +34,13 @@ func (a *application) refreshUploadConfig() {
 	go func() {
 		c, err := config.Load(path)
 		mygo.RunOnMain(func() {
-			if err != nil || a.quitting || a.uploading || generation != a.uploadConfigGeneration {
+			if err != nil || a.quitting || a.uploading || a.lifecycle.suspended || generation != a.uploadConfigGeneration {
 				return
 			}
 			if a.canRefreshProfileConfig() {
 				changed := a.config.ActiveProfile != c.ActiveProfile || !sameGalleryStorage(a.config, c)
 				a.applyProfileConfig(c)
-				if changed && a.tab == 4 {
+				if changed && a.tab == 4 && a.win != nil {
 					a.enterGallery()
 				}
 			}

@@ -32,7 +32,7 @@ func (a *application) galleryFilterPopover(c *ui.Context, anchor ui.Element) {
 		width, height := c.Size()
 		panel.Width(360).MaxWidth(width - 40).Label(tr("过滤选项"))
 		galleryPopoverHeading(c, tr("过滤选项"), tr("根据属性筛选图片。"), &g.filterOpen)
-		components.ScrollView(c, components.ScrollViewOptions{}).FillWidth().MaxHeight(height - 200).Children(func() {
+		scrollView(c).FillWidth().MaxHeight(height - 200).Children(func() {
 			ui.Column(c).FillWidth().Gap(10).Children(func() {
 				galleryFilterLabel(c, tr("搜索"), "")
 				ui.Box(c).Key("filter-search").FillWidth().Children(func() {
@@ -85,7 +85,7 @@ func (a *application) galleryPrefixPicker(c *ui.Context) {
 				s.SearchField(&g.prefixQuery).Label(tr("搜索前缀")).Placeholder(tr("搜索前缀..."))
 				keys, labels := g.prefixes()
 				matches := 0
-				components.ScrollView(c, components.ScrollViewOptions{}).FillWidth().MaxHeight(220).Children(func() {
+				scrollView(c).FillWidth().MaxHeight(220).Children(func() {
 					ui.Column(c).FillWidth().Children(func() {
 						for i, key := range keys {
 							if key == "" {

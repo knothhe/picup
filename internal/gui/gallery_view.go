@@ -81,7 +81,7 @@ func (a *application) galleryView(c *ui.Context) {
 		components.Text(c, filterErr.Error()).FontSize(12).Wrap().TextColor(c.Theme().Danger)
 	}
 	a.galleryThumbs(page)
-	scroll := components.ScrollView(c, components.ScrollViewOptions{}).Key(fmt.Sprintf("gallery-scroll-%d-%s", g.page, g.filterKey)).FillWidth().Grow(1).MinHeight(0)
+	scroll := scrollView(c).Key(fmt.Sprintf("gallery-scroll-%d-%s", g.page, g.filterKey)).FillWidth().Grow(1).MinHeight(0)
 	scroll.Children(func() {
 		if !g.loaded || len(page) == 0 {
 			a.galleryEmpty(c)
@@ -91,8 +91,7 @@ func (a *application) galleryView(c *ui.Context) {
 			if !a.sidebarCollapsed {
 				width -= 188
 			}
-			// The scroll view reserves its bar inside the layout, so keep a narrow gutter.
-			width -= 8
+			width -= scrollbarGutter(c)
 			cells, height := g.justified(page, width)
 			ui.Box(c).Width(width).Height(height).Children(func() {
 				for _, cell := range cells {
@@ -477,7 +476,7 @@ func (a *application) galleryDialogs(c *ui.Context) {
 			components.TextBox(c, &g.renameKey, components.TextBoxOptions{}).FillWidth().Label(tr("新图片路径")).Disabled(g.busy)
 			components.Text(c, tr("填写完整路径。完成后原链接失效，新链接可用。")).FontSize(12).Wrap().TextColor(c.Theme().TextMuted)
 			if g.renameError != "" {
-				components.ScrollView(c, components.ScrollViewOptions{}).FillWidth().MaxHeight(100).Children(func() { components.Text(c, g.renameError).FontSize(12).Wrap().TextColor(c.Theme().Danger) })
+				scrollView(c).FillWidth().MaxHeight(100).Children(func() { components.Text(c, g.renameError).FontSize(12).Wrap().TextColor(c.Theme().Danger) })
 			}
 			ui.Row(c).FillWidth().Justify(ui.End).Gap(8).Disabled(g.busy).Children(func() {
 				if components.Button(c, tr("取消"), components.ButtonSecondary).Clicked() {
@@ -494,7 +493,7 @@ func (a *application) galleryDialogs(c *ui.Context) {
 			panel.Role(ui.RoleAlertDialog)
 			components.Text(c, tf("删除 %d 张云端图片？", len(g.deleteTargets))).Bold()
 			components.Text(c, tr("图片将从当前存储桶删除，已有链接将失效。此操作无法撤销。")).Wrap().FontSize(12).TextColor(c.Theme().TextMuted)
-			components.ScrollView(c, components.ScrollViewOptions{}).FillWidth().MaxHeight(120).Children(func() {
+			scrollView(c).FillWidth().MaxHeight(120).Children(func() {
 				ui.Column(c).FillWidth().Gap(5).Children(func() {
 					for _, o := range g.deleteTargets {
 						components.Text(c, o.Key).SingleLine().Ellipsis("…").FontSize(11)

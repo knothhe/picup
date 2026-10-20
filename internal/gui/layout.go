@@ -142,8 +142,8 @@ func (a *application) sidebar(c *ui.Context) {
 		return
 	}
 	panel.BorderWidth(0, 1, 0, 0).Children(func() {
-		components.ScrollView(c, components.ScrollViewOptions{}).FillWidth().Grow(1).Children(func() {
-			ui.Column(c).Width(187).Padding(18, 10).Gap(5).Children(func() {
+		scrollView(c).FillWidth().Grow(1).Children(func() {
+			ui.Column(c).FillWidth().MinWidth(0).Padding(18, 0, 18, 10).Gap(5).Children(func() {
 				components.Text(c, tr("工作区")).FontSize(10).TextColor(t.TextMuted).Padding(0, 10, 8, 10)
 				a.navigationItem(c, 0, "上传", lucide.ImageUp(), true)
 				a.navigationItem(c, 4, "图库", lucide.Images(), true)
@@ -157,7 +157,7 @@ func (a *application) sidebar(c *ui.Context) {
 							label := tr(settingsLabels[i])
 							if components.SidebarItemWithLeading(c, label, a.settingsTab == i, func(c *ui.Context, size float32) {
 								components.Icon(c, icons[i]).Size(size, size).TextColor(t.TextMuted)
-							}).Clicked() {
+							}).Padding(t.Space(1.75), 0, t.Space(1.75), t.Space(2)).Clicked() {
 								a.settingsTab = i
 							}
 						}

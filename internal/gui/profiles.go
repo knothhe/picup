@@ -97,6 +97,7 @@ func (a *application) applyProfileConfig(c config.Config) {
 		a.resetGallery()
 	}
 	a.applyLanguage(false)
+	a.applyNativeSettings()
 	if a.win != nil {
 		mygo.Theme.SetSource(mygo.ThemeSource(c.Appearance))
 		a.win.Invalidate()

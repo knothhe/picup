@@ -76,7 +76,7 @@ func (a *application) uploadView(c *ui.Context) {
 	if counts.total > 0 {
 		a.uploadQueueToolbar(c, counts)
 		jobs := append([]*job(nil), a.jobs...)
-		components.ScrollView(c, components.ScrollViewOptions{}).Key("upload-files").FillWidth().Grow(1).MinHeight(0).Children(func() {
+		scrollView(c).Key("upload-files").FillWidth().Grow(1).MinHeight(0).Children(func() {
 			ui.Column(c).FillWidth().Gap(8).Children(func() {
 				for _, j := range jobs {
 					a.jobView(c, j)
