@@ -23,7 +23,6 @@ var englishText = map[string]string{
 	"选择图片…":             "Choose images…",
 	"拖入图片，即刻上传":         "Drop images to upload",
 	"松开即可上传图片":          "Release to upload images",
-	"使用当前配置上传":          "Upload with the current profile",
 	"正在准备图片…":           "Preparing images…",
 	"当前任务完成后可继续上传":      "You can upload again when this task finishes",
 	"打开 Picup 查看上传结果":   "Open Picup to view upload results",

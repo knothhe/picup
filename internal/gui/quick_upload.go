@@ -157,7 +157,7 @@ func (a *application) quickUploadStatus() (message, detail string, failed bool) 
 	if a.uploadDisplayConfig().ValidateStorage() != nil {
 		return tr("请先完成存储设置"), tr("打开 Picup 完成设置"), false
 	}
-	return tr("使用当前配置上传"), "", false
+	return "", "", false
 }
 
 // The quick panel owns no preferences or toast queue. Its result survives
@@ -271,8 +271,11 @@ func (a *application) quickHeaderAction(c *ui.Context, label string, icon *ui.SV
 }
 
 func (a *application) quickUploadStatusView(c *ui.Context) {
-	t := c.Theme()
 	message, detail, failed := a.quickUploadStatus()
+	if message == "" && detail == "" {
+		return
+	}
+	t := c.Theme()
 	color, icon := t.TextMuted, lucide.Info()
 	if failed {
 		color, icon = t.Danger, lucide.CircleX()
