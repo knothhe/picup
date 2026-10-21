@@ -21,7 +21,10 @@ import (
 	"github.com/knothhe/picup/internal/storage"
 )
 
-const galleryPageSize = 20
+const (
+	galleryPageSize       = 20
+	galleryThumbnailLimit = 3*galleryPageSize + 1
+)
 
 type galleryThumb struct {
 	bitmap        *ui.Bitmap
@@ -45,6 +48,12 @@ type galleryState struct {
 	thumbs                                  map[string]galleryThumb
 	thumbCancel                             context.CancelFunc
 	thumbBatch                              string
+	thumbRetry                              string
+	thumbOrder                              []string
+	thumbPage                               []storage.Object
+	thumbPageFilter                         string
+	thumbPageNumber                         int
+	thumbLoading                            bool
 	preview                                 *storage.Object
 	previewOpen, renameOpen, deleteOpen     bool
 	renameKey, renameError                  string
@@ -169,9 +178,7 @@ func (a *application) loadGallery() {
 	}()
 }
 func (g *galleryState) replace(objects []storage.Object) {
-	if g.thumbCancel != nil {
-		g.thumbCancel()
-	}
+	g.clearThumbnailPage()
 	oldObjects := map[string]storage.Object{}
 	for _, o := range g.objects {
 		if thumb, ok := g.thumbs[o.Key]; ok && thumb.err == nil {
@@ -370,6 +377,7 @@ func (g *galleryState) selectedObjects() []storage.Object {
 	return rows
 }
 func (g *galleryState) remove(keys map[string]bool) {
+	g.clearThumbnailPage()
 	var keep []storage.Object
 	for _, o := range g.objects {
 		if !keys[o.Key] {
@@ -499,13 +507,94 @@ func (g *galleryState) thumbnailKeys(rows []storage.Object) []string {
 	}
 	return keys
 }
+
+func (g *galleryState) clearThumbnailPage() {
+	if g.thumbCancel != nil {
+		g.thumbCancel()
+		g.thumbCancel = nil
+	}
+	g.thumbBatch = ""
+	g.thumbRetry = ""
+	g.thumbPage = nil
+	g.thumbLoading = false
+}
+
+// Keep a bounded history of decoded pages, including their original dimensions.
+// Returning to a recent page can then draw its final layout in the first frame.
+func (g *galleryState) retainThumbnails(keys []string) {
+	recent := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		recent[key] = true
+	}
+	seen := make(map[string]bool, len(g.thumbs))
+	order := make([]string, 0, len(g.thumbs))
+	for _, key := range g.thumbOrder {
+		if _, ok := g.thumbs[key]; ok && !recent[key] && !seen[key] {
+			order = append(order, key)
+			seen[key] = true
+		}
+	}
+	var untracked []string
+	for key := range g.thumbs {
+		if !recent[key] && !seen[key] {
+			untracked = append(untracked, key)
+		}
+	}
+	sort.Strings(untracked)
+	order = append(order, untracked...)
+	for _, key := range keys {
+		if _, ok := g.thumbs[key]; ok && !seen[key] {
+			order = append(order, key)
+			seen[key] = true
+		}
+	}
+	for len(order) > galleryThumbnailLimit {
+		delete(g.thumbs, order[0])
+		order = order[1:]
+	}
+	g.thumbOrder = order
+}
+
+func (g *galleryState) commitThumbnailPage(batch string, rows []storage.Object, page int, filter string, thumbs map[string]galleryThumb) bool {
+	if g.thumbBatch != batch {
+		return false
+	}
+	for _, key := range g.thumbnailKeys(rows) {
+		if _, complete := thumbs[key]; !complete {
+			if _, cached := g.thumbs[key]; !cached || key == g.thumbRetry {
+				return false
+			}
+		}
+	}
+	if g.thumbs == nil {
+		g.thumbs = make(map[string]galleryThumb, len(thumbs))
+	}
+	for key, thumb := range thumbs {
+		g.thumbs[key] = thumb
+	}
+	g.thumbPage = append([]storage.Object(nil), rows...)
+	g.thumbPageNumber = page
+	g.thumbPageFilter = filter
+	g.thumbLoading = false
+	g.thumbRetry = ""
+	g.retainThumbnails(g.thumbnailKeys(rows))
+	return true
+}
+
+func (g *galleryState) presentedThumbnailPage(rows []storage.Object) ([]storage.Object, int) {
+	if g.thumbLoading && g.thumbPageFilter == g.filterKey && len(g.thumbPage) > 0 {
+		return g.thumbPage, g.thumbPageNumber
+	}
+	return rows, g.page
+}
+
 func (a *application) galleryThumbs(rows []storage.Object) {
 	g := &a.gallery
 	if a.win == nil || g.client == nil {
 		return
 	}
 	keys := g.thumbnailKeys(rows)
-	batch := strings.Join(keys, "\x00")
+	batch := fmt.Sprintf("%d\x00%s\x00%s", g.page, g.filterKey, strings.Join(keys, "\x00"))
 	if g.thumbBatch == batch {
 		return
 	}
@@ -513,22 +602,10 @@ func (a *application) galleryThumbs(rows []storage.Object) {
 		g.thumbCancel()
 	}
 	g.thumbBatch = batch
-	// Retain just the current page and preview, keeping memory bounded.
-	cache := map[string]galleryThumb{}
-	for _, key := range keys {
-		if t, ok := g.thumbs[key]; ok {
-			cache[key] = t
-		}
-	}
-	if g.preview != nil {
-		if t, ok := g.thumbs[g.preview.Key]; ok {
-			cache[g.preview.Key] = t
-		}
-	}
-	g.thumbs = cache
 	ctx, cancel := context.WithCancel(context.Background())
 	g.thumbCancel = cancel
 	generation, client, disk := g.generation, g.client, g.cache
+	page, filter := g.page, g.filterKey
 	objects := make(map[string]storage.Object, len(rows)+1)
 	for _, o := range rows {
 		objects[o.Key] = o
@@ -538,12 +615,21 @@ func (a *application) galleryThumbs(rows []storage.Object) {
 	}
 	var missing []storage.Object
 	for _, key := range keys {
-		if _, ok := cache[key]; !ok {
+		if _, ok := g.thumbs[key]; !ok || key == g.thumbRetry {
 			missing = append(missing, objects[key])
 		}
 	}
+	if len(missing) == 0 {
+		cancel()
+		g.thumbCancel = nil
+		g.commitThumbnailPage(batch, rows, page, filter, nil)
+		return
+	}
+	g.thumbLoading = true
 	go func() {
 		queue := make(chan storage.Object)
+		results := make(map[string]galleryThumb, len(missing))
+		var resultsLock sync.Mutex
 		var workers sync.WaitGroup
 		for range 2 {
 			workers.Go(func() {
@@ -554,12 +640,9 @@ func (a *application) galleryThumbs(rows []storage.Object) {
 					one, stop := context.WithTimeout(ctx, 40*time.Second)
 					thumb := readGalleryCachedThumb(one, client, object, disk)
 					stop()
-					mygo.RunOnMain(func() {
-						if a.gallery.generation == generation && ctx.Err() == nil {
-							a.gallery.thumbs[object.Key] = thumb
-							a.win.Invalidate()
-						}
-					})
+					resultsLock.Lock()
+					results[object.Key] = thumb
+					resultsLock.Unlock()
 				}
 			})
 		}
@@ -574,6 +657,20 @@ func (a *application) galleryThumbs(rows []storage.Object) {
 		}
 		close(queue)
 		workers.Wait()
+		if ctx.Err() != nil {
+			return
+		}
+		// Publish the whole page together so the justified grid uses all real
+		// dimensions in one layout pass instead of reflowing for every image.
+		mygo.RunOnMain(func() {
+			defer cancel()
+			if a.gallery.generation == generation && ctx.Err() == nil && a.gallery.thumbBatch == batch {
+				a.gallery.thumbCancel = nil
+				if a.gallery.commitThumbnailPage(batch, rows, page, filter, results) {
+					a.win.Invalidate()
+				}
+			}
+		})
 	}()
 }
 

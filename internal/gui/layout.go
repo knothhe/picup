@@ -9,13 +9,28 @@ import (
 )
 
 const settingsProfilesTab = 6
+const navigationDuration = 240 * time.Millisecond
 
 var settingsLabels = []string{"存储", "图片与输出", "通用", "CLI", "快捷键", "关于", "配置"}
 var settingsOrder = []int{settingsProfilesTab, 0, 1, 2, 3, 4, 5}
 
 // Navigation changes share one timing curve, including the content's new size.
 func layoutTransition() ui.ElementTransition {
-	return ui.ElementTransition{Duration: 320 * time.Millisecond, Ease: ui.EaseInOut}
+	return ui.ElementTransition{Duration: navigationDuration, Ease: ui.EaseInOut}
+}
+
+// Keep the old page visible beneath the new one until its entrance completes.
+// Apply this to the keyed page whose direct parent survives the tab change.
+func tabTransition() ui.ElementTransition {
+	t := layoutTransition()
+	t.Colors = true
+	t.Enter = &ui.Motion{Y: 6}
+	t.Exit = &ui.Motion{}
+	return t
+}
+
+func navigationContentTransition() ui.ContentTransition {
+	return ui.ContentTransition{Animation: &ui.Animation{Duration: navigationDuration, Ease: ui.EaseInOut}}
 }
 
 type navIdentity int
@@ -63,7 +78,7 @@ func (a *application) header(c *ui.Context) {
 			})
 		} else {
 			components.Text(c, "/").TextColor(c.Theme().Border)
-			components.Text(c, tr(map[int]string{0: "上传", 2: "设置", 3: "指南", 4: "图库"}[a.tab])).FontSize(12).TextColor(c.Theme().TextMuted).ContentTransition(ui.ContentTransition{})
+			components.Text(c, tr(map[int]string{0: "上传", 2: "设置", 3: "指南", 4: "图库"}[a.tab])).FontSize(12).TextColor(c.Theme().TextMuted).ContentTransition(navigationContentTransition())
 		}
 	})
 }
@@ -136,7 +151,7 @@ func (a *application) sidebar(c *ui.Context) {
 	if a.sidebarCollapsed {
 		target = 0
 	}
-	width := panel.AnimateWith("width", target, 320*time.Millisecond, ui.EaseInOut)
+	width := panel.AnimateWith("width", target, navigationDuration, ui.EaseInOut)
 	panel.Width(width).Disabled(a.sidebarCollapsed)
 	if width <= 0 {
 		return
@@ -149,6 +164,7 @@ func (a *application) sidebar(c *ui.Context) {
 				a.navigationItem(c, 4, "图库", lucide.Images(), true)
 				if a.tab == 2 {
 					ui.Column(c).Key("settings-navigation").FillWidth().Padding(22, 0, 0, 0).Gap(4).Transition(ui.ElementTransition{
+						Duration: navigationDuration, Ease: ui.EaseInOut,
 						Enter: &ui.Motion{Y: -6, Collapse: true}, Exit: &ui.Motion{Collapse: true},
 					}).Children(func() {
 						components.Text(c, tr("设置")).FontSize(10).TextColor(t.TextMuted).Padding(0, 10, 8, 10)
@@ -157,7 +173,7 @@ func (a *application) sidebar(c *ui.Context) {
 							label := tr(settingsLabels[i])
 							if components.SidebarItemWithLeading(c, label, a.settingsTab == i, func(c *ui.Context, size float32) {
 								components.Icon(c, icons[i]).Size(size, size).TextColor(t.TextMuted)
-							}).Padding(t.Space(1.75), 0, t.Space(1.75), t.Space(2)).Clicked() {
+							}).Padding(t.Space(1.75), 0, t.Space(1.75), t.Space(2)).Transition(layoutTransition()).Clicked() {
 								a.settingsTab = i
 							}
 						}
@@ -182,7 +198,7 @@ func (a *application) view(c *ui.Context) {
 		a.sidebar(c)
 		ui.Column(c).Key("workspace-content").Grow(1).FillHeight().MinWidth(0).Padding(24, 24, 20, 24).Gap(16).Children(func() {
 			page := ui.Column(c).Key(a.tab).FillWidth().Grow(1).MinWidth(0).MinHeight(0).Gap(16)
-			page.Transition(ui.ElementTransition{Duration: 220 * time.Millisecond, Colors: true, Enter: &ui.Motion{Y: 5}}).Children(func() {
+			page.Transition(tabTransition()).Children(func() {
 				switch a.tab {
 				case 2:
 					a.settingsView(c)

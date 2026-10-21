@@ -12,8 +12,8 @@ import (
 
 func heading(c *ui.Context, title, subtitle string) {
 	ui.Column(c).FillWidth().Gap(6).Children(func() {
-		components.Text(c, title).FontSize(25).Bold()
-		components.Text(c, subtitle).FontSize(12).TextColor(c.Theme().TextMuted).Wrap()
+		components.Text(c, title).FontSize(25).Bold().ContentTransition(navigationContentTransition())
+		components.Text(c, subtitle).FontSize(12).TextColor(c.Theme().TextMuted).Wrap().ContentTransition(navigationContentTransition())
 	})
 }
 func card(c *ui.Context, key string, build func()) {

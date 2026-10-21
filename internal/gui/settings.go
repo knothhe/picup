@@ -2,7 +2,6 @@ package gui
 
 import (
 	"runtime"
-	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -128,16 +127,14 @@ func (a *application) settingsView(c *ui.Context) {
 				if a.settingsTab == category {
 					button.Background(c.Theme().Text.Alpha(.08))
 				}
-				if button.Clicked() {
+				if button.Transition(layoutTransition()).Clicked() {
 					a.settingsTab = category
 				}
 			}
 		})
 	}
-	scrollView(c).Key(settingsScrollIdentity(a.settingsTab)).FillWidth().Grow(1).MinHeight(0).Children(func() {
-		ui.Column(c).Key(a.settingsTab).FillWidth().MinWidth(0).Gap(20).Disabled(a.busy || a.gallery.busy).Transition(ui.ElementTransition{
-			Duration: 180 * time.Millisecond, Colors: true, Enter: &ui.Motion{Y: 4},
-		}).Children(func() {
+	scrollView(c).Key(settingsScrollIdentity(a.settingsTab)).FillWidth().Grow(1).MinHeight(0).Transition(tabTransition()).Children(func() {
+		ui.Column(c).Key(a.settingsTab).FillWidth().MinWidth(0).Gap(20).Disabled(a.busy || a.gallery.busy).Children(func() {
 			switch a.settingsTab {
 			case 0:
 				a.storageSettings(c)
@@ -208,7 +205,7 @@ func (a *application) appearanceSettings(c *ui.Context) {
 				}
 			}
 			before := selected
-			components.Tabs(c, &selected, components.TabsSegmented, trList([]string{"自动", "浅色", "深色"})...)
+			ui.Segmented(c, &selected, trList([]string{"自动", "浅色", "深色"})...).Label(tr("外观")).FontSize(12)
 			if before != selected {
 				a.config.Appearance = values[selected]
 				if a.win != nil {

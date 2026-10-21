@@ -40,6 +40,7 @@ CLI 和 GUI 分别输出到 `build/bin/picup`、`build/bin/picup-gui`。开发�
 - [设置与指南](../design/guide/index.html)
 - [图库](../design/gallery/index.html)
 - [多配置](../design/profiles/index.html)
+- [统一页面与 Tab 切换](../design/motion/index.html)
 
 ## 图标
 

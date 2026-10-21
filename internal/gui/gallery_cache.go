@@ -338,9 +338,7 @@ func clearGalleryCache() error {
 }
 
 func (a *application) clearGalleryCache() {
-	if a.gallery.thumbCancel != nil {
-		a.gallery.thumbCancel()
-	}
+	a.gallery.clearThumbnailPage()
 	go func() {
 		err := clearGalleryCache()
 		mygo.RunOnMain(func() {
@@ -349,7 +347,8 @@ func (a *application) clearGalleryCache() {
 				a.gallery.cache = newGalleryDiskCache(a.gallery.config)
 			}
 			a.gallery.thumbs = nil
-			a.gallery.thumbBatch = ""
+			a.gallery.thumbOrder = nil
+			a.gallery.clearThumbnailPage()
 			if err != nil {
 				a.feedback(tr("清理图库缓存失败"), err)
 			} else {

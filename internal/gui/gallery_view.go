@@ -81,7 +81,8 @@ func (a *application) galleryView(c *ui.Context) {
 		components.Text(c, filterErr.Error()).FontSize(12).Wrap().TextColor(c.Theme().Danger)
 	}
 	a.galleryThumbs(page)
-	scroll := scrollView(c).Key(fmt.Sprintf("gallery-scroll-%d-%s", g.page, g.filterKey)).FillWidth().Grow(1).MinHeight(0)
+	page, presentedPage := g.presentedThumbnailPage(page)
+	scroll := scrollView(c).Key(fmt.Sprintf("gallery-scroll-%d-%s", presentedPage, g.filterKey)).FillWidth().Grow(1).MinHeight(0).Transition(tabTransition())
 	scroll.Children(func() {
 		if !g.loaded || len(page) == 0 {
 			a.galleryEmpty(c)
@@ -101,7 +102,7 @@ func (a *application) galleryView(c *ui.Context) {
 		}
 	})
 	if g.loaded && len(rows) > 0 {
-		a.galleryPagination(c, pages)
+		a.galleryPagination(c, pages, presentedPage)
 	}
 	if g.busy || g.err != "" || g.dirty {
 		ui.Row(c).FillWidth().Wrap().AlignItems(ui.Center).Gap(8).Children(func() {
@@ -124,7 +125,7 @@ func (a *application) galleryView(c *ui.Context) {
 			}
 		})
 	}
-	if !g.busy && !g.previewOpen && !g.renameOpen && !g.deleteOpen {
+	if !g.busy && !g.thumbLoading && !g.previewOpen && !g.renameOpen && !g.deleteOpen {
 		if a.shortcut(c, "gallery-select-all") {
 			g.selectPage(page)
 
@@ -201,28 +202,48 @@ func (a *application) galleryToolbar(c *ui.Context) {
 		}
 	})
 }
-func (a *application) galleryPagination(c *ui.Context, pages int) {
+func (a *application) galleryPagination(c *ui.Context, pages, presentedPage int) {
 	g := &a.gallery
-	ui.Row(c).FillWidth().Shrink(0).Justify(ui.Center).AlignItems(ui.Center).Gap(5).Disabled(g.busy).Children(func() {
-		if galleryIconButton(c, lucide.ChevronLeft(), tr("上一页")).Disabled(g.page == 0).Clicked() {
-			g.page--
-		}
-		for i, n := range galleryPageNumbers(g.page, pages) {
-			ui.Box(c).Key(i).Children(func() {
-				if n < 0 {
-					components.Text(c, "…").FontSize(12).Padding(8)
-				} else {
-					b := components.Button(c, fmt.Sprint(n+1), components.ButtonGhost).Label(tf("第 %d 页", n+1)).Size(34, 34)
-					if n == g.page {
-						b.Background(c.Theme().Surface).Border(1, c.Theme().Border)
+	ui.Row(c).FillWidth().Shrink(0).Justify(ui.Center).AlignItems(ui.Center).Gap(5).Children(func() {
+		ui.Row(c).AlignItems(ui.Center).Gap(5).Disabled(g.busy || g.thumbLoading).Children(func() {
+			if galleryIconButton(c, lucide.ChevronLeft(), tr("上一页")).Disabled(presentedPage == 0).Clicked() {
+				g.page--
+			}
+			for i, n := range galleryPageNumbers(presentedPage, pages) {
+				ui.Box(c).Key(i).Children(func() {
+					if n < 0 {
+						components.Text(c, "…").FontSize(12).Padding(8)
+					} else {
+						b := components.Button(c, "", components.ButtonGhost).Label(tf("第 %d 页", n+1)).Size(34, 34)
+						b.Children(func() {
+							if n == presentedPage && g.thumbLoading {
+								components.Spinner(c, components.SpinnerRing).Size(14, 14).Label(tr("正在加载预览…"))
+							} else {
+								components.Text(c, fmt.Sprint(n+1)).SingleLine()
+							}
+						})
+						if n == presentedPage {
+							b.Background(c.Theme().Surface).Border(1, c.Theme().Border)
+						}
+						if b.Clicked() {
+							g.page = n
+						}
 					}
-					if b.Clicked() {
-						g.page = n
-					}
+				})
+			}
+		})
+		if g.thumbLoading && len(g.thumbPage) > 0 && g.thumbPageFilter == g.filterKey {
+			if galleryIconButton(c, lucide.X(), tr("取消请求")).Clicked() {
+				if g.thumbCancel != nil {
+					g.thumbCancel()
+					g.thumbCancel = nil
 				}
-			})
-		}
-		if galleryIconButton(c, lucide.ChevronRight(), tr("下一页")).Disabled(g.page+1 >= pages).Clicked() {
+				g.page = g.thumbPageNumber
+				g.thumbBatch = ""
+				g.thumbRetry = ""
+				g.thumbLoading = false
+			}
+		} else if galleryIconButton(c, lucide.ChevronRight(), tr("下一页")).Disabled(g.busy || g.thumbLoading || presentedPage+1 >= pages).Clicked() {
 			g.page++
 		}
 	})
@@ -251,15 +272,16 @@ func (a *application) galleryPhoto(c *ui.Context, cell galleryCell, rows []stora
 						label = tr("图片加载失败")
 					}
 					components.Text(c, label).FontSize(12).TextColor(t.TextMuted)
-					if ok && thumb.err != nil && components.Button(c, tf("重试预览 %s", o.Key), components.ButtonOutline).Clicked() {
-						delete(g.thumbs, o.Key)
+					if ok && thumb.err != nil && components.Button(c, tf("重试预览 %s", o.Key), components.ButtonOutline).Disabled(g.thumbLoading).Clicked() {
+						// Keep the previous failure cached so cancellation can stay stopped.
+						g.thumbRetry = o.Key
 						g.thumbBatch = ""
 					}
 				})
 			}
 			if hover || selected {
 				ui.Box(c).Absolute().Left(0).Top(0).Right(0).Height(min(float32(60), cell.h)).Gradient(ui.Hex("#000000").Alpha(.36), ui.Color{}, 180)
-				ui.Box(c).Absolute().Top(8).Left(8).Disabled(g.busy).Children(func() {
+				ui.Box(c).Absolute().Top(8).Left(8).Disabled(g.busy || g.thumbLoading).Children(func() {
 					check := galleryIconButton(c, galleryIcons.checked, tf("勾选 %s", o.Key)).Background(ui.Color{}).TextColor(ui.Hex("#ffffff"))
 					if selected {
 						check.TextColor(t.Accent).Background(t.Surface)
@@ -268,7 +290,7 @@ func (a *application) galleryPhoto(c *ui.Context, cell galleryCell, rows []stora
 						g.toggleSelection(o.Key, check.ClickModifiers()&ui.Shift != 0, rows)
 					}
 				})
-				ui.Row(c).Absolute().Top(8).Right(8).Gap(8).Children(func() {
+				ui.Row(c).Absolute().Top(8).Right(8).Gap(8).Disabled(g.thumbLoading).Children(func() {
 					if galleryIconButton(c, galleryIcons.copy, tf("复制链接 %s", o.Key)).Clicked() {
 						c.WriteClipboard(o.URL)
 						a.feedback(tr("已复制图片链接"), nil)
@@ -279,20 +301,22 @@ func (a *application) galleryPhoto(c *ui.Context, cell galleryCell, rows []stora
 						g.optionsKey = o.Key
 						g.infoOpen = false
 					}
-					if !g.previewOpen {
+					if !g.previewOpen && !g.thumbLoading {
 						a.galleryPhotoOptions(c, more, o, true)
 					}
 				})
 			}
 		})
-		if !g.busy {
+		if !g.busy && !g.thumbLoading {
 			if double {
 				g.openPhoto(o)
 			} else if clicked {
 				g.toggleSelection(o.Key, hit.ClickModifiers()&ui.Shift != 0, rows)
 			}
 		}
-		hit.ContextMenu(func(m *ui.Menu) { a.galleryContextMenu(c, m, o) })
+		if !g.thumbLoading {
+			hit.ContextMenu(func(m *ui.Menu) { a.galleryContextMenu(c, m, o) })
+		}
 	})
 }
 func (a *application) galleryContextMenu(c *ui.Context, m *ui.Menu, o storage.Object) {

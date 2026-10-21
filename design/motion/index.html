@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Picup · 页面切换设计</title><style>
+*{box-sizing:border-box}body{margin:0;padding:24px;background:#f7f7f8;color:#1c1c21;font:13px -apple-system,BlinkMacSystemFont,sans-serif}h1{font-size:21px;margin:0 0 12px}p{max-width:1040px;line-height:1.7;color:#63636b;margin:8px 0}nav{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0}a,button{color:#2676af;text-decoration:none;border:1px solid #dedee4;border-radius:6px;background:white;padding:7px 10px;font:inherit;cursor:pointer}a:hover,button:hover{background:#ececf2}.states{margin-bottom:20px}iframe{display:block;width:1040px;height:760px;border:1px solid #c9c9d1;border-radius:10px;background:#f4f4f6;box-shadow:0 8px 24px #0000000a}.spec{display:grid;grid-template-columns:repeat(3,minmax(180px,1fr));max-width:1040px;gap:12px;margin:18px 0}.spec>div{padding:12px 14px;border:1px solid #e3e3e8;border-radius:8px;background:#fff;line-height:1.7;color:#63636b}.spec strong{color:#1c1c21;font-weight:600}.small{font-size:11px}@media(max-width:800px){.spec{grid-template-columns:1fr}body{padding:16px}}
+</style></head>
+<body>
+<h1>统一页面与 Tab 切换</h1>
+<p>沿用当前应用外观。点击预览中的「上传」「图库」「指南」「设置」及设置分类，观察同一套同步交叉过渡。此处是交互设计稿。</p>
+<div class="spec"><div><strong>240 ms · EaseInOut</strong><br>新内容从透明、Y = 6 px 淡入并上移至原位；旧内容原位淡出。进出同时开始、同时结束。</div><div><strong>固定内容区域</strong><br>新旧内容在同一尺寸中叠放。主导航与窗口壳固定；设置子 Tab 切换保留标题、导航及页脚位置。</div><div><strong>连续切换与减少动态</strong><br>点击后立即更新选中项，仅最新内容可交互。旧内容立即退出焦点与操作；减少动态时立即替换内容。</div></div>
+<nav aria-label="预览尺寸"><button data-size="wide">1040 × 760</button><button data-size="narrow">760 × 620 · 收起侧栏</button><a href="transition.html" target="preview">交互预览</a><a href="transition.html?collapsed=1&amp;scope=settings" target="preview">设置子 Tab</a><a href="transition.html?dark=1&amp;collapsed=1" target="preview">深色</a><a href="transition.html?reduce=1&amp;collapsed=1" target="preview">减少动态</a><a href="transition.html?from=gallery" target="preview">图库分页</a><a href="transition.html?from=gallery&amp;gallery=loading" target="preview">图库加载中</a></nav>
+<nav class="states" aria-label="关键状态"><a href="transition.html?scope=main&amp;from=upload&amp;to=gallery&amp;phase=start" target="preview">主 Tab · 0 ms</a><a href="transition.html?scope=main&amp;from=upload&amp;to=gallery&amp;phase=middle" target="preview">主 Tab · 120 ms</a><a href="transition.html?scope=main&amp;from=upload&amp;to=gallery&amp;phase=end" target="preview">主 Tab · 240 ms</a><a href="transition.html?scope=settings&amp;from=general&amp;to=images&amp;phase=start&amp;collapsed=1" target="preview">设置 · 0 ms</a><a href="transition.html?scope=settings&amp;from=general&amp;to=images&amp;phase=middle&amp;collapsed=1" target="preview">设置 · 120 ms</a><a href="transition.html?scope=settings&amp;from=general&amp;to=images&amp;phase=end&amp;collapsed=1" target="preview">设置 · 240 ms</a></nav>
+<nav class="states" aria-label="图库翻页关键状态"><a href="transition.html?scope=gallery&amp;from=1&amp;to=2&amp;phase=start" target="preview">图库翻页 · 0 ms</a><a href="transition.html?scope=gallery&amp;from=1&amp;to=2&amp;phase=middle" target="preview">图库翻页 · 120 ms</a><a href="transition.html?scope=gallery&amp;from=1&amp;to=2&amp;phase=end" target="preview">图库翻页 · 240 ms</a></nav>
+<p class="small">图库分页演示：首次打开下一页模拟 850 ms 加载，期间保留当前图片与页码。当前页码按钮内显示 14 px 转圈，右侧下一页按钮在原尺寸内变为取消请求图标；其他翻页和旧页图片暂停操作。整批就绪后，图片区使用与 Tab 相同的 240 ms 淡入淡出和 6 px 上移动画。返回已访问页直接开始动画，取消加载则保持当前画面。工具栏、分页和图片区域高度保持不变；减少动态时立即替换。所有图片使用仓库本地素材。</p>
+<iframe name="preview" src="transition.html" title="Picup 统一切换动效预览"></iframe>
+<script>
+const preview = document.querySelector('iframe');
+document.querySelectorAll('[data-size]').forEach((button) => button.addEventListener('click', () => {
+  const narrow = button.dataset.size === 'narrow';
+  preview.style.width = narrow ? '760px' : '1040px';
+  preview.style.height = narrow ? '620px' : '760px';
+  const url = new URL(preview.src);
+  url.searchParams.set('collapsed', narrow ? '1' : '0');
+  preview.src = url.href;
+}));
+document.querySelectorAll('a[target=preview]').forEach((link) => link.addEventListener('click', (event) => {
+  event.preventDefault();
+  const url = new URL(link.href);
+  if (preview.style.width === '760px') url.searchParams.set('collapsed', '1');
+  preview.src = url.href;
+}));
+</script>
+</body></html>

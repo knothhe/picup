@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"github.com/knothhe/picup/internal/config"
 	"github.com/knothhe/picup/internal/storage"
@@ -535,6 +536,343 @@ func TestGalleryJustifiedImagesKeepProportions(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestGalleryThumbnailHistoryRetainsRecentPagesWithinLimit(t *testing.T) {
+	preview := storage.Object{Key: "preview.png"}
+	bitmap := ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, 4, 4)))
+	g := galleryState{preview: &preview, previewOpen: true, thumbs: map[string]galleryThumb{preview.Key: {bitmap: bitmap, width: 4, height: 4}}}
+	pages := make([][]storage.Object, 4)
+	for page := range pages {
+		for i := range galleryPageSize {
+			pages[page] = append(pages[page], storage.Object{Key: fmt.Sprintf("page-%d/photo-%02d.png", page, i)})
+		}
+	}
+	visit := func(page int, load bool) {
+		t.Helper()
+		g.thumbBatch = strings.Join(g.thumbnailKeys(pages[page]), "\x00")
+		thumbs := map[string]galleryThumb{}
+		if load {
+			for _, object := range pages[page] {
+				thumbs[object.Key] = galleryThumb{bitmap: bitmap, width: 300 + page, height: 200}
+			}
+		}
+		if !g.commitThumbnailPage(g.thumbBatch, pages[page], page, "", thumbs) {
+			t.Fatal("complete page was not committed", page)
+		}
+		if len(g.thumbs) > galleryThumbnailLimit {
+			t.Fatal("decoded thumbnail cache grew past its limit", len(g.thumbs))
+		}
+	}
+	visit(0, true)
+	visit(1, true)
+	visit(2, true)
+	// A return visit promotes the original bitmaps and dimensions without IO.
+	visit(0, false)
+	visit(3, true)
+	for _, page := range []int{0, 2, 3} {
+		for _, object := range pages[page] {
+			thumb := g.thumbs[object.Key]
+			if thumb.bitmap != bitmap || thumb.width != 300+page || thumb.height != 200 {
+				t.Fatal("recent page lost its decoded image or original dimensions", object.Key)
+			}
+		}
+	}
+	for _, object := range pages[1] {
+		if _, found := g.thumbs[object.Key]; found {
+			t.Fatal("least recently viewed page was not evicted", object.Key)
+		}
+	}
+	if len(g.thumbs) != galleryThumbnailLimit || g.thumbs[preview.Key].bitmap != bitmap {
+		t.Fatal("page eviction lost the open preview", len(g.thumbs))
+	}
+}
+
+func TestGalleryThumbnailPagePublishesOnlyCompleteCurrentBatch(t *testing.T) {
+	first := []storage.Object{{Key: "first.png"}}
+	next := []storage.Object{{Key: "portrait.png"}, {Key: "landscape.png"}}
+	g := galleryState{thumbBatch: "first", filterKey: "filter"}
+	if !g.commitThumbnailPage("first", first, 0, "filter", map[string]galleryThumb{"first.png": {width: 300, height: 200}}) {
+		t.Fatal("first page was not committed")
+	}
+	before, height := g.justified(first, 796)
+	g.page, g.thumbBatch, g.thumbLoading = 1, "next", true
+	partial := map[string]galleryThumb{"portrait.png": {width: 200, height: 400}}
+	if g.commitThumbnailPage("next", next, 1, "filter", partial) || !g.thumbLoading {
+		t.Fatal("partial page became visible")
+	}
+	if _, found := g.thumbs["portrait.png"]; found {
+		t.Fatal("partial result changed the visible layout before the batch completed")
+	}
+	shown, page := g.presentedThumbnailPage(next)
+	after, afterHeight := g.justified(shown, 796)
+	if page != 0 || !reflect.DeepEqual(shown, first) || !reflect.DeepEqual(before, after) || height != afterHeight {
+		t.Fatal("pending page replaced the previous page or changed its layout", shown, page)
+	}
+	partial["landscape.png"] = galleryThumb{err: errors.New("download failed")}
+	if g.commitThumbnailPage("stale", next, 1, "filter", partial) {
+		t.Fatal("stale page batch was accepted")
+	}
+	if !g.commitThumbnailPage("next", next, 1, "filter", partial) || g.thumbLoading {
+		t.Fatal("finished page, including a failed image, remained loading")
+	}
+	shown, page = g.presentedThumbnailPage(next)
+	if page != 1 || !reflect.DeepEqual(shown, next) || g.thumbs["portrait.png"].width != 200 {
+		t.Fatal("completed page was not presented with its actual dimensions")
+	}
+	g.thumbBatch, g.thumbLoading = "cancelled", true
+	ctx, cancel := context.WithCancel(context.Background())
+	g.thumbCancel = cancel
+	g.clearThumbnailPage()
+	if ctx.Err() == nil || g.thumbLoading || g.commitThumbnailPage("cancelled", next, 1, "filter", partial) {
+		t.Fatal("cancelled request could restore a stale page or leave loading active")
+	}
+	// New filters must never display a retained page from the previous results.
+	g.thumbPage, g.thumbPageFilter, g.thumbLoading = first, "other-filter", true
+	shown, page = g.presentedThumbnailPage(next)
+	if page != 1 || !reflect.DeepEqual(shown, next) {
+		t.Fatal("new filter displayed unrelated photos")
+	}
+}
+
+func TestGalleryThumbnailFilterWithSameResultsRefreshesPageIdentity(t *testing.T) {
+	a := &application{win: &mygo.Window{}, gallery: galleryFixture()}
+	g := &a.gallery
+	// Fully cached pages need no storage reads or native event loop.
+	g.client = &storage.Client{}
+	g.filterKey = g.viewFilterKey()
+	rows, _ := g.filtered(time.Now())
+	first, _ := g.pageRows(rows)
+	g.thumbs = make(map[string]galleryThumb, len(first))
+	for _, object := range first {
+		g.thumbs[object.Key] = galleryThumb{width: 300, height: 200}
+	}
+	a.galleryThumbs(first)
+	previousBatch := g.thumbBatch
+	g.prefix = "images/"
+	g.filterKey = g.viewFilterKey()
+	filtered, _ := g.filtered(time.Now())
+	page, _ := g.pageRows(filtered)
+	if !reflect.DeepEqual(first, page) {
+		t.Fatal("test filter unexpectedly changed the visible results")
+	}
+	a.galleryThumbs(page)
+	if g.thumbBatch == previousBatch || g.thumbPageFilter != g.filterKey {
+		t.Fatal("same-result filter change kept the previous batch identity")
+	}
+	// The next page is cold. Its wait state must retain the newly identified
+	// first page, which also keeps cancellation available in the view.
+	g.page, g.thumbLoading = 1, true
+	next, _ := g.pageRows(filtered)
+	shown, number := g.presentedThumbnailPage(next)
+	if number != 0 || !reflect.DeepEqual(shown, first) || g.thumbPageFilter != g.filterKey {
+		t.Fatal("cold page after a same-result filter discarded the retained page")
+	}
+}
+
+func TestGalleryThumbnailPageLoadingLocksOldPhotosAndCanCancel(t *testing.T) {
+	a := &application{config: config.Default(), tab: 4, gallery: galleryFixture()}
+	g := &a.gallery
+	g.filterKey = g.viewFilterKey()
+	rows, _ := g.filtered(time.Now())
+	first, _ := g.pageRows(rows)
+	thumbs := map[string]galleryThumb{}
+	bitmap := ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, 4, 4)))
+	for _, object := range first {
+		thumbs[object.Key] = galleryThumb{bitmap: bitmap, width: 300, height: 200}
+	}
+	failedKey := first[1].Key
+	thumbs[failedKey] = galleryThumb{err: errors.New("preview failed")}
+	g.thumbBatch = "first"
+	if !g.commitThumbnailPage("first", first, 0, g.filterKey, thumbs) {
+		t.Fatal("first page was not committed")
+	}
+	g.page, g.thumbBatch, g.thumbLoading = 1, "pending", true
+	ctx, cancel := context.WithCancel(context.Background())
+	g.thumbCancel = cancel
+	defer cancel()
+	tt := ui.NewTester(nativeTestView(a), 1040, 760)
+	tt.SetPreferences(ui.Preferences{ReduceMotion: true, TextScale: 1})
+	tt.Frame()
+	oldPhoto := "选择 " + first[0].Key
+	if _, found := tt.Find(oldPhoto); !found {
+		t.Fatal("old page disappeared while the next page was loading")
+	}
+	if err := tt.Click(oldPhoto); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if len(g.selected) != 0 {
+		t.Fatal("pending page allowed actions on the previous photos")
+	}
+	if err := tt.Click("第 1 页"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if g.page != 1 {
+		t.Fatal("pending page allowed another pagination action")
+	}
+	if err := tt.Click("重试预览 " + failedKey); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if _, retained := g.thumbs[failedKey]; !retained || g.thumbBatch != "pending" {
+		t.Fatal("pending page allowed retrying a photo on the previous page")
+	}
+	if err := tt.Click("取消请求"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if ctx.Err() == nil || g.thumbLoading || g.page != 0 {
+		t.Fatal("cancel did not return to the displayed page")
+	}
+}
+
+func TestGalleryThumbnailRetryCanStayCancelled(t *testing.T) {
+	a := &application{config: config.Default(), tab: 4, gallery: galleryFixture()}
+	g := &a.gallery
+	defer g.stop()
+	started, stopped := make(chan struct{}, 2), make(chan struct{}, 2)
+	g.client = guiCloudClient(t, func(w http.ResponseWriter, r *http.Request) {
+		started <- struct{}{}
+		<-r.Context().Done()
+		stopped <- struct{}{}
+	})
+	g.filterKey = g.viewFilterKey()
+	rows, _ := g.filtered(time.Now())
+	first, _ := g.pageRows(rows)
+	bitmap := ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, 4, 4)))
+	g.thumbs = make(map[string]galleryThumb, len(first))
+	for _, object := range first {
+		g.thumbs[object.Key] = galleryThumb{bitmap: bitmap, width: 300, height: 200}
+	}
+	key, failed := first[0].Key, errors.New("preview failed")
+	g.thumbs[key] = galleryThumb{err: failed}
+	g.thumbBatch = "ready"
+	if !g.commitThumbnailPage("ready", first, 0, g.filterKey, nil) {
+		t.Fatal("first page was not committed")
+	}
+	tt := ui.NewTester(nativeTestView(a), 1040, 760)
+	tt.SetPreferences(ui.Preferences{ReduceMotion: true, TextScale: 1})
+	if err := tt.Click("重试预览 " + key); err != nil {
+		t.Fatal(err)
+	}
+	a.win = &mygo.Window{}
+	tt.Frame()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("thumbnail retry did not start")
+	}
+	if err := tt.Click("取消请求"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancellation did not stop the thumbnail request")
+	}
+	if g.thumbLoading || g.thumbs[key].err != failed || g.page != 0 {
+		t.Fatal("cancelled retry did not preserve the failed image and stop loading")
+	}
+	tt.Advance(300 * time.Millisecond)
+	tt.Frame()
+	select {
+	case <-started:
+		t.Fatal("cancelled thumbnail retry started another request")
+	default:
+	}
+	if err := tt.Click("重试预览 " + key); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancelled thumbnail could not be retried again")
+	}
+}
+
+func TestGalleryThumbnailRetryPublishesFreshResult(t *testing.T) {
+	object := storage.Object{Key: "failed.png"}
+	failed := galleryThumb{err: errors.New("preview failed")}
+	g := galleryState{thumbs: map[string]galleryThumb{object.Key: failed}, thumbBatch: "retry", thumbRetry: object.Key, thumbLoading: true}
+	if g.commitThumbnailPage("retry", []storage.Object{object}, 0, "", nil) || !g.thumbLoading {
+		t.Fatal("retry reused its cached failure before a fresh result arrived")
+	}
+	bitmap := ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, 4, 4)))
+	result := map[string]galleryThumb{object.Key: {bitmap: bitmap, width: 300, height: 200}}
+	if !g.commitThumbnailPage("retry", []storage.Object{object}, 0, "", result) || g.thumbLoading || g.thumbRetry != "" || g.thumbs[object.Key].bitmap != bitmap {
+		t.Fatal("fresh retry result did not replace the failure and finish loading")
+	}
+}
+
+func TestGalleryThumbnailLoadingFooterKeepsBounds(t *testing.T) {
+	for _, collapsed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("collapsed=%t", collapsed), func(t *testing.T) {
+			a := &application{config: config.Default(), tab: 4, sidebarCollapsed: collapsed, gallery: galleryFixture()}
+			g := &a.gallery
+			g.objects = nil
+			for i := range 9 * galleryPageSize {
+				g.objects = append(g.objects, storage.Object{Key: fmt.Sprintf("photo-%03d.png", i)})
+			}
+			g.filterKey = g.viewFilterKey()
+			g.page = 4
+			rows, _ := g.filtered(time.Now())
+			shown, _ := g.pageRows(rows)
+			thumbs := map[string]galleryThumb{}
+			img := image.NewRGBA(image.Rect(0, 0, 4, 4))
+			for y := range 4 {
+				for x := range 4 {
+					img.SetRGBA(x, y, color.RGBA{R: 40 + uint8(x)*35, G: 130 + uint8(y)*20, B: 180, A: 255})
+				}
+			}
+			bitmap := ui.NewBitmap(img)
+			for _, object := range shown {
+				thumbs[object.Key] = galleryThumb{bitmap: bitmap, width: 300, height: 200}
+			}
+			g.thumbBatch = "ready"
+			if !g.commitThumbnailPage("ready", shown, 4, g.filterKey, thumbs) {
+				t.Fatal("visible page was not committed")
+			}
+			tt := ui.NewTester(nativeTestView(a), 760, 620)
+			tt.SetPreferences(ui.Preferences{ReduceMotion: true, TextScale: 1})
+			tt.Frame()
+			photoBefore, _ := tt.Find("选择 " + shown[0].Key)
+			photoX, photoY := int(photoBefore.X+photoBefore.W/2), int(photoBefore.Y+photoBefore.H/2)
+			colorBefore := color.RGBAModel.Convert(tt.Image().At(photoX, photoY))
+			pageBefore, _ := tt.Find("第 5 页")
+			nextBefore, _ := tt.Find("下一页")
+			g.page, g.thumbBatch, g.thumbLoading = 5, "pending", true
+			tt.Frame()
+			for _, label := range []string{"上一页", "第 1 页", "第 4 页", "第 5 页", "第 6 页", "第 9 页", "正在加载预览…", "取消请求"} {
+				assertGalleryVisible(t, tt, label, 760, 620)
+			}
+			photoAfter, _ := tt.Find("选择 " + shown[0].Key)
+			pageAfter, _ := tt.Find("第 5 页")
+			cancelAfter, _ := tt.Find("取消请求")
+			if photoBefore != photoAfter || pageBefore != pageAfter || nextBefore != cancelAfter {
+				t.Fatal("loading changed the photo grid or pagination layout", photoBefore, photoAfter, pageBefore, pageAfter, nextBefore, cancelAfter)
+			}
+			if colorAfter := color.RGBAModel.Convert(tt.Image().At(photoX, photoY)); colorAfter != colorBefore {
+				t.Fatal("loading changed the brightness of the retained photos", colorBefore, colorAfter)
+			}
+			if dir := os.Getenv("PICUP_GALLERY_LOADING_SCREENSHOTS"); dir != "" {
+				if err := os.MkdirAll(dir, 0755); err != nil {
+					t.Fatal(err)
+				}
+				file, err := os.Create(filepath.Join(dir, fmt.Sprintf("loading-collapsed-%t.png", collapsed)))
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer file.Close()
+				if err := png.Encode(file, tt.Image()); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
 	}
 }
 
