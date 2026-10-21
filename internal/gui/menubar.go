@@ -6,6 +6,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/knothhe/picup/assets"
 	"github.com/knothhe/picup/internal/config"
+	"github.com/knothhe/picup/internal/traydrop"
 )
 
 func (a *application) showWindow() {
@@ -154,6 +155,14 @@ func (a *application) setupMenus() {
 		a.tray = tray
 		tray.OnClick(a.trayClicked)
 		tray.OnRightClick(a.toggleQuickUpload)
+		cleanup, dropErr := traydrop.Register(tray, tr("Picup · 快捷上传图片"), func() bool {
+			return !a.quitting && !a.busy
+		}, a.quickUploadFiles)
+		if dropErr != nil {
+			a.feedback("启用菜单栏拖拽上传失败", dropErr)
+		} else {
+			mygo.App.OnWillQuit(func(*mygo.QuitEvent) { cleanup() })
+		}
 	}
 	a.updateMenus()
 }

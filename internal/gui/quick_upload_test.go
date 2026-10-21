@@ -3,6 +3,7 @@ package gui
 import (
 	"fmt"
 	"image/png"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -35,7 +36,7 @@ func quickUploadTester(a *application, dark bool) *ui.Tester {
 	tt := ui.NewTester(func(c *ui.Context) {
 		c.SetTheme(palette(c))
 		a.quickUploadView(c)
-	}, 360, 312)
+	}, quickUploadWidth, quickUploadHeight)
 	tt.SetDark(dark)
 	tt.SetPreferences(ui.Preferences{ReduceMotion: true, TextScale: 1})
 	tt.Frame()
@@ -111,14 +112,23 @@ func TestQuickUploadViewContainsUploadAndOpenActions(t *testing.T) {
 					a.busy, a.uploading = busy, busy
 					a.uploadBatchDone, a.uploadBatchTotal = 1, 3
 					tt := quickUploadTester(a, dark)
-					for _, source := range []string{"快捷上传", "选择图片…", "上传剪贴板图片", "打开 Picup", "设置"} {
+					sources := []string{"快捷上传", "上传剪贴板图片", "打开 Picup", "设置"}
+					if busy {
+						sources = append(sources, "正在处理与上传")
+						if _, ok := tt.Find(tr("选择图片…")); ok {
+							t.Fatal("busy quick panel still offers the choose-images action")
+						}
+					} else {
+						sources = append(sources, "选择图片…")
+					}
+					for _, source := range sources {
 						label := tr(source)
 						r, ok := tt.Find(label)
-						if !ok || r.W <= 0 || r.H <= 0 || r.X < 0 || r.Y < 0 || r.X+r.W > 361 || r.Y+r.H > 313 {
+						if !ok || r.W <= 0 || r.H <= 0 || r.X < 0 || r.Y < 0 || r.X+r.W > 361 || r.Y+r.H > 269 {
 							t.Fatalf("quick action %q is unavailable or outside the flyout: %v found=%t", label, r, ok)
 						}
 						if source == "打开 Picup" || source == "设置" {
-							if r.Y+r.H > 46 || r.X < 180 || r.W > 32 {
+							if r.Y+r.H > 48 || r.X < 180 || r.W > 32 {
 								t.Fatalf("application action %q is not a compact icon in the upper right: %v", label, r)
 							}
 						}
@@ -141,6 +151,110 @@ func TestQuickUploadViewContainsUploadAndOpenActions(t *testing.T) {
 	}
 }
 
+func TestQuickUploadStatesKeepCardAndClipboardAligned(t *testing.T) {
+	previous := uiLanguage()
+	t.Cleanup(func() { SetUILanguage(previous) })
+	if quickUploadWidth != 360 || quickUploadHeight != 268 {
+		t.Fatalf("quick panel no longer uses the approved 360 × 268 layout: %d × %d", quickUploadWidth, quickUploadHeight)
+	}
+	states := []struct {
+		name, cardLabel string
+		prepare         func(*application)
+	}{
+		{"idle", "选择图片…", func(*application) {}},
+		{"success", "选择图片…", func(a *application) {
+			a.quickUpload.message, a.quickUpload.copied = tf("已上传 %d 张图片", 2), true
+		}},
+		{"error", "打开 Picup 查看详情并重试", func(a *application) {
+			a.quickUpload.message, a.quickUpload.messageError = "AccessDenied: write permission denied", true
+		}},
+		{"unconfigured", "打开存储设置", func(a *application) {
+			a.config = config.Default()
+			a.config.EnsureProfiles()
+			saved := a.config.Clone()
+			a.savedConfig = &saved
+		}},
+		{"uploading", "正在处理与上传", func(a *application) {
+			a.busy, a.uploading = true, true
+			a.uploadBatchDone, a.uploadBatchTotal = 1, 3
+		}},
+		{"preparing", "正在准备图片…", func(a *application) { a.busy = true }},
+	}
+	closeTo := func(a, b float32) bool { return math.Abs(float64(a-b)) <= 1 }
+	for _, language := range []string{"zh-CN", "en"} {
+		for _, dark := range []bool{false, true} {
+			for _, state := range states {
+				t.Run(fmt.Sprintf("%s/dark=%t/%s", language, dark, state.name), func(t *testing.T) {
+					SetUILanguage(language)
+					a := quickUploadFixture(t)
+					state.prepare(a)
+					tt := quickUploadTester(a, dark)
+					paste, ok := tt.Find(tr("上传剪贴板图片"))
+					if !ok || !closeTo(paste.X, 16) || !closeTo(paste.Y, 216) || !closeTo(paste.W, 328) || !closeTo(paste.H, 36) {
+						t.Fatalf("clipboard action moved across quick-panel states: %v found=%t", paste, ok)
+					}
+					card, ok := tt.Find(tr(state.cardLabel))
+					if !ok {
+						t.Fatal("quick-panel state has no card content or action", state.cardLabel, tt.Texts())
+					}
+					if a.busy {
+						if card.Y < 80 || card.Y+card.H > 208 {
+							t.Fatalf("busy status escaped the main card: %v", card)
+						}
+						return
+					}
+					// The labeled action fills the card inside its one-point border.
+					if !closeTo(card.X, paste.X+1) || !closeTo(card.Y, 81) || !closeTo(card.W, paste.W-2) || !closeTo(card.H, 126) {
+						t.Fatalf("main card and clipboard action lost their shared boundaries: card=%v paste=%v", card, paste)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestQuickUploadStateCardsOpenActionableMainPages(t *testing.T) {
+	previous := uiLanguage()
+	t.Cleanup(func() { SetUILanguage(previous) })
+	SetUILanguage("zh-CN")
+	for _, unconfigured := range []bool{false, true} {
+		t.Run(fmt.Sprintf("unconfigured=%t", unconfigured), func(t *testing.T) {
+			a := quickUploadFixture(t)
+			pending := &job{id: 1, name: "waiting.png", status: "等待上传"}
+			failed := &job{id: 2, name: "failed.png", status: "上传失败", detail: "AccessDenied"}
+			a.jobs, a.quickUpload.jobs = []*job{pending, failed}, []*job{failed}
+			a.tab, a.settingsTab, a.quickUpload.visible = 4, 3, true
+			a.quickUpload.message, a.quickUpload.messageError = "AccessDenied", true
+			label, wantTab := "打开 Picup 查看详情并重试", 0
+			if unconfigured {
+				a.config = config.Default()
+				a.config.EnsureProfiles()
+				saved := a.config.Clone()
+				a.savedConfig = &saved
+				label, wantTab = "打开存储设置", 2
+			}
+			tt := quickUploadTester(a, false)
+			if unconfigured {
+				if err := tt.Click(tr("上传剪贴板图片")); err != nil {
+					t.Fatal(err)
+				}
+				if a.tab != 4 || !a.quickUpload.visible {
+					t.Fatal("disabled clipboard action navigated away from the unconfigured panel")
+				}
+			}
+			if err := tt.Click(tr(label)); err != nil {
+				t.Fatal(err)
+			}
+			if a.tab != wantTab || a.quickUpload.visible || (unconfigured && a.settingsTab != 0) {
+				t.Fatalf("state card did not open its actionable page: tab=%d settings=%d visible=%t", a.tab, a.settingsTab, a.quickUpload.visible)
+			}
+			if !slices.Equal(a.jobs, []*job{pending, failed}) || !slices.Equal(a.quickUpload.jobs, []*job{failed}) || a.busy || a.uploading || a.quickUpload.message != "AccessDenied" || !a.quickUpload.messageError {
+				t.Fatal("opening the card destination changed queued work or discarded the last result")
+			}
+		})
+	}
+}
+
 func TestQuickUploadBusyActionsKeepQueuedWork(t *testing.T) {
 	previous := uiLanguage()
 	t.Cleanup(func() { SetUILanguage(previous) })
@@ -151,7 +265,13 @@ func TestQuickUploadBusyActionsKeepQueuedWork(t *testing.T) {
 	a.tab = 4
 	a.quickUpload.message = "previous result"
 	tt := quickUploadTester(a, false)
-	for _, label := range []string{"选择图片…", "上传剪贴板图片", "打开 Picup"} {
+	if _, ok := tt.Find(tr("选择图片…")); ok {
+		t.Fatal("busy quick panel contains a choose-images action")
+	}
+	if tt.HasText("previous result") {
+		t.Fatal("busy quick panel still displays the previous batch result")
+	}
+	for _, label := range []string{"上传剪贴板图片", "打开 Picup"} {
 		if err := tt.Click(tr(label)); err != nil {
 			t.Fatal(err)
 		}
@@ -239,7 +359,7 @@ func TestQuickUploadShortcutLabelsFollowCustomization(t *testing.T) {
 						t.Fatal("header tooltip includes an unwanted shortcut", text)
 					}
 				}
-				tt.Move(359, 311)
+				tt.Move(359, 267)
 				tt.Advance(300 * time.Millisecond)
 			}
 		})
@@ -358,8 +478,11 @@ func TestRenderQuickUploadStates(t *testing.T) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	for _, state := range []string{"idle", "uploading", "success", "error", "unconfigured", "dark", "english"} {
+	for _, state := range []string{"idle", "uploading", "preparing", "success", "error", "unconfigured", "dark", "english", "english-idle", "long-shortcuts"} {
 		SetUILanguage("zh-CN")
+		if strings.HasPrefix(state, "english") || state == "long-shortcuts" {
+			SetUILanguage("en")
+		}
 		a := quickUploadFixture(t)
 		first := &job{id: 1, name: "morning.jpg", status: "已上传", result: &service.Result{URL: "https://img.example.com/morning.jpg"}}
 		second := &job{id: 2, name: "coastal-walk.png", status: "正在处理与上传"}
@@ -368,13 +491,15 @@ func TestRenderQuickUploadStates(t *testing.T) {
 			a.busy, a.uploading, a.quickUpload.active = true, true, true
 			a.uploadBatchDone, a.uploadBatchTotal = 1, 3
 			a.quickUpload.jobs = []*job{first, second, {id: 3, name: "lake.webp", status: "等待上传"}}
+		case "preparing":
+			a.busy, a.quickUpload.active = true, true
+			a.quickUpload.message, a.quickUpload.messageError = "Previous result must stay hidden while preparing", true
 		case "success":
 			second.status, second.result = "已上传", &service.Result{URL: "https://img.example.com/coastal-walk.png"}
 			a.quickUpload.jobs, a.quickUpload.copied = []*job{first, second}, true
 			a.quickUpload.message = tf("已上传 %d 张图片", 2)
 		case "error", "english":
 			if state == "english" {
-				SetUILanguage("en")
 				a.config.Profiles[0].Name = "Photography archive and editorial publishing"
 				a.config.Bucket = "photography-editorial-production-images"
 				saved := a.config.Clone()
@@ -390,10 +515,15 @@ func TestRenderQuickUploadStates(t *testing.T) {
 			a.config.EnsureProfiles()
 			saved := a.config.Clone()
 			a.savedConfig = &saved
+		case "long-shortcuts":
+			a.config.Shortcuts = map[string]string{"quick-upload": "CmdOrCtrl+Ctrl+Alt+Shift+F12", "quick-paste": "CmdOrCtrl+Ctrl+Alt+Shift+F11"}
 		}
 		a.jobs = a.quickUpload.jobs
 		tt := quickUploadTester(a, state == "dark")
 		tt.Advance(400 * time.Millisecond)
+		if image := tt.Image(); image.Bounds().Dx() != 360 || image.Bounds().Dy() != 268 {
+			t.Fatalf("%s preview has unexpected dimensions: %v", state, image.Bounds())
+		}
 		f, err := os.Create(filepath.Join(dir, state+".png"))
 		if err != nil {
 			t.Fatal(err)

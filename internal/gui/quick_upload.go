@@ -19,7 +19,7 @@ type quickUploadState struct {
 	messageError            bool
 }
 
-const quickUploadWidth, quickUploadHeight = 360, 312
+const quickUploadWidth, quickUploadHeight = 360, 268
 
 func (a *application) invalidateWindows() {
 	if a.win != nil {
@@ -176,71 +176,182 @@ func (a *application) quickUploadView(c *ui.Context) {
 		root.Border(1, t.Border)
 	}
 	root.Children(func() {
-		ui.Row(c).FillWidth().Height(46).Shrink(0).Padding(0, 12).Gap(6).AlignItems(ui.Center).Children(func() {
-			ui.Image(c, brandIcon).Size(19, 19)
-			components.Text(c, "Picup").FontSize(13).Bold()
+		ui.Row(c).FillWidth().Height(48).Shrink(0).Padding(0, 16).Gap(7).AlignItems(ui.Center).Children(func() {
+			ui.Image(c, brandIcon).Size(20, 20).Shrink(0)
+			components.Text(c, "Picup").FontSize(13).FontWeight(650)
 			components.Text(c, tr("快捷上传")).SingleLine().Ellipsis("…").MinWidth(0).FontSize(11).TextColor(t.TextMuted)
 			ui.Spacer(c)
-			a.quickHeaderAction(c, "打开 Picup", lucide.AppWindow(), a.openFromQuickUpload)
-			a.quickHeaderAction(c, "设置", lucide.Settings(), func() { a.openSettings(0); a.showWindow() })
+			ui.Row(c).Gap(4).Shrink(0).Children(func() {
+				a.quickHeaderAction(c, "打开 Picup", lucide.AppWindow(), a.openFromQuickUpload)
+				a.quickHeaderAction(c, "设置", lucide.Settings(), a.openQuickUploadSettings)
+			})
 		})
-		ui.Column(c).FillWidth().Height(266).Shrink(0).Padding(12).Gap(8).Children(func() {
+		ui.Column(c).FillWidth().Height(220).Shrink(0).Padding(0, 16, 16, 16).Gap(8).Children(func() {
 			cfg := a.uploadDisplayConfig()
-			disabled := a.busy || cfg.ValidateStorage() != nil
-			ui.Row(c).FillWidth().Height(22).Shrink(0).Gap(6).AlignItems(ui.Center).Children(func() {
-				components.Icon(c, lucide.Cloud()).Size(13, 13).Shrink(0).TextColor(t.TextMuted)
+			unconfigured := cfg.ValidateStorage() != nil
+			disabled := a.busy || unconfigured
+			ui.Row(c).FillWidth().Height(24).Shrink(0).Gap(7).AlignItems(ui.Center).Children(func() {
+				components.Icon(c, lucide.Cloud()).Size(14, 14).Shrink(0).TextColor(t.TextMuted)
 				name := profileName(cfg.ActiveProfile, cfg.CurrentProfileName())
-				components.Text(c, name).MinWidth(0).MaxWidth(142).Shrink(1).SingleLine().Ellipsis("…").FontSize(10.5).TextColor(t.TextMuted).Tooltip(name)
-				components.Text(c, "/").FontSize(10).TextColor(t.TextMuted)
+				components.Text(c, name).MinWidth(0).MaxWidth(141).Shrink(1).SingleLine().Ellipsis("…").FontSize(10.5).TextColor(t.TextMuted).Tooltip(name)
+				components.Text(c, "/").FontSize(10).TextColor(t.TextMuted.Alpha(.5))
 				destination := tr("尚未配置存储")
 				if cfg.Bucket != "" {
 					destination = strings.ToUpper(cfg.Provider) + " · " + cfg.Bucket
 				}
 				components.Text(c, destination).Grow(1).MinWidth(0).SingleLine().Ellipsis("…").FontSize(10.5).TextColor(t.TextMuted).Tooltip(destination)
 			})
-			zone := ui.Box(c).Key("quick-drop").FillWidth().Height(96).Shrink(0).Radius(10).Border(1, t.Border.Mix(t.TextMuted, .25)).BorderStyle(ui.BorderDashed).Background(t.Surface).Disabled(disabled)
-			dragging := zone.FileDragOver()
-			if paths := zone.DroppedFiles(); len(paths) > 0 {
-				a.quickUploadFiles(paths)
-			}
-			zone.Children(func() {
-				button := ui.ButtonBase(c).Label(tr("选择图片…")).Fill().Radius(10).Background(ui.Color{})
-				if button.Hovered() || button.FocusVisible() || dragging {
-					zone.BorderColor(t.Accent).Background(t.Surface.Mix(t.Accent, .035))
-				}
-				button.Children(func() {
-					ui.Column(c).Fill().AlignItems(ui.Center).Justify(ui.Center).Gap(5).Children(func() {
-						components.Icon(c, lucide.ImageUp()).Size(22, 22).TextColor(t.Accent)
-						label := tr("拖入图片，即刻上传")
-						if dragging {
-							label = tr("松开即可上传图片")
-						}
-						components.Text(c, label).FontSize(13).Bold()
-						ui.Row(c).Gap(7).AlignItems(ui.Center).Children(func() {
-							components.Text(c, tr("选择图片…")).FontSize(11).TextColor(t.Accent).Background(t.Background).Border(1, t.Border).Radius(6).Padding(3, 9)
-							a.quickShortcutLabel(c, "quick-upload")
-						})
-					})
-				})
-				if button.Clicked() {
-					a.chooseFiles(true)
-				}
-			})
-			paste := ui.ButtonBase(c).Label(tr("上传剪贴板图片")).FillWidth().Height(30).Shrink(0).Radius(6).Background(ui.Color{}).Disabled(disabled).AlignItems(ui.Center).Justify(ui.Center).Gap(7)
-			if paste.Hovered() || paste.FocusVisible() {
+			a.quickUploadCard(c, unconfigured)
+			paste := ui.ButtonBase(c).Label(tr("上传剪贴板图片")).FillWidth().Height(36).Shrink(0).Radius(8).Border(1, t.Border).Padding(0, 11).Background(ui.Color{}).Disabled(disabled).AlignItems(ui.Center).Gap(8)
+			if !disabled && (paste.Hovered() || paste.FocusVisible()) {
 				paste.Background(t.SurfaceHover)
 			}
 			paste.Children(func() {
-				components.Icon(c, lucide.Clipboard()).Size(13, 13).TextColor(t.Accent)
-				components.Text(c, tr("上传剪贴板图片")).FontSize(11).TextColor(t.Accent)
-				a.quickShortcutLabel(c, "quick-paste")
+				components.Icon(c, lucide.Clipboard()).Size(14, 14).Shrink(0).TextColor(t.Accent)
+				components.Text(c, tr("上传剪贴板图片")).Grow(1).MinWidth(0).SingleLine().Ellipsis("…").FontSize(11)
+				a.quickShortcutLabel(c, "quick-paste", t.TextMuted)
 			})
 			if paste.Clicked() {
 				a.pasteImage(true)
 			}
-			a.quickUploadStatusView(c)
 		})
 	})
+}
+
+func (a *application) quickUploadCard(c *ui.Context, unconfigured bool) {
+	t := c.Theme()
+	message, detail, failed := a.quickUploadStatus()
+	hasStatus := message != "" || detail != ""
+	zone := ui.Box(c).Key("quick-drop").FillWidth().Height(128).Shrink(0).Radius(10).Border(1, t.Border).Background(t.Surface)
+	if !hasStatus && !unconfigured {
+		zone.BorderColor(t.Border.Mix(t.TextMuted, .25)).BorderStyle(ui.BorderDashed)
+	}
+	if !a.busy && (hasStatus || unconfigured) {
+		// Buttons are accessibility leaves in MyGo. Keep the live status on
+		// their parent so assistive technology can read the result and action.
+		zone.Role(ui.RoleStatus)
+	}
+	// A busy card is a status, rather than a disabled button that still invites
+	// file selection. Configuring storage remains an explicit available action.
+	dragging := !a.busy && !unconfigured && zone.FileDragOver()
+	if paths := zone.DroppedFiles(); len(paths) > 0 {
+		a.quickUploadFiles(paths)
+	}
+	zone.Children(func() {
+		if a.busy {
+			ui.Column(c).Role(ui.RoleStatus).Fill().Padding(13, 16).AlignItems(ui.Center).Justify(ui.Center).Gap(9).Children(func() {
+				components.Spinner(c, components.SpinnerRing).Size(24, 24).Shrink(0).TextColor(t.Accent)
+				components.Text(c, message).FillWidth().TextAlign(ui.Center).MaxLines(2).FontSize(13).FontWeight(600).FixedLineHeight(18)
+				components.Text(c, detail).FillWidth().TextAlign(ui.Center).MaxLines(2).FontSize(10.5).FixedLineHeight(15).TextColor(t.TextMuted)
+			})
+			return
+		}
+		label, run := tr("选择图片…"), func() { a.chooseFiles(true) }
+		if unconfigured {
+			label, run = tr("打开存储设置"), a.openQuickUploadSettings
+		} else if failed {
+			label, run = tr("打开 Picup 查看详情并重试"), a.openQuickUploadResults
+		}
+		button := ui.ButtonBase(c).Key("quick-card-action").Label(label).Fill().Radius(10).Background(ui.Color{})
+		if button.Hovered() || button.FocusVisible() || dragging {
+			zone.BorderColor(t.Accent).Background(t.Surface.Mix(t.Accent, .035))
+		}
+		if dragging {
+			zone.Border(1.5, t.Accent).BorderStyle(ui.BorderSolid).Background(t.Surface.Mix(t.Accent, .08))
+		}
+		button.Children(func() {
+			content := ui.Column(c).Fill().Padding(13, 16).AlignItems(ui.Center).Justify(ui.Center).Gap(7)
+			if hasStatus || unconfigured {
+				content.Gap(5)
+			}
+			content.Children(func() {
+				switch {
+				case dragging:
+					components.Icon(c, lucide.ImageUp()).Size(24, 24).Shrink(0).TextColor(t.Accent)
+					a.quickCardTitle(c, tr("松开即可上传图片"), 13)
+					name := profileName(a.uploadDisplayConfig().ActiveProfile, a.uploadDisplayConfig().CurrentProfileName())
+					components.Text(c, tf("上传至 %s", name)).FontSize(11).TextColor(t.Accent).SingleLine().MaxWidth(294).Ellipsis("…")
+				case unconfigured:
+					components.Icon(c, lucide.Cloud()).Size(24, 24).Shrink(0).TextColor(t.TextMuted)
+					a.quickCardTitle(c, tr("请先完成存储设置"), 13)
+					a.quickCardDetail(c, tr("连接 S3 或 R2 存储后即可上传"), 1)
+					a.quickSelectLabel(c, label, "", true, 25)
+				case failed:
+					content.Padding(10, 16)
+					components.Icon(c, lucide.CircleX()).Size(19, 19).Shrink(0).TextColor(t.Danger)
+					title, reason := a.quickUploadFailure()
+					a.quickCardTitle(c, title, 12)
+					a.quickCardDetail(c, reason, 2)
+					a.quickSelectLabel(c, label, "", true, 22)
+				case hasStatus:
+					icon, color := lucide.Info(), t.TextMuted
+					for _, j := range a.quickUpload.jobs {
+						if j.result != nil {
+							icon, color = lucide.CircleCheck(), t.Success
+							break
+						}
+					}
+					components.Icon(c, icon).Size(21, 21).Shrink(0).TextColor(color)
+					a.quickCardTitle(c, message, 13)
+					a.quickCardDetail(c, detail, 1)
+					a.quickSelectLabel(c, tr("选择图片…"), "quick-upload", true, 25)
+				default:
+					components.Icon(c, lucide.ImageUp()).Size(24, 24).Shrink(0).TextColor(t.Accent)
+					a.quickCardTitle(c, tr("拖入图片，即刻上传"), 13)
+					a.quickSelectLabel(c, tr("选择图片…"), "quick-upload", false, 27)
+				}
+			})
+		})
+		if button.Clicked() {
+			run()
+		}
+	})
+}
+
+func (a *application) quickCardTitle(c *ui.Context, text string, size float32) {
+	components.Text(c, text).FillWidth().MinWidth(0).SingleLine().Ellipsis("…").TextAlign(ui.Center).FontSize(size).FontWeight(600).FixedLineHeight(18).Tooltip(text)
+}
+
+func (a *application) quickCardDetail(c *ui.Context, text string, lines int) {
+	components.Text(c, text).FillWidth().MinWidth(0).Wrap().MaxLines(lines).TextAlign(ui.Center).FontSize(10.5).FixedLineHeight(15).TextColor(c.Theme().TextMuted).Tooltip(text)
+}
+
+func (a *application) quickSelectLabel(c *ui.Context, label, shortcut string, subtle bool, height float32) {
+	t := c.Theme()
+	background, color := t.Accent, t.AccentText
+	if subtle {
+		background, color = t.Surface.Mix(t.Accent, .09), t.Accent
+	}
+	ui.Row(c).Height(height).Shrink(0).Padding(2, 10).Radius(6).Background(background).Gap(14).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+		components.Text(c, label).FontSize(11).FixedLineHeight(17).TextColor(color).SingleLine()
+		if shortcut != "" {
+			a.quickShortcutLabel(c, shortcut, color.Alpha(.85))
+		}
+	})
+}
+
+// Keep the summary separate from a potentially long provider error, so the
+// recovery action stays visible. The full reason remains available as a tooltip.
+func (a *application) quickUploadFailure() (title, reason string) {
+	uploaded, failed := 0, 0
+	for _, j := range a.quickUpload.jobs {
+		if j.result != nil {
+			uploaded++
+		} else if j.status == "上传失败" {
+			failed++
+			if reason == "" {
+				reason = j.detail
+			}
+		}
+	}
+	title = tr("上传失败")
+	if failed > 0 {
+		title = tf("已上传 %d 张，%d 张失败，可重试", uploaded, failed)
+	}
+	if reason == "" {
+		reason = a.quickUpload.message
+	}
+	return title, reason
 }
 
 func (a *application) openFromQuickUpload() {
@@ -250,9 +361,19 @@ func (a *application) openFromQuickUpload() {
 	a.showWindow()
 }
 
-func (a *application) quickShortcutLabel(c *ui.Context, id string) {
+func (a *application) openQuickUploadSettings() {
+	a.openSettings(0)
+	a.showWindow()
+}
+
+func (a *application) openQuickUploadResults() {
+	a.navigate(0)
+	a.showWindow()
+}
+
+func (a *application) quickShortcutLabel(c *ui.Context, id string, color ui.Color) {
 	if binding := a.shortcutBinding(id); binding.key != ui.KeyUnknown {
-		components.Text(c, binding.label()).FontSize(10).TextColor(c.Theme().TextMuted).SingleLine()
+		components.Text(c, binding.label()).FontSize(10).TextColor(color).SingleLine().Shrink(0)
 	}
 }
 
@@ -263,43 +384,9 @@ func (a *application) quickHeaderAction(c *ui.Context, label string, icon *ui.SV
 		button.Background(t.SurfaceHover)
 	}
 	button.Children(func() {
-		components.Icon(c, icon).Size(14, 14).TextColor(t.TextMuted)
+		components.Icon(c, icon).Size(15, 15).TextColor(t.TextMuted)
 	})
 	if button.Clicked() {
 		run()
 	}
-}
-
-func (a *application) quickUploadStatusView(c *ui.Context) {
-	message, detail, failed := a.quickUploadStatus()
-	if message == "" && detail == "" {
-		return
-	}
-	t := c.Theme()
-	color, icon := t.TextMuted, lucide.Info()
-	if failed {
-		color, icon = t.Danger, lucide.CircleX()
-	} else if !a.busy {
-		for _, j := range a.quickUpload.jobs {
-			if j.result != nil {
-				color, icon = t.Success, lucide.CircleCheck()
-				break
-			}
-		}
-	}
-	ui.Row(c).Role(ui.RoleStatus).FillWidth().Height(70).Shrink(0).Padding(7, 2).Gap(8).AlignItems(ui.Center).Children(func() {
-		if a.busy {
-			components.Spinner(c, components.SpinnerRing).Size(14, 14).Shrink(0).TextColor(t.Accent)
-		} else {
-			components.Icon(c, icon).Size(14, 14).Shrink(0).TextColor(color)
-		}
-		ui.Column(c).Grow(1).MinWidth(0).FillHeight().Gap(4).Justify(ui.Center).Children(func() {
-			scrollView(c).Key("quick-status").FillWidth().MinHeight(0).MaxHeight(36).Children(func() {
-				components.Text(c, message).FillWidth().MinWidth(0).Wrap().FontSize(11).TextColor(color).Tooltip(message)
-			})
-			if detail != "" {
-				components.Text(c, detail).FillWidth().MinWidth(0).Wrap().FontSize(10).TextColor(t.TextMuted)
-			}
-		})
-	})
 }
