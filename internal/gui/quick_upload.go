@@ -7,6 +7,7 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+	"github.com/knothhe/picup/internal/traydrop"
 	"github.com/oneo-me/onevra/source/components"
 	"github.com/oneo-me/onevra/source/icons/lucide"
 )
@@ -42,9 +43,14 @@ func (a *application) showQuickUpload() {
 			Content: ui.View(a.quickUploadView),
 		})
 		a.quickUpload.window = w
-		w.OnShow(func() { a.quickUpload.visible = true; a.updateLightweightTimer(time.Now()) })
+		w.OnShow(func() {
+			a.quickUpload.visible = true
+			traydrop.SetPanelVisible(a.tray, true)
+			a.updateLightweightTimer(time.Now())
+		})
 		w.OnHide(func() {
 			a.quickUpload.visible = false
+			traydrop.SetPanelVisible(a.tray, false)
 			a.updateMenus()
 			a.updateLightweightTimer(time.Now())
 		})
@@ -52,6 +58,7 @@ func (a *application) showQuickUpload() {
 			if a.quickUpload.window == w {
 				a.quickUpload.window = nil
 				a.quickUpload.visible = false
+				traydrop.SetPanelVisible(a.tray, false)
 				a.updateLightweightTimer(time.Now())
 			}
 		})

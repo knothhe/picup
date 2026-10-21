@@ -157,7 +157,7 @@ func (a *application) setupMenus() {
 		tray.OnRightClick(a.toggleQuickUpload)
 		cleanup, dropErr := traydrop.Register(tray, tr("Picup · 快捷上传图片"), func() bool {
 			return !a.quitting && !a.busy
-		}, a.quickUploadFiles)
+		}, a.quickUploadFiles, a.toggleQuickUpload)
 		if dropErr != nil {
 			a.feedback("启用菜单栏拖拽上传失败", dropErr)
 		} else {

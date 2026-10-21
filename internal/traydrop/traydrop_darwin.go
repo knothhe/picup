@@ -18,8 +18,12 @@ import (
 // https://developer.apple.com/documentation/appkit/nswindow/registerfordraggedtypes(_:)
 type destination struct {
 	window, button, delegate objc.ID
+	tray                     *mygo.Tray
+	monitor                  objc.ID
+	panelVisible, dragging   bool
 	available                func() bool
 	drop                     func([]string)
+	rightClick               func()
 }
 
 var (
@@ -79,7 +83,8 @@ func markedButton(marker string) objc.ID {
 }
 
 func (d *destination) highlight(on bool) {
-	send(d.button, "highlight:", on)
+	d.dragging = on
+	d.updateHighlight()
 }
 
 func (d *destination) paths(info objc.ID) []string {
@@ -144,11 +149,12 @@ func registerClass() {
 	})
 }
 
-// Register accepts local image files dropped on this tray icon. available
-// and dropped run on the main UI thread; cleanup may run from any goroutine.
+// Register accepts local image files dropped on this tray icon and preserves
+// panel selection across clicks. Callbacks run on the main UI thread;
+// cleanup may run from any goroutine.
 // toolTip is restored after a unique temporary marker identifies this exact
 // MyGo tray's public NSStatusBarButton in the native view tree.
-func Register(tray *mygo.Tray, toolTip string, available func() bool, dropped func([]string)) (func(), error) {
+func Register(tray *mygo.Tray, toolTip string, available func() bool, dropped func([]string), rightClicked func()) (func(), error) {
 	if tray == nil || available == nil || dropped == nil {
 		return nil, errors.New("tray drop: missing tray or callback")
 	}
@@ -173,11 +179,12 @@ func Register(tray *mygo.Tray, toolTip string, available func() bool, dropped fu
 			err = errors.New("tray drop: status window unavailable or already has a delegate")
 			return
 		}
-		d = &destination{window: send(window, "retain"), button: send(button, "retain"),
-			delegate: send(send(objc.ID(destinationClass), "alloc"), "init"), available: available, drop: dropped}
+		d = &destination{tray: tray, window: send(window, "retain"), button: send(button, "retain"),
+			delegate: send(send(objc.ID(destinationClass), "alloc"), "init"), available: available, drop: dropped, rightClick: rightClicked}
 		destinations[d.delegate] = d
 		send(window, "setDelegate:", d.delegate)
 		send(window, "registerForDraggedTypes:", array(nsString("public.file-url")))
+		d.watchClicks()
 	})
 	if err != nil {
 		return nil, err
@@ -187,6 +194,9 @@ func Register(tray *mygo.Tray, toolTip string, available func() bool, dropped fu
 			if d == nil {
 				return
 			}
+			send(objc.ID(objc.GetClass("NSEvent")), "removeMonitor:", d.monitor)
+			send(d.monitor, "release")
+			d.panelVisible = false
 			d.highlight(false)
 			send(d.window, "unregisterDraggedTypes")
 			if send(d.window, "delegate") == d.delegate {

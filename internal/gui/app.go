@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -115,7 +116,10 @@ func Run() error {
 		if a.quickUpload.window != nil {
 			a.quickUpload.window.Destroy()
 		}
-		if a.tray != nil {
+		// AppKit removes the saved menu bar position when a status item is
+		// explicitly removed. Keep it until process exit so macOS restores
+		// its position, including its section in menu bar managers like Ice.
+		if a.tray != nil && runtime.GOOS != "darwin" {
 			a.tray.Destroy()
 		}
 	})

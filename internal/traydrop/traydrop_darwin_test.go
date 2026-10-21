@@ -57,7 +57,7 @@ func TestNativeTrayWindowForwardsFileDrops(t *testing.T) {
 	available, clicks := true, 0
 	var drops [][]string
 	first.OnClick(func() { clicks++ })
-	stop, err := Register(first, firstTip, func() bool { return available }, func(paths []string) { drops = append(drops, paths) })
+	stop, err := Register(first, firstTip, func() bool { return available }, func(paths []string) { drops = append(drops, paths) }, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,9 +120,9 @@ func TestNativeTrayWindowForwardsFileDrops(t *testing.T) {
 			t.Error("cleanup retained a delegate or callback")
 		}
 	})
-	// Picup's existing quit listener removes the tray before this helper's
-	// listener runs. Retained native objects must keep late cleanup safe.
-	lateStop, err := Register(first, firstTip, func() bool { return true }, func([]string) {})
+	// Callers may destroy the tray before running this helper's cleanup.
+	// Retained native objects must keep late cleanup safe.
+	lateStop, err := Register(first, firstTip, func() bool { return true }, func([]string) {}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

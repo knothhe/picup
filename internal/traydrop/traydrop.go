@@ -1,4 +1,4 @@
-// Package traydrop adds file drops to a MyGo menu bar icon on macOS.
+// Package traydrop adds file drops and panel selection to a MyGo menu bar icon.
 package traydrop
 
 import (
