@@ -31,6 +31,7 @@ var englishText = map[string]string{
 	"打开 Picup 查看详情并重试":   "Open Picup for details and retry",
 	"结果已按输出偏好复制":         "Results copied in your preferred format",
 	"打开 Picup 完成设置":      "Open Picup to finish setup",
+	"重置状态":               "Reset status",
 	"配置菜单":               "Profile menu",
 	"配置管理":               "Manage profiles",
 	"为不同存储和使用场景分别保存设置。":  "Save separate settings for each storage destination and workflow.",

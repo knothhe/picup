@@ -95,6 +95,22 @@ func (a *application) beginQuickUpload(jobs []*job) {
 	a.quickUpload.message, a.quickUpload.messageError = "", false
 }
 
+func (a *application) canResetQuickUpload() bool {
+	return !a.busy && !a.uploading && !a.fileDialogOpen &&
+		(len(a.quickUpload.jobs) > 0 || a.quickUpload.message != "")
+}
+
+// Forget only the panel's last result. Shared jobs remain in the main queue.
+func (a *application) resetQuickUpload() {
+	if !a.canResetQuickUpload() {
+		return
+	}
+	a.quickUpload.jobs = nil
+	a.quickUpload.active, a.quickUpload.copied = false, false
+	a.quickUpload.message, a.quickUpload.messageError = "", false
+	a.invalidateWindows()
+}
+
 // Main-window retries update the same jobs. Discard the old batch's error and
 // clipboard claim so reopening the panel derives its result from those jobs.
 func (a *application) resetRetriedQuickUpload(selected []*job) {
@@ -164,6 +180,8 @@ func (a *application) quickUploadStatus() (message, detail string, failed bool) 
 // dismissal and main-window renders, and its jobs refer only to its last batch.
 func (a *application) quickUploadView(c *ui.Context) {
 	c.SetTheme(palette(c))
+	// Keep the flyout's corners transparent outside the rounded panel below.
+	c.Root().Background(ui.Transparent)
 	a.onShortcut(c, "choose", func() { a.chooseFiles(true) })
 	a.onShortcut(c, "paste", func() { a.pasteImage(true) })
 	a.onShortcut(c, "quick-upload", func() { a.chooseFiles(true) })
@@ -182,8 +200,9 @@ func (a *application) quickUploadView(c *ui.Context) {
 			components.Text(c, tr("快捷上传")).SingleLine().Ellipsis("…").MinWidth(0).FontSize(11).TextColor(t.TextMuted)
 			ui.Spacer(c)
 			ui.Row(c).Gap(4).Shrink(0).Children(func() {
-				a.quickHeaderAction(c, "打开 Picup", lucide.AppWindow(), a.openFromQuickUpload)
-				a.quickHeaderAction(c, "设置", lucide.Settings(), a.openQuickUploadSettings)
+				a.quickHeaderAction(c, "重置状态", lucide.RotateCcw(), !a.canResetQuickUpload(), a.resetQuickUpload)
+				a.quickHeaderAction(c, "打开 Picup", lucide.AppWindow(), false, a.openFromQuickUpload)
+				a.quickHeaderAction(c, "设置", lucide.Settings(), false, a.openQuickUploadSettings)
 			})
 		})
 		ui.Column(c).FillWidth().Height(220).Shrink(0).Padding(0, 16, 16, 16).Gap(8).Children(func() {
@@ -377,10 +396,10 @@ func (a *application) quickShortcutLabel(c *ui.Context, id string, color ui.Colo
 	}
 }
 
-func (a *application) quickHeaderAction(c *ui.Context, label string, icon *ui.SVG, run func()) {
+func (a *application) quickHeaderAction(c *ui.Context, label string, icon *ui.SVG, disabled bool, run func()) {
 	t := c.Theme()
-	button := ui.ButtonBase(c).Label(tr(label)).Tooltip(tr(label)).Size(28, 28).Shrink(0).Radius(6).AlignItems(ui.Center).Justify(ui.Center).Background(ui.Color{})
-	if button.Hovered() || button.FocusVisible() {
+	button := ui.ButtonBase(c).Label(tr(label)).Tooltip(tr(label)).Disabled(disabled).Size(28, 28).Shrink(0).Radius(6).AlignItems(ui.Center).Justify(ui.Center).Background(ui.Color{})
+	if !disabled && (button.Hovered() || button.FocusVisible()) {
 		button.Background(t.SurfaceHover)
 	}
 	button.Children(func() {

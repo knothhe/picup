@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -112,7 +113,7 @@ func TestQuickUploadViewContainsUploadAndOpenActions(t *testing.T) {
 					a.busy, a.uploading = busy, busy
 					a.uploadBatchDone, a.uploadBatchTotal = 1, 3
 					tt := quickUploadTester(a, dark)
-					sources := []string{"快捷上传", "上传剪贴板图片", "打开 Picup", "设置"}
+					sources := []string{"快捷上传", "上传剪贴板图片", "重置状态", "打开 Picup", "设置"}
 					if busy {
 						sources = append(sources, "正在处理与上传")
 						if _, ok := tt.Find(tr("选择图片…")); ok {
@@ -127,7 +128,7 @@ func TestQuickUploadViewContainsUploadAndOpenActions(t *testing.T) {
 						if !ok || r.W <= 0 || r.H <= 0 || r.X < 0 || r.Y < 0 || r.X+r.W > 361 || r.Y+r.H > 269 {
 							t.Fatalf("quick action %q is unavailable or outside the flyout: %v found=%t", label, r, ok)
 						}
-						if source == "打开 Picup" || source == "设置" {
+						if source == "重置状态" || source == "打开 Picup" || source == "设置" {
 							if r.Y+r.H > 48 || r.X < 180 || r.W > 32 {
 								t.Fatalf("application action %q is not a compact icon in the upper right: %v", label, r)
 							}
@@ -424,6 +425,122 @@ func TestQuickUploadFeedbackSurvivesFramesAndMainWindowFeedback(t *testing.T) {
 			}
 			if len(a.notifications) != 1 || a.message != "Main window result" || a.quickUpload.messageError != failed {
 				t.Fatal("quick rendering consumed main window notifications or changed the result state")
+			}
+		})
+	}
+}
+
+func TestQuickUploadResetReturnsToIdleAndPreservesApplicationState(t *testing.T) {
+	unsetUploadDisplayEnv(t)
+	previous := uiLanguage()
+	t.Cleanup(func() { SetUILanguage(previous) })
+	SetUILanguage("zh-CN")
+	states := []struct {
+		name, message                                        string
+		jobIndexes                                           []int
+		messageError, copied, busy, uploading, dialog, reset bool
+	}{
+		{name: "success", message: "已上传 1 张图片", jobIndexes: []int{1}, copied: true, reset: true},
+		{name: "failure", message: "AccessDenied", jobIndexes: []int{2}, messageError: true, reset: true},
+		{name: "partial", message: "已上传 1 张，1 张失败，可重试", jobIndexes: []int{1, 2}, messageError: true, copied: true, reset: true},
+		{name: "message-only", message: "读取剪贴板失败", messageError: true, reset: true},
+		{name: "jobs-only", jobIndexes: []int{1, 2}, reset: true},
+		{name: "idle"},
+		{name: "busy", message: "Previous result", jobIndexes: []int{1, 2}, copied: true, busy: true},
+		{name: "uploading", message: "Previous result", jobIndexes: []int{1, 2}, copied: true, uploading: true},
+		{name: "file-dialog", message: "Previous result", jobIndexes: []int{1, 2}, copied: true, dialog: true},
+	}
+	for _, state := range states {
+		t.Run(state.name, func(t *testing.T) {
+			a := quickUploadFixture(t)
+			pending := &job{id: 1, name: "pending.png", status: "等待上传", data: []byte("queued image")}
+			success := &job{id: 2, name: "uploaded.png", status: "已上传", detail: "https://img.example.com/uploaded.png", result: &service.Result{URL: "https://img.example.com/uploaded.png"}}
+			failed := &job{id: 3, name: "failed.png", status: "上传失败", detail: "AccessDenied", data: []byte("retry image")}
+			a.jobs = []*job{pending, success, failed}
+			wantJobs := slices.Clone(a.jobs)
+			wantJobValues := make([]job, len(a.jobs))
+			for i, j := range a.jobs {
+				wantJobValues[i] = *j
+				wantJobValues[i].data = slices.Clone(j.data)
+				if j.result != nil {
+					result := *j.result
+					wantJobValues[i].result = &result
+				}
+			}
+			a.tab, a.settingsTab, a.nextID = 4, 3, 3
+			a.message, a.messageError = "Main window failure", true
+			a.notifications = []ui.Toast{{ID: "main-error", Title: a.message, Type: "error", Timeout: -1}}
+			a.busy, a.uploading, a.fileDialogOpen = state.busy, state.uploading, state.dialog
+			a.uploadBatchDone, a.uploadBatchTotal = 1, 3
+			cancelled := false
+			a.cancel = func() { cancelled = true }
+			a.quickUpload.window, a.quickUpload.visible = &mygo.Window{}, true
+			a.quickUpload.active = state.name != "idle"
+			a.quickUpload.message, a.quickUpload.messageError, a.quickUpload.copied = state.message, state.messageError, state.copied
+			for _, i := range state.jobIndexes {
+				a.quickUpload.jobs = append(a.quickUpload.jobs, a.jobs[i])
+			}
+			wantQuick := a.quickUpload
+			wantConfig, wantSavedConfig := a.config.Clone(), a.savedConfig.Clone()
+			wantSavedConfigPointer := a.savedConfig
+			wantNotifications := slices.Clone(a.notifications)
+			if got := a.canResetQuickUpload(); got != state.reset {
+				t.Fatalf("reset availability = %t, want %t", got, state.reset)
+			}
+			if !state.reset {
+				a.resetQuickUpload()
+				if !reflect.DeepEqual(a.quickUpload, wantQuick) {
+					t.Fatal("direct reset discarded idle state or an active operation")
+				}
+			}
+			tt := quickUploadTester(a, false)
+			if err := tt.Click(tr("重置状态")); err != nil {
+				t.Fatal(err)
+			}
+			tt.Frame()
+			if !slices.Equal(a.jobs, wantJobs) {
+				t.Fatal("reset changed main queue membership or job identity")
+			}
+			for i, j := range a.jobs {
+				if !reflect.DeepEqual(*j, wantJobValues[i]) {
+					t.Fatalf("reset changed queued job %s, its result or retry data", j.name)
+				}
+			}
+			if !reflect.DeepEqual(a.notifications, wantNotifications) || a.message != "Main window failure" || !a.messageError {
+				t.Fatal("reset discarded main window feedback")
+			}
+			if !reflect.DeepEqual(a.config, wantConfig) || !reflect.DeepEqual(*a.savedConfig, wantSavedConfig) || a.savedConfig != wantSavedConfigPointer {
+				t.Fatal("reset changed upload preferences or saved configuration")
+			}
+			if a.tab != 4 || a.settingsTab != 3 || a.nextID != 3 || a.quickUpload.window != wantQuick.window || !a.quickUpload.visible {
+				t.Fatal("reset navigated the application or dismissed its quick panel")
+			}
+			if a.busy != state.busy || a.uploading != state.uploading || a.fileDialogOpen != state.dialog || a.uploadBatchDone != 1 || a.uploadBatchTotal != 3 || a.cancel == nil || cancelled {
+				t.Fatal("reset changed or cancelled background work")
+			}
+			if !state.reset {
+				if !reflect.DeepEqual(a.quickUpload, wantQuick) {
+					t.Fatal("disabled reset button changed quick upload state")
+				}
+				return
+			}
+			assertIdle := func() {
+				t.Helper()
+				if a.quickUpload.active || a.quickUpload.copied || len(a.quickUpload.jobs) != 0 || a.quickUpload.message != "" || a.quickUpload.messageError || a.canResetQuickUpload() {
+					t.Fatal("reset left previous quick upload feedback or batch references")
+				}
+				message, detail, failed := a.quickUploadStatus()
+				if message != "" || detail != "" || failed || !tt.HasText(tr("拖入图片，即刻上传")) {
+					t.Fatal("reset did not restore the initial upload card", tt.Texts())
+				}
+			}
+			assertIdle()
+			a.feedback("Subsequent main window result", nil)
+			a.resetRetriedQuickUpload([]*job{failed})
+			failed.status, failed.result = "已上传", &service.Result{URL: "https://img.example.com/retried.png"}
+			for range 3 {
+				tt.Frame()
+				assertIdle()
 			}
 		})
 	}

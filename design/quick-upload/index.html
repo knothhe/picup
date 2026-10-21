@@ -6,16 +6,16 @@
 </style></head><body><main>
 <p class="eyebrow">PICUP / QUICK UPLOAD</p><h1>更紧凑，也更平衡。</h1>
 <p>保留熟悉的蓝色和原生面板气质。统一左右边距，让主操作落在中轴上；将进度和结果放回上传卡片，去掉底部预留的空白。</p>
-<div class="summary"><span>360 × 268 pt</span><span>16 pt 统一边距</span><span>128 pt 主卡片</span><span>8 pt 内容间距</span></div>
+<div class="summary"><span>360 × 268 pt</span><span>12 pt 弹窗圆角</span><span>16 pt 统一边距</span><span>128 pt 主卡片</span><span>8 pt 内容间距</span></div>
 <div class="hero" id="hero"></div>
 <div class="section-top"><h2>同一布局，覆盖每个状态</h2><p>画板均为实际尺寸 · 点击标题可独立查看与检查焦点</p></div>
 <div class="states" id="states"></div>
 <div class="notes">
 <div><h3>01 / 对齐</h3><p>标题、存储摘要、上传区、剪贴板行共用 16 pt 边界。主卡片中的图标、标题和按钮整体居中；快捷键收进按钮内，不再把按钮推离中轴。剪贴板行左侧承载动作，右侧固定放快捷键。</p></div>
-<div><h3>02 / 层级</h3><p>品牌与内容标题分别使用 13 pt；辅助文案为 10–11 pt。蓝色实底只用于正常态的选择按钮，剪贴板作为描边次操作。工具图标使用相同的 28 pt 点击范围。</p></div>
-<div><h3>03 / 状态</h3><p>状态卡片沿用 128 pt 高度，面板保持稳定。处理中禁用新增操作；成功后可以继续选择；失败提供主应用详情与重试入口。未配置时在卡片内直接进入存储设置。</p></div>
+<div><h3>02 / 层级</h3><p>弹窗外沿采用 12 pt 圆角，四角透明，macOS 原生阴影跟随圆角轮廓。品牌与内容标题分别使用 13 pt；辅助文案为 10–11 pt。蓝色实底只用于正常态的选择按钮，剪贴板作为描边次操作。工具图标使用相同的 28 pt 点击范围。</p></div>
+<div><h3>03 / 状态</h3><p>状态卡片沿用 128 pt 高度，面板保持稳定。处理中禁用新增操作；成功后可以继续选择；失败提供主应用详情与重试入口。未配置时在卡片内直接进入存储设置。右上角「重置状态」清除成功、失败或其他结果，恢复空闲上传卡片；处理中和初始状态禁用。</p></div>
 </div>
-<p class="footer">本设计已对应实现原生快捷面板。面板由现有 360 × 312 pt 收紧至 360 × 268 pt；原底部状态迁入主卡片，并增加卡片内详情／设置入口。选择与剪贴板按钮为静态展示，不读取文件或发起上传。关闭浮窗继续保留任务与结果；成功时仅在实际复制成功后显示复制说明。存储摘要过长省略并保留悬停提示；快捷键来自用户绑定，清空绑定后隐藏。失败原因最多两行，完整内容通过悬停与主应用查看。英文长文案／长快捷键见末张画板。</p>
+<p class="footer">本设计已对应实现原生快捷面板。面板由现有 360 × 312 pt 收紧至 360 × 268 pt；原底部状态迁入主卡片，并增加卡片内详情／设置入口。选择与剪贴板按钮为静态展示，不读取文件或发起上传。关闭浮窗继续保留任务与结果；「重置状态」仅清除快捷面板展示，保留主窗口队列、历史记录与剪贴板。成功与失败画板可点击重置返回空闲画板；成功时仅在实际复制成功后显示复制说明。存储摘要过长省略并保留悬停提示；快捷键来自用户绑定，清空绑定后隐藏。失败原因最多两行，完整内容通过悬停与主应用查看。英文长文案／长快捷键见末张画板。</p>
 <p class="footer">macOS 支持直接将本地图片拖到菜单栏 Picup 图标，高亮时松开即刻上传并打开此面板。忙碌时拒绝新批次，未配置时引导进入存储设置。</p></main><script src="canvas.js"></script><script>
 window.PICUP_QUICK_BOARDS.forEach((b,i)=>{const fig=document.createElement('figure'),cap=document.createElement('figcaption'),a=document.createElement('a'),size=document.createElement('span'),frame=document.createElement('iframe');a.href=b.file;a.target='_blank';a.textContent=b.title;size.textContent=b.w+' × '+b.h;cap.append(a,size);frame.src=b.file;frame.width=b.w;frame.height=b.h;frame.title=b.title;fig.append(cap,frame);document.getElementById(i<3?'hero':'states').append(fig)});
 </script></body></html>

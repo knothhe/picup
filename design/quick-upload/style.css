@@ -23,9 +23,10 @@ svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width:
 .brand img { width: 20px; height: 20px; display: block; }
 .heading { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11px; }
 .header-actions { margin-left: auto; display: flex; gap: 4px; flex: none; }
-.header-action { width: 28px; height: 28px; display: grid; place-items: center; color: var(--muted); border-radius: 6px; }
+.header-action { width: 28px; height: 28px; border: 0; padding: 0; background: transparent; display: grid; place-items: center; color: var(--muted); border-radius: 6px; }
+.header-action:disabled { opacity: .42; }
 .header-action svg { width: 15px; height: 15px; }
-.header-action:hover { color: var(--text); background: var(--hover); }
+.header-action:not(:disabled):hover { color: var(--text); background: var(--hover); }
 .content { padding: 0 16px 16px; display: grid; grid-template-rows: 24px 128px 36px; gap: 8px; }
 .target { display: flex; align-items: center; gap: 7px; min-width: 0; color: var(--muted); font-size: 10.5px; line-height: 16px; }
 .target svg { width: 14px; height: 14px; }
