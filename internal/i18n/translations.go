@@ -126,6 +126,8 @@ var englishText = map[string]string{
 	"重置图库视图":            "Reset gallery view",
 	"保存图库偏好失败":          "Could not save gallery preferences",
 	"读取图库偏好失败":          "Could not load gallery preferences",
+	"保存界面偏好失败":          "Could not save workspace preferences",
+	"读取界面偏好失败":          "Could not load workspace preferences",
 	"取消图库请求":            "Cancel gallery request",
 	" · %d 张图片":         " · %d images",
 	"%d 年 %d 月":         "%d / %d",

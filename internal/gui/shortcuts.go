@@ -287,7 +287,7 @@ func (a *application) registerShortcuts(c *ui.Context) {
 	}
 	a.onShortcut(c, "quit", mygo.App.Quit)
 	a.onShortcut(c, "settings", func() { a.navigate(2) })
-	a.onShortcut(c, "sidebar", func() { a.sidebarCollapsed = !a.sidebarCollapsed })
+	a.onShortcut(c, "sidebar", a.toggleSidebar)
 	a.onShortcut(c, "choose", a.choose)
 	a.onShortcut(c, "quick-upload", func() { a.chooseFiles(true) })
 	a.onShortcut(c, "quick-paste", func() { a.pasteImage(true) })

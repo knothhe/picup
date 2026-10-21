@@ -66,8 +66,7 @@ func (a *application) header(c *ui.Context) {
 			label, icon = "展开侧边栏", lucide.PanelLeftOpen()
 		}
 		if components.IconButton(c, icon, a.shortcutTooltip(label, "sidebar"), components.IconButtonPlain).Label(tr(label)).Clicked() {
-			a.profiles.menuOpen = false
-			a.sidebarCollapsed = !a.sidebarCollapsed
+			a.toggleSidebar()
 		}
 		ui.Image(c, brandIcon).Size(24, 24).Label("Picup")
 		components.Text(c, "picup").Bold().FontSize(14)

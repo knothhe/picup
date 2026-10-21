@@ -34,7 +34,15 @@ func (a *application) newMainWindow() {
 	if runtime.GOOS != "darwin" {
 		_ = w.SetIcon(assets.IconPNG)
 	}
-	w.OnFocus(a.refreshUploadConfig)
+	w.OnFocus(func() {
+		a.refreshUploadConfig()
+		w.Invalidate()
+	})
+	w.OnBlur(func() {
+		// Resume at the native event, even if an occluded window draws later.
+		a.resumeNotificationTimers(time.Now())
+		w.Invalidate()
+	})
 	w.OnShow(func() { a.mainWindowVisibilityChanged(true) })
 	w.OnHide(func() { a.mainWindowVisibilityChanged(false) })
 	w.OnClose(a.handleMainWindowClose)
@@ -103,6 +111,9 @@ func (a *application) updateDockVisibility() {
 
 func (a *application) mainWindowVisibilityChanged(visible bool) {
 	a.lifecycle.mainVisible = visible
+	if !visible {
+		a.resumeNotificationTimers(time.Now())
+	}
 	a.applyNativeSettings()
 }
 
@@ -224,6 +235,8 @@ func (a *application) releaseUIPresentation() {
 	}
 	a.profiles = profileUIState{}
 	a.notifications = nil
+	a.notificationDeadlines = nil
+	a.notificationPausedAt = time.Time{}
 }
 
 func (a *application) resumeLightweightUI() {

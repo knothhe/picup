@@ -63,6 +63,8 @@ type application struct {
 	nativeMenuState                   string
 	pasteImageAction                  func()
 	notifications                     []ui.Toast
+	notificationDeadlines             map[string]time.Time
+	notificationPausedAt              time.Time
 }
 
 func Run() error {
@@ -75,6 +77,7 @@ func Run() error {
 	a := &application{path: path, config: cfg, installDir: install.DisplayPath(install.DefaultDir()), quality: float64(cfg.Quality), maxWidth: float64(cfg.MaxWidth)}
 	a.savedConfig = &cfg
 	a.initSettingsAutosave()
+	workspacePreferencesErr := a.restoreWorkspacePreferences()
 	galleryPreferencesErr := a.restoreGalleryPreferences()
 	mygo.App.SetName("Picup")
 	mygo.App.SetPath(mygo.PathUserData, filepath.Dir(path))
@@ -127,6 +130,9 @@ func Run() error {
 		a.applyLanguage(false)
 		if loadErr != nil {
 			a.feedback("读取设置失败", loadErr)
+		}
+		if workspacePreferencesErr != nil {
+			a.feedback("读取界面偏好失败", workspacePreferencesErr)
 		}
 		if galleryPreferencesErr != nil {
 			a.feedback("读取图库偏好失败", galleryPreferencesErr)
