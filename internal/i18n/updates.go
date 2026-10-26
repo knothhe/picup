@@ -1,0 +1,46 @@
+package i18n
+
+func init() {
+	for chinese, english := range map[string]string{
+		"软件更新":          "Software updates",
+		"更新状态":          "Update status",
+		"检查更新":          "Check for updates",
+		"检查更新…":         "Check for Updates…",
+		"查看更新":          "View update",
+		"正在检查更新…":       "Checking for updates…",
+		"正在确认更新资格…":     "Checking update eligibility…",
+		"Picup 已是最新版本。": "Picup is up to date.",
+		"发现版本 %s":       "Version %s is available",
+		"更新已准备好，将在下次启动时生效。":       "The update is ready and will take effect the next time Picup starts.",
+		"从 GitHub 获取经过签名验证的正式更新。": "Get signed release updates from GitHub.",
+		"取消更新":     "Cancel update",
+		"重新启动":     "Restart",
+		"下载并准备更新":  "Download and prepare update",
+		"稍后":       "Later",
+		"版本说明":     "Release notes",
+		"每天自动检查更新": "Check for updates daily",
+		"应用运行时每天检查一次，唤醒后补查；不会自动重新启动。": "Check daily while Picup is running and catch up after waking. Picup will not restart automatically.",
+		"自动下载并准备更新": "Download and prepare updates automatically",
+		"仅在空闲时准备，签名验证通过后替换应用；下次启动生效。": "Prepare updates while idle. Replace the app after verifying its signature; the update takes effect next launch.",
+		"内置更新目前仅支持 macOS。":            "In-app updates currently support macOS only.",
+		"开发版本不检查正式更新，请使用正式安装包。":       "Development builds do not check release updates. Use a release package.",
+		"此构建尚未配置更新签名公钥或发布源。":          "This build has no update signing key or release source configured.",
+		"请使用安装此应用的包管理器更新。":            "Update this app through the package manager that installed it.",
+		"请从正式安装的 Picup.app 检查更新。":     "Check for updates from an installed Picup.app release.",
+		"当前安装位置无法更新，请将应用移至可写的应用程序目录。": "The current installation cannot be updated. Move Picup to a writable Applications folder.",
+		"无法确定应用安装位置，更新已停用。":           "The app location is unavailable. Updates are disabled.",
+		"发现 Picup 新版本":                "A new Picup version is available",
+		"请先完成上传、授权和编辑，再准备更新。":         "Finish uploads, authorization and edits before preparing an update.",
+		"请先完成上传队列、授权和编辑，再重新启动。":       "Finish the upload queue, authorization and edits before restarting.",
+		"重新启动 Picup": "Restart Picup",
+		"更新已准备好，是否退出并重新启动？":     "The update is ready. Quit and restart Picup?",
+		"当前配置会保留。新版本将在重新启动后生效。": "Your settings will be kept. The new version takes effect after restarting.",
+		"更新偏好仍在保存，请稍后重试退出。":     "Update preferences are still being saved. Try quitting again shortly.",
+		"更新仍在收尾，请稍后重试退出。":       "The update is still finishing. Try quitting again shortly.",
+		"尚未成功检查":        "No successful check yet",
+		"上次成功检查：%s":     "Last successful check: %s",
+		"正在下载、校验并准备更新…": "Downloading, verifying and preparing the update…",
+	} {
+		englishText[chinese] = english
+	}
+}

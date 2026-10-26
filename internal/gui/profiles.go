@@ -16,7 +16,7 @@ type profileUIState struct {
 }
 
 func (a *application) profileSwitchBlocked() bool {
-	return a.busy || a.uploading || a.gallery.operation
+	return a.busy || a.uploading || a.gallery.operation || a.r2.active || a.r2.working
 }
 
 // Save the current editor before changing profile. Persist the new selection
@@ -65,6 +65,9 @@ func profileError(err error) string {
 	if err.Error() == "at least one profile is required" {
 		return tr("至少保留一个配置。")
 	}
+	if err.Error() == "disconnect Cloudflare before deleting its last profile" {
+		return tr("请先在存储设置中断开 Cloudflare，再删除此连接的最后一个配置。")
+	}
 	return tr(err.Error())
 }
 
@@ -82,6 +85,9 @@ func (a *application) applyProfileConfig(c config.Config) {
 		a.flushGalleryPreferences()
 	}
 	a.config = c.Clone()
+	if a.r2.initialized {
+		a.loadR2ConnectionInfo()
+	}
 	a.quality, a.maxWidth = float64(c.Quality), float64(c.MaxWidth)
 	a.uploadConfigGeneration++
 	saved := c.Clone()

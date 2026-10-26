@@ -60,10 +60,7 @@ func run() error {
 	if goCommand == "" {
 		goCommand = "go"
 	}
-	if err := command("make", "build", "GO="+goCommand); err != nil {
-		return err
-	}
-	if err := command(goCommand, "tool", "mygo", "build", "-skip-dmg"); err != nil {
+	if err := buildBundle(goCommand); err != nil {
 		return err
 	}
 	src := filepath.Join(config.Out, "darwin-"+runtime.GOARCH, config.Name+".app")
@@ -117,6 +114,12 @@ func run() error {
 		fmt.Printf("Add %s to PATH to use picup from your shell.\n", *cliDir)
 	}
 	return nil
+}
+
+var runBuildCommand = command
+
+func buildBundle(goCommand string) error {
+	return runBuildCommand("make", "package-app", "GO="+goCommand)
 }
 
 func command(name string, args ...string) error {

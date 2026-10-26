@@ -1,9 +1,13 @@
 /build/bin/
 /build/dist/
 /build/release/
+/build/ci/
+/build/THIRD_PARTY_NOTICES.txt
+mygo-update.key
 /.codex/skills/
 /picup
 /picup-gui
 .DS_Store
 *.test
 coverage.out
+__pycache__/

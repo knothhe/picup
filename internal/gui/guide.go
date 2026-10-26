@@ -63,6 +63,7 @@ func (a *application) guideView(c *ui.Context) {
 	scrollView(c).Key("guide-scroll").FillWidth().Grow(1).MinHeight(0).Children(func() {
 		ui.Column(c).FillWidth().MinWidth(0).Gap(16).Children(func() {
 			guideSection(c, "guide-connect", "01  连接你的存储", func() {
+				guideParagraph(c, "R2 可点击「连接 Cloudflare R2」，在浏览器授权后选择账号和桶，访问凭据自动保存至系统钥匙串。")
 				guideParagraph(c, "在设置中选择 S3 或 R2，填写存储桶、访问凭据和图片公开地址。")
 				guideParagraph(c, "R2 的 Region 使用 auto；AWS S3 使用桶所在区域，Endpoint 可留空。")
 			})

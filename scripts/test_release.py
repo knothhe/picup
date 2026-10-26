@@ -1,4 +1,6 @@
 """Exercise the MyGo adaptation in disposable Git repositories, without network access."""
+import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -7,9 +9,13 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 SCRIPT = Path(__file__).with_name('release.py')
+SPEC = importlib.util.spec_from_file_location('picup_release', SCRIPT)
+release_module = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(release_module)
 
 
 FAKE_PACKAGE = r'''import argparse
@@ -43,14 +49,15 @@ assets = []
 for arch in os.environ.get('TEST_PACKAGE_ARCHES', 'arm64').split(','):
     asset = output / f'Picup-{args.version}-darwin-{arch}.zip'
     with zipfile.ZipFile(asset, 'w') as archive:
-        archive.writestr('source.txt', event['source'])
-        archive.writestr('version.txt', version)
+        archive.writestr(zipfile.ZipInfo('source.txt', (1980, 1, 1, 0, 0, 0)), event['source'])
+        archive.writestr(zipfile.ZipInfo('version.txt', (1980, 1, 1, 0, 0, 0)), version)
     assets.append(str(asset.resolve()))
 print(json.dumps(assets))
 '''
 
 
 FAKE_GH = r'''import json
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -69,6 +76,7 @@ if args[:2] in (['release', 'upload'], ['release', 'create']):
         if path.is_file():
             with zipfile.ZipFile(path) as archive:
                 event['assets'].append({'name': path.name, 'size': path.stat().st_size,
+                                        'digest': 'sha256:' + hashlib.sha256(path.read_bytes()).hexdigest(),
                                         'source': archive.read('source.txt').decode(),
                                         'version': archive.read('version.txt').decode()})
 with open(os.environ['TEST_RELEASE_EVENTS'], 'a') as stream:
@@ -103,7 +111,7 @@ if args[:2] == ['release', 'create']:
         raise SystemExit('Release already exists')
     if '--notes-file' in args and args[args.index('--notes-file') + 1] == '-':
         sys.stdin.read()
-    state[tag] = {'url': 'https://github.com/example/picup/releases/tag/' + tag,
+    state[tag] = {'url': 'https://github.com/example/picup/releases/tag/' + tag, 'isDraft': '--draft' in args,
                   'assets': [] if os.environ.get('TEST_GH_DROP_ASSETS') else event['assets']}
     state_path.write_text(json.dumps(state))
     print(state[tag]['url'])
@@ -116,6 +124,12 @@ if args[:2] == ['release', 'upload']:
         if any(old['name'] == asset['name'] for old in state[tag]['assets']):
             raise SystemExit('Asset already exists')
         state[tag]['assets'].append(asset)
+    state_path.write_text(json.dumps(state))
+    raise SystemExit(0)
+if args[:2] == ['release', 'edit']:
+    if '--draft=false' not in args:
+        raise SystemExit('Unexpected release edit')
+    state[args[2]]['isDraft'] = False
     state_path.write_text(json.dumps(state))
     raise SystemExit(0)
 raise SystemExit('Unexpected gh invocation: ' + repr(args))
@@ -391,6 +405,8 @@ class ReleaseTests(unittest.TestCase):
         self.release('initial', '--apply', success=False)
         self.assertEqual(self.git('tag'), 'v0.1.0')
         self.assertEqual(self.release_state()['v0.1.0']['assets'], [])
+        self.assertTrue(self.release_state()['v0.1.0']['isDraft'])
+        self.assertEqual(self.events('gh', ['release', 'edit']), [])
         self.assertEqual(self.git('rev-parse', 'v0.1.0'),
                          self.git('--git-dir', str(self.remote), 'rev-parse', 'v0.1.0'))
         del self.env['TEST_GH_DROP_ASSETS']
@@ -399,6 +415,21 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(self.events('gh', ['release', 'create']), [])
         self.assertEqual(len(self.events('gh', ['release', 'upload'])), 1)
         self.assertEqual(len(self.release_state()['v0.1.0']['assets']), 1)
+        self.assertFalse(self.release_state()['v0.1.0']['isDraft'])
+
+    def test_same_name_wrong_digest_stops_without_overwrite_or_publication(self):
+        self.configure_assets()
+        self.release('initial', '--apply')
+        state = self.release_state()
+        state['v0.1.0']['isDraft'] = True
+        state['v0.1.0']['assets'][0]['digest'] = 'sha256:' + '0' * 64
+        self.state_path.write_text(json.dumps(state))
+        self.events_path.write_text('')
+        result = self.release('0.1.0', '--resume', '--apply', success=False)
+        self.assertIn('differs from the verified local file', result.stderr)
+        self.assertEqual(self.events('gh', ['release', 'upload']), [])
+        self.assertEqual(self.events('gh', ['release', 'edit']), [])
+        self.assertTrue(self.release_state()['v0.1.0']['isDraft'])
 
     def test_assets_only_uses_old_tag_with_newer_dirty_working_tree(self):
         self.configure_assets()
@@ -481,6 +512,45 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(self.events('git', ['push']), [])
         self.assertEqual(self.events('gh', ['release', 'create']), [])
         self.assertEqual(self.release_state(), {})
+
+
+class PublicationOrderingTests(unittest.TestCase):
+    def test_public_backfill_verifies_archive_before_exposing_feed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            assets = [root / name for name in (
+                'Picup-0.1.0-darwin-arm64.zip', 'picup-0.1.0-darwin-arm64.tar.gz',
+                'update-darwin-arm64.json')]
+            for asset in assets:
+                asset.write_bytes(('fixture ' + asset.name).encode())
+            commands = []
+            uploaded = []
+
+            def command(*args, **kwargs):
+                commands.append(args)
+                if args[:3] == ('gh', 'release', 'view'):
+                    state = []
+                    for path in uploaded:
+                        digest = 'sha256:' + hashlib.sha256(path.read_bytes()).hexdigest()
+                        if path.name.endswith('.tar.gz'):
+                            digest = 'sha256:' + '0' * 64
+                        state.append({'name': path.name, 'size': path.stat().st_size, 'digest': digest})
+                    return subprocess.CompletedProcess(args, 0, json.dumps({
+                        'url': 'https://github.com/knothhe/picup/releases/tag/v0.1.0',
+                        'isDraft': False, 'assets': state,
+                    }), '')
+                if args[:3] == ('gh', 'release', 'upload'):
+                    uploaded.extend(path for path in assets if str(path) in args)
+                    return subprocess.CompletedProcess(args, 0, '', '')
+                self.fail('unexpected publication command: ' + repr(args))
+
+            with mock.patch.object(release_module, 'published_tags', return_value=['v0.1.0']):
+                with mock.patch.object(release_module, 'run', side_effect=command):
+                    with self.assertRaisesRegex(release_module.ReleaseError, 'differs from the verified local file'):
+                        release_module.publish_github_release('knothhe/picup', 'v0.1.0', '0.1.0', 'notes', assets)
+            self.assertEqual(uploaded, assets[:2])
+            self.assertFalse(any(str(assets[2]) in args for args in commands))
+            self.assertFalse(any(args[:3] == ('gh', 'release', 'edit') for args in commands))
 
 
 if __name__ == '__main__':

@@ -14,6 +14,7 @@ import (
 type Profile struct {
 	ID           string `json:"id"`
 	Name         string `json:"name"`
+	R2Connection string `json:"r2_connection,omitempty"`
 	Provider     string `json:"provider"`
 	Endpoint     string `json:"endpoint"`
 	Region       string `json:"region"`
@@ -67,6 +68,7 @@ func (c *Config) EnsureProfiles() {
 		profile.ID, profile.Name = "default", "Default"
 		c.Profiles = []Profile{profile}
 		c.ActiveProfile = profile.ID
+		c.R2Connection = profile.R2Connection
 		return
 	}
 	index := c.profileIndex(c.ActiveProfile)
@@ -141,6 +143,17 @@ func (c *Config) DeleteProfile(id string) error {
 	if len(c.Profiles) == 1 {
 		return errors.New("at least one profile is required")
 	}
+	if ref := c.Profiles[index].R2Connection; ref != "" {
+		shared := false
+		for i, p := range c.Profiles {
+			if i != index && p.R2Connection == ref {
+				shared = true
+			}
+		}
+		if !shared {
+			return errors.New("disconnect Cloudflare before deleting its last profile")
+		}
+	}
 	c.Profiles = append(c.Profiles[:index], c.Profiles[index+1:]...)
 	if id == c.ActiveProfile {
 		c.activateProfile(0)
@@ -202,7 +215,7 @@ func (c Config) validateAllOptions() error {
 
 func (c Config) profile() Profile {
 	return Profile{
-		Provider: c.Provider, Endpoint: c.Endpoint, Region: c.Region,
+		R2Connection: c.R2Connection, Provider: c.Provider, Endpoint: c.Endpoint, Region: c.Region,
 		Bucket: c.Bucket, AccessKey: c.AccessKey, SecretKey: c.SecretKey,
 		SessionToken: c.SessionToken, PublicURL: c.PublicURL,
 		PathTemplate: c.PathTemplate, PathStyle: c.PathStyle,
@@ -214,6 +227,7 @@ func (c Config) profile() Profile {
 func (c *Config) activateProfile(index int) {
 	profile := c.Profiles[index]
 	c.ActiveProfile = profile.ID
+	c.R2Connection = profile.R2Connection
 	c.Provider, c.Endpoint, c.Region = profile.Provider, profile.Endpoint, profile.Region
 	c.Bucket, c.AccessKey, c.SecretKey = profile.Bucket, profile.AccessKey, profile.SecretKey
 	c.SessionToken, c.PublicURL = profile.SessionToken, profile.PublicURL

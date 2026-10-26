@@ -4,6 +4,7 @@
 Python 3.9+, Git; gh for GitHub releases/initial checks.
 """
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -226,6 +227,7 @@ def build_assets(target, files, source_commit=None):
         if source_commit:
             source = Path(temporary) / 'source'
             extract_source(source_commit, source)
+        requires_updates = bool(json.loads((source / 'mygo.json').read_text()).get('updates'))
         print(f'Building release packages for {target} from {source_commit or "working tree"}...', flush=True)
         result = subprocess.run(package_command(target, output), cwd=source, text=True, stdout=subprocess.PIPE)
     verify_state(before, versions)
@@ -235,36 +237,77 @@ def build_assets(target, files, source_commit=None):
             'Package command must return a nonempty JSON array of asset paths.')
     paths = [Path(path) for path in assets]
     require(len(set(paths)) == len(paths), 'Package command returned duplicate asset paths.')
+    expected = set()
     for path in paths:
+        kind = re.fullmatch(r'Picup-' + re.escape(target) + r'-(darwin-(?:arm64|amd64))\.zip', path.name)
+        archive = re.fullmatch(r'picup-' + re.escape(target) + r'-(darwin-(?:arm64|amd64))\.tar\.gz', path.name)
+        feed = re.fullmatch(r'update-(darwin-(?:arm64|amd64))\.json', path.name)
         require(path.is_absolute() and path.parent.resolve() == output.resolve() and not path.is_symlink()
-                and path.is_file() and path.stat().st_size > 0 and path.suffix == '.zip'
-                and f'-{target}-' in path.name,
-                f'Invalid release asset (expected a versioned ZIP in {output}): {path}')
+                and path.is_file() and path.stat().st_size > 0 and (kind or archive or feed),
+                f'Invalid release asset (expected an exact macOS installer or signed update asset in {output}): {path}')
+        if kind:
+            platform = kind.group(1)
+            expected.update((path.name, f'picup-{target}-{platform}.tar.gz', f'update-{platform}.json'))
+    names = {path.name for path in paths}
+    # Historical tags without updater configuration keep their original ZIP-only
+    # format. New signed releases must never publish a partial update set.
+    if requires_updates or any(path.suffix != '.zip' for path in paths):
+        require(names == expected, 'Package command returned an incomplete or unexpected signed update asset set.')
     return paths
+
+
+def verify_release_assets(release, assets, complete):
+    actual = {asset['name']: asset for asset in release['assets']}
+    for path in assets:
+        asset = actual.get(path.name)
+        if asset is None and not complete:
+            continue
+        asset = asset or {}
+        digest = 'sha256:' + hashlib.sha256(path.read_bytes()).hexdigest()
+        require(asset.get('size') == path.stat().st_size and asset.get('digest') == digest,
+                f'Release asset is missing or differs from the verified local file: {path.name}. '
+                'Existing assets were kept; inspect the draft before retrying.')
 
 
 def publish_github_release(repo, tag, target, notes, assets):
     uploaded = []
     if tag in published_tags(repo):
-        existing = json.loads(run('gh', 'release', 'view', tag, '--repo', repo, '--json', 'url,assets').stdout)
+        existing = json.loads(run('gh', 'release', 'view', tag, '--repo', repo, '--json', 'url,assets,isDraft').stdout)
+        was_draft = existing.get('isDraft', False)
+        verify_release_assets(existing, assets, complete=False)
         names = {asset['name'] for asset in existing['assets']}
         uploaded = [path for path in assets if path.name not in names]
         for path in assets:
             if path.name in names:
                 print(f'Keeping existing release asset: {path.name}', flush=True)
         if uploaded:
-            run('gh', 'release', 'upload', tag, *(str(path) for path in uploaded), '--repo', repo)
+            # A resumed public release must never expose a feed before its
+            # archive upload completes. Drafts follow the same ordering.
+            payloads = [path for path in uploaded if not path.name.startswith('update-')]
+            feeds = [path for path in uploaded if path.name.startswith('update-')]
+            if payloads:
+                run('gh', 'release', 'upload', tag, *(str(path) for path in payloads), '--repo', repo)
+            if feeds and not was_draft:
+                staged = json.loads(run('gh', 'release', 'view', tag, '--repo', repo,
+                                        '--json', 'url,assets,isDraft').stdout)
+                verify_release_assets(staged, [path for path in assets if not path.name.startswith('update-')],
+                                      complete=True)
+            if feeds:
+                run('gh', 'release', 'upload', tag, *(str(path) for path in feeds), '--repo', repo)
     else:
         command = ['gh', 'release', 'create', tag, *(str(path) for path in assets),
-                   '--repo', repo, '--verify-tag', '--notes-file', '-', '--title', tag]
+                   '--repo', repo, '--verify-tag', '--notes-file', '-', '--title', tag, '--draft']
         if parse(target)[1] is not None:
             command += ['--prerelease']
         run(*command, input=notes)
         uploaded = assets
-    release = json.loads(run('gh', 'release', 'view', tag, '--repo', repo, '--json', 'url,assets').stdout)
-    sizes = {asset['name']: asset['size'] for asset in release['assets']}
-    for path in uploaded:
-        require(sizes.get(path.name) == path.stat().st_size, f'Uploaded release asset is missing or has the wrong size: {path.name}')
+        was_draft = True
+    release = json.loads(run('gh', 'release', 'view', tag, '--repo', repo, '--json', 'url,assets,isDraft').stdout)
+    verify_release_assets(release, assets, complete=True)
+    # New releases are invisible to the updater until every installer, archive
+    # and manifest has been uploaded and its exact bytes verified in the draft.
+    if was_draft:
+        run('gh', 'release', 'edit', tag, '--repo', repo, '--draft=false')
     print(release['url'], flush=True)
 
 

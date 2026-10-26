@@ -6,6 +6,8 @@
 
 桌面端与 CLI 共用 `~/.config/picup/config.json`，文件权限为 `0600`。设置更改自动保存，保存失败时保留输入，可修正后重试。
 
+直接开发构建（`make build` / `make run`）和无签名 CI 试包使用 `picup_dev` 标签，默认改用 `~/.config/picup-dev/config.json`，并隔离系统凭据命名空间。`PICUP_CONFIG` 仍可显式指定配置路径；凭据通道按编译标签区分。
+
 - `PICUP_CONFIG` 或 CLI 的 `--config PATH` 可指定配置文件，CLI 参数优先。
 - `XDG_CONFIG_HOME` 可更改配置父目录，文件位于其下的 `picup/config.json`。
 - `picup config path` 可查看当前使用的路径，桌面端也可在「设置 → 关于」查看。
@@ -13,6 +15,8 @@
 配置优先级为：CLI 参数 → `PICUP_*` 环境变量 → 配置文件 → 默认值。GUI 上传也读取环境覆盖；从 Finder 或 Dock 启动时通常不会继承终端环境变量。
 
 凭据可用 `PICUP_ACCESS_KEY`、`PICUP_SECRET_KEY`、`PICUP_SESSION_TOKEN` 设置。Picup 对应凭据为空时，回退到 `AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`、`AWS_SESSION_TOKEN`。
+
+通过浏览器授权连接的 R2 profile 只保存 `r2_connection` 引用和公开配置，OAuth token 与桶密钥保存在 macOS 钥匙串。此类连接的账号、桶和 Endpoint 必须与授权记录匹配；更换目标应重新连接。复制 `config.json` 不包含授权凭据，详见 [R2 OAuth 说明](cloudflare-oauth.md)。手动连接仍沿用原有凭据保存方式。
 
 多个 profile 的独立字段和共用偏好见[多配置说明](usage.md#多配置profile)。环境变量会继续覆盖所选 profile 的对应字段。
 

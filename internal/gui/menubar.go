@@ -67,6 +67,7 @@ func (a *application) applicationMenu() *mygo.Menu {
 	menu := mygo.NewMenu([]*mygo.MenuItem{
 		{Label: "Picup", Submenu: []*mygo.MenuItem{
 			{Label: tr("关于 Picup"), Click: func(*mygo.MenuItem, *mygo.Window) { a.showPage(5) }},
+			{ID: "check-updates", Label: tr("检查更新…"), Click: func(*mygo.MenuItem, *mygo.Window) { a.checkForUpdates(true) }},
 			{ID: "settings", Label: tr("设置"), Accelerator: a.nativeShortcut("settings"), Click: func(*mygo.MenuItem, *mygo.Window) { a.showPage(2) }},
 			mygo.Separator(), {ID: "window-hide", Role: mygo.RoleHide}, {ID: "window-hide-others", Role: mygo.RoleHideOthers}, {Role: mygo.RoleUnhide},
 			mygo.Separator(), {ID: "quit", Label: tr("退出 Picup"), Accelerator: a.nativeShortcut("quit"), Click: func(*mygo.MenuItem, *mygo.Window) { mygo.App.Quit() }},

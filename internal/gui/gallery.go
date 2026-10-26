@@ -72,7 +72,7 @@ type galleryState struct {
 }
 
 func sameGalleryStorage(a, b config.Config) bool {
-	return a.Provider == b.Provider && a.Endpoint == b.Endpoint && a.Region == b.Region && a.Bucket == b.Bucket && a.AccessKey == b.AccessKey && a.SecretKey == b.SecretKey && a.SessionToken == b.SessionToken && a.PublicURL == b.PublicURL && a.PathStyle == b.PathStyle
+	return a.Provider == b.Provider && a.R2Connection == b.R2Connection && a.Endpoint == b.Endpoint && a.Region == b.Region && a.Bucket == b.Bucket && a.AccessKey == b.AccessKey && a.SecretKey == b.SecretKey && a.SessionToken == b.SessionToken && a.PublicURL == b.PublicURL && a.PathStyle == b.PathStyle
 }
 func (g *galleryState) stop() {
 	if g.fullCancel != nil {
@@ -101,7 +101,7 @@ func (a *application) galleryClient() (*storage.Client, error) {
 		a.resetGallery()
 	}
 	g = &a.gallery
-	client, err := storage.New(c)
+	client, err := storage.NewWithConfigPath(context.Background(), c, a.path)
 	if err != nil {
 		return nil, err
 	}
@@ -122,7 +122,7 @@ func (a *application) enterGallery() {
 	}
 }
 func (a *application) loadGallery() {
-	if a.gallery.busy {
+	if a.busy || a.gallery.busy {
 		return
 	}
 	client, err := a.galleryClient()
@@ -467,7 +467,7 @@ func (a *application) galleryFullPreview() {
 		g.full = galleryThumb{}
 		return
 	}
-	if a.win == nil || g.client == nil || g.fullKey == g.preview.Key {
+	if a.busy || a.win == nil || g.client == nil || g.fullKey == g.preview.Key {
 		return
 	}
 	if g.fullCancel != nil {
@@ -590,7 +590,7 @@ func (g *galleryState) presentedThumbnailPage(rows []storage.Object) ([]storage.
 
 func (a *application) galleryThumbs(rows []storage.Object) {
 	g := &a.gallery
-	if a.win == nil || g.client == nil {
+	if a.busy || a.win == nil || g.client == nil {
 		return
 	}
 	keys := g.thumbnailKeys(rows)
@@ -676,7 +676,7 @@ func (a *application) galleryThumbs(rows []storage.Object) {
 
 func (a *application) galleryOperation(run func(context.Context, *storage.Client) func()) {
 	g := &a.gallery
-	if g.busy || g.client == nil {
+	if a.busy || g.busy || g.client == nil {
 		return
 	}
 	g.busy = true

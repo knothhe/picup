@@ -5,6 +5,8 @@
 ## 发布前准备
 
 - 需要 Make、Python 3.9+、Git、Go 1.27.1+，以及已登录且有仓库发布权限的 `gh`。
+- 正式打包需要与 `mygo.json` 公钥匹配的发行私钥：显式 `MYGO_UPDATER_PRIVATE_KEY` 优先，未设置时自动读取默认本机文件；显式空值会失败。无私钥的验证使用 `make package-ci`。
+- 本机私钥默认保存在 `~/Library/Application Support/picup-release/mygo-update.key`（当前用户所有的 `0600` 普通文件，拒绝符号链接）。保存好此文件后可直接运行 `make package-release` 或现有 `make release`，脚本只向 MyGo 签名子进程注入私钥。共享 `mygo.json` 只记录公钥，详见[密钥说明](updates.md)。
 - 当前附件只支持本机 macOS 架构，要求 macOS 13+；目前已验证 macOS arm64。发布时不跨编译，其他平台包尚未验证。
 - 在 `main` 分支运行，工作区须干净，包括未跟踪文件；版本文件、脚本和配置须已纳入 Git。
 - 默认推送到 `origin` 的唯一 push URL。远程 `main` 须已存在，且不能领先于本地或与本地分叉；必要时先获取远程更新并整合。
@@ -51,7 +53,14 @@ make release VERSION_BUMP=1.2.0-rc.1 RELEASE_FLAGS=--apply
 build/release/Picup-<version>-darwin-<arch>.zip
 ```
 
-ZIP 内含 `Picup.app` 及其附带的 CLI，不上传 DMG 或额外源码包。打包会校验应用、CLI 与目标版本一致，以及产物的本机架构。需要只构建安装包时运行：
+同一目录还生成 MyGo 原生更新附件：
+
+```text
+picup-<version>-darwin-<arch>.tar.gz
+update-darwin-<arch>.json
+```
+
+ZIP 内含 `Picup.app`、附带 CLI 与第三方许可说明，不上传 DMG 或额外源码包。更新包使用相同应用内容，Feed 指向该版本在 `knothhe/picup` 的精确附件。打包会校验版本、bundle 标识、本机架构、Feed 的 URL 与大小、更新包内容及 Ed25519 签名；策略使用完整包，不生成差分包。需要只构建安装包和更新附件时运行：
 
 ```sh
 make package-release
@@ -60,9 +69,11 @@ make package-release VERSION=0.1.0    # 校验源码版本为 0.1.0
 
 `VERSION` 用于校验预期版本，不改写源码版本。原有 `make package` 仍使用 MyGo 向 `build/dist/` 打包；发布流程使用上述统一 ZIP。
 
-安装包沿用 MyGo 默认的本地 ad-hoc 签名，当前未配置 Developer ID 签名与 Apple 公证。
+macOS 代码签名沿用 MyGo 的 ad-hoc 签名，当前未配置 Developer ID 或 Apple 公证。更新包的 Ed25519 签名是独立的来源校验，不能代替 Apple 的代码签名与公证。
 
-Release 标题使用 tag，正文包含 Full Changelog 链接，以及上一个可达的较低 SemVer tag 以来的非 merge commit 标题和短 hash，排除版本提交；没有此前 tag 时列出全部历史。预发布会标记为 prerelease。已有 Release 保留原正文，已有同名附件保留不覆盖，只上传缺失附件。
+Release 标题使用 tag，正文包含 Full Changelog 链接，以及上一个可达的较低 SemVer tag 以来的非 merge commit 标题和短 hash，排除版本提交；没有此前 tag 时列出全部历史。预发布会标记为 prerelease。新 Release 先创建草稿，收齐本次全部安装包、更新包和 Feed，并核对 GitHub 返回的 SHA-256 与大小后才公开。已有 Release 保留正文与同名附件；同名内容不一致时停止，不静默覆盖。补传时先完成更新包上传，再上传 Feed。
+
+此处仍由本地 `make release` 执行发布。GitHub CI 只运行检查和构建 artifact，不在 tag 推送后另启发布引擎。CI 中手动选择签名构建也不会上传 Release，见[自动更新与 CI](updates.md)。本地发布只构建本机架构；不要把 arm64 的 Feed 或安装包改名冒充 amd64。
 
 ## 为已有 tag 补建 Release 和安装包
 
@@ -104,6 +115,7 @@ make release-initial RELEASE_FLAGS="--apply --no-push --no-github-release"
 - 提交或 hook 失败：检查版本文件、暂存区和提交结果，按仓库规则处理，不跳过 hook。若已有版本提交但缺少 tag，先核验提交内容和检查结果，再单独处理缺失的附注 tag。
 - 正确 tag 已创建但推送失败：解决网络或权限问题后，用精确版本续推，不再次升级版本。
 - 推送成功但创建 Release 或上传附件失败：解决 `gh` 权限或网络问题后，续推；若 HEAD 已前进，使用 `make release-assets VERSION=<version>` 补包。
+- 草稿缺少附件或校验失败：草稿保持未公开。重建文件与已有同名附件的 SHA-256 不一致时会停止；先核对原始构建产物与草稿，不删除或覆盖已有正式资产来绕过检查。
 
 例如失败版本为 `1.2.0`：
 

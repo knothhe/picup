@@ -40,3 +40,5 @@ picup --config /absolute/path/config.json config path
 ```
 
 环境变量继续覆盖所选 profile 的对应字段。配置路径、覆盖顺序与凭据变量见[配置参考](configuration.md)。
+
+macOS 上可先在桌面端通过 Cloudflare 浏览器授权建立 R2 profile，再由 CLI 使用同一配置路径上传和测试。CLI 从钥匙串读取该连接的凭据，无需复制密钥；首次授权和断开连接在桌面端完成，见 [R2 OAuth 说明](cloudflare-oauth.md)。

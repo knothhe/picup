@@ -60,6 +60,10 @@ func (a *application) handleMainWindowClose(e *mygo.CloseEvent) {
 		return
 	}
 	e.PreventDefault()
+	if a.r2.working && !a.r2.active {
+		return
+	}
+	a.cancelR2Connection()
 	if !a.flushSettingsAutosave() {
 		a.showWindow()
 		return
@@ -193,9 +197,9 @@ func (a *application) lightweightSuspensionReady(now time.Time) bool {
 	return a.config.LightweightMode && !a.quitting && !a.lifecycle.suspended &&
 		!a.lifecycle.mainVisible && !a.quickUpload.visible && !a.lifecycle.hiddenAt.IsZero() &&
 		now.Sub(a.lifecycle.hiddenAt) >= lightweightIdleDelay &&
-		!a.busy && !a.uploading && !a.fileDialogOpen && !a.quickUpload.active && !a.gallery.operation &&
+		!a.busy && !a.uploading && !a.fileDialogOpen && !a.quickUpload.active && !a.gallery.operation && !a.r2.active && !a.r2.working &&
 		!a.settingsSave.pending && !a.settingsSave.failed && !a.profiles.editOpen && !a.profiles.deleteOpen &&
-		!a.gallery.renameOpen && !a.gallery.deleteOpen && a.shortcutEditing == ""
+		!a.gallery.renameOpen && !a.gallery.deleteOpen && a.shortcutEditing == "" && !a.updates.confirming && a.updates.phase != "installing"
 }
 
 func (a *application) suspendLightweightUI(now time.Time) bool {

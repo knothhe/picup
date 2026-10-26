@@ -5,6 +5,11 @@
   "main": "./cmd/picup-gui",
   "icon": "assets/icon.png",
   "out": "build/dist",
-  "resources": ["build/bin/picup"],
-  "macos": {"minimumSystemVersion": "13.0"}
+  "resources": ["build/bin/picup", "build/THIRD_PARTY_NOTICES.txt"],
+  "macos": {"minimumSystemVersion": "13.0"},
+  "updates": {
+    "publicKey": "rRRDKckokpqNjkGQXS47gEhxVqgeoxjy6JPSO9z3XYQ=",
+    "github": "knothhe/picup",
+    "deltas": 0
+  }
 }

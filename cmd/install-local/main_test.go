@@ -3,9 +3,23 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"testing"
 )
+
+func TestInstallBuildsFormalBundleInsteadOfBareDevelopmentPrograms(t *testing.T) {
+	before := runBuildCommand
+	t.Cleanup(func() { runBuildCommand = before })
+	var actual []string
+	runBuildCommand = func(name string, args ...string) error { actual = append([]string{name}, args...); return nil }
+	if err := buildBundle("custom-go"); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(actual, []string{"make", "package-app", "GO=custom-go"}) {
+		t.Fatal("installer bypassed the formal bundle build route", actual)
+	}
+}
 
 func TestDestinationProtection(t *testing.T) {
 	if runtime.GOOS != "darwin" {

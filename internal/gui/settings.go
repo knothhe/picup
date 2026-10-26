@@ -134,7 +134,8 @@ func (a *application) settingsView(c *ui.Context) {
 		})
 	}
 	scrollView(c).Key(settingsScrollIdentity(a.settingsTab)).FillWidth().Grow(1).MinHeight(0).Transition(tabTransition()).Children(func() {
-		ui.Column(c).Key(a.settingsTab).FillWidth().MinWidth(0).Gap(20).Disabled(a.busy || a.gallery.busy).Children(func() {
+		busy := a.busy && !(a.settingsTab == 5 && a.updates.phase == "installing")
+		ui.Column(c).Key(a.settingsTab).FillWidth().MinWidth(0).Gap(20).Disabled(busy || a.gallery.busy || a.r2.saving && a.settingsTab != 0 || a.r2.working && !a.r2.active).Children(func() {
 			switch a.settingsTab {
 			case 0:
 				a.storageSettings(c)

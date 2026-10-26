@@ -29,6 +29,8 @@ type job struct {
 	sourceWidth, sourceHeight   int
 }
 type application struct {
+	r2                                r2SettingsState
+	updates                           updatesState
 	lifecycle                         lifecycleState
 	gallery                           galleryState
 	path                              string
@@ -86,6 +88,15 @@ func Run() error {
 	}
 	mygo.Theme.SetSource(mygo.ThemeSource(cfg.Appearance))
 	mygo.App.OnBeforeQuit(func(e *mygo.QuitEvent) {
+		if !a.prepareUpdateQuit(e) {
+			return
+		}
+		if a.r2.active || a.r2.working {
+			e.PreventDefault()
+			a.r2.quitAfterWork = true
+			a.cancelR2Connection()
+			return
+		}
 		if !a.flushSettingsAutosave() {
 			e.PreventDefault()
 			a.showWindow()
@@ -116,6 +127,7 @@ func Run() error {
 		}
 	})
 	mygo.App.OnWillQuit(func(*mygo.QuitEvent) {
+		a.stopUpdates()
 		if a.quickUpload.window != nil {
 			a.quickUpload.window.Destroy()
 		}
@@ -127,6 +139,9 @@ func Run() error {
 		}
 	})
 	mygo.App.WhenReady(func() {
+		a.initUpdates()
+		a.initR2Settings()
+		a.loadR2ConnectionInfo()
 		a.applyLanguage(false)
 		if loadErr != nil {
 			a.feedback("读取设置失败", loadErr)
@@ -483,7 +498,7 @@ func (a *application) test() {
 	err := c.ApplyEnv()
 	var client *storage.Client
 	if err == nil {
-		client, err = storage.New(c)
+		client, err = storage.NewWithConfigPath(context.Background(), c, a.path)
 	}
 	if err != nil {
 		a.feedback("配置检查失败", err)

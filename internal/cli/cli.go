@@ -310,7 +310,7 @@ func (r Runner) configure(ctx context.Context, path string, c config.Config, arg
 		if err := c.ApplyEnv(); err != nil {
 			return err
 		}
-		client, err := storage.New(c)
+		client, err := storage.NewWithConfigPath(ctx, c, path)
 		if err != nil {
 			return err
 		}

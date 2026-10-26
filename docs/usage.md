@@ -4,7 +4,9 @@
 
 ## 连接存储
 
-在「设置 → 存储」选择 R2 或 S3，填写 Endpoint、Bucket、访问凭据和公开访问地址。Endpoint 不包含 Bucket；AWS S3 可留空，但需填写桶所在的 Region；R2 的 Region 使用 `auto`。
+在 macOS 的「设置 → 存储」点击「连接 Cloudflare R2」，通过系统浏览器授权后选择账号、辖区和 R2 桶，再点击「连接所选存储桶」，即可自动保存为新的 profile，原有配置保留。已有公开域名会自动读取；未配置公开访问的桶仍需先设置公开域名。发行者尚未配置 OAuth client 的构建会提示授权不可用，详见 [R2 OAuth 说明](cloudflare-oauth.md)。
+
+手动连接时选择 R2 或 S3，填写 Endpoint、Bucket、访问凭据和公开访问地址。Endpoint 不包含 Bucket；AWS S3 可留空，但需填写桶所在的 Region；R2 的 Region 使用 `auto`。
 
 设置自动保存，结果在窗口左下角提示。填写完成后点击「测试上传与清理」：测试需要写入与删除权限，图片的公开读取需由存储桶或 CDN 单独配置。保存失败时保留输入，可修正后重试。
 

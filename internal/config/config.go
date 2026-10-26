@@ -14,6 +14,7 @@ import (
 type Config struct {
 	Profiles        []Profile         `json:"profiles,omitempty"`
 	ActiveProfile   string            `json:"active_profile,omitempty"`
+	R2Connection    string            `json:"r2_connection,omitempty"`
 	Provider        string            `json:"provider"`
 	Endpoint        string            `json:"endpoint"`
 	Region          string            `json:"region"`
@@ -49,13 +50,13 @@ func Path() (string, error) {
 		return filepath.Abs(p)
 	}
 	if p := os.Getenv("XDG_CONFIG_HOME"); p != "" {
-		return filepath.Join(p, "picup", "config.json"), nil
+		return filepath.Join(p, DirectoryName, "config.json"), nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".config", "picup", "config.json"), nil
+	return filepath.Join(home, ".config", DirectoryName, "config.json"), nil
 }
 
 func Load(path string) (Config, error) {
@@ -187,6 +188,9 @@ func (c *Config) ApplyEnv() error {
 		{"PROVIDER", &c.Provider}, {"ENDPOINT", &c.Endpoint}, {"REGION", &c.Region}, {"BUCKET", &c.Bucket}, {"ACCESS_KEY", &c.AccessKey}, {"SECRET_KEY", &c.SecretKey}, {"SESSION_TOKEN", &c.SessionToken}, {"PUBLIC_URL", &c.PublicURL}, {"PATH_TEMPLATE", &c.PathTemplate}, {"FORMAT", &c.Format}, {"OUTPUT", &c.Output},
 	} {
 		if v, ok := os.LookupEnv("PICUP_" + item.key); ok {
+			if c.R2Connection != "" && (item.key == "ACCESS_KEY" || item.key == "SECRET_KEY" || item.key == "SESSION_TOKEN") {
+				continue
+			}
 			*item.dst = v
 		}
 	}
@@ -194,7 +198,7 @@ func (c *Config) ApplyEnv() error {
 		key string
 		dst *string
 	}{{"AWS_ACCESS_KEY_ID", &c.AccessKey}, {"AWS_SECRET_ACCESS_KEY", &c.SecretKey}, {"AWS_SESSION_TOKEN", &c.SessionToken}} {
-		if *item.dst == "" {
+		if c.R2Connection == "" && *item.dst == "" {
 			*item.dst = os.Getenv(item.key)
 		}
 	}
@@ -288,6 +292,14 @@ func (c *Config) Set(key, value string) error {
 }
 
 func (c Config) ValidateOptions() error {
+	if c.R2Connection != "" {
+		if c.Provider != "r2" || c.Region != "auto" || !c.PathStyle {
+			return errors.New("Cloudflare OAuth connection requires R2, region auto and path-style addressing")
+		}
+		if c.AccessKey != "" || c.SecretKey != "" || c.SessionToken != "" {
+			return errors.New("Cloudflare OAuth credentials must remain in system credential storage; use a manual profile for explicit credentials")
+		}
+	}
 	if c.Provider != "r2" && c.Provider != "s3" {
 		return errors.New("provider must be s3 or r2")
 	}
@@ -343,7 +355,7 @@ func (c Config) ValidateStorage() error {
 	if c.Bucket == "" || strings.ContainsAny(c.Bucket, "/\\") {
 		return errors.New("set a valid bucket in Settings or picup config")
 	}
-	if c.AccessKey == "" || c.SecretKey == "" {
+	if c.R2Connection == "" && (c.AccessKey == "" || c.SecretKey == "") {
 		return errors.New("set access_key and secret_key, or AWS credential environment variables")
 	}
 	if c.Region == "" {

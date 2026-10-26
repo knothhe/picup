@@ -29,6 +29,9 @@ func TestCredentialAutosaveDebouncesAndSurvivesNavigation(t *testing.T) {
 	if _, err := os.Stat(a.path); !os.IsNotExist(err) {
 		t.Fatal("opening settings wrote a configuration")
 	}
+	// Browser authorization precedes the manual form, which can extend below
+	// the viewport. Bring the credential input into view before editing it.
+	tt.Scroll(900, 500, 0, 300)
 	label, ok := tt.Find("Secret key")
 	if !ok {
 		t.Fatal("secret key field is missing")

@@ -85,6 +85,7 @@ func TestGalleryCacheSeparatesCompleteStorageIdentity(t *testing.T) {
 		"access":     func(c *config.Config) { c.AccessKey += "-other" },
 		"secret":     func(c *config.Config) { c.SecretKey += "-other" },
 		"token":      func(c *config.Config) { c.SessionToken = "new-session" },
+		"oauth":      func(c *config.Config) { c.R2Connection = "another-connection" },
 		"public-url": func(c *config.Config) { c.PublicURL = "https://cdn.example.com" },
 		"path-style": func(c *config.Config) { c.PathStyle = !c.PathStyle },
 	}

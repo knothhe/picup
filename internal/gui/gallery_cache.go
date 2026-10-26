@@ -84,7 +84,8 @@ func newGalleryDiskCache(c config.Config) *galleryDiskCache {
 	identity := struct {
 		Provider, Endpoint, Region, Bucket, AccessKey, SecretKey, SessionToken, PublicURL string
 		PathStyle                                                                         bool
-	}{c.Provider, c.Endpoint, c.Region, c.Bucket, c.AccessKey, c.SecretKey, c.SessionToken, c.PublicURL, c.PathStyle}
+		R2Connection                                                                      string `json:",omitempty"`
+	}{c.Provider, c.Endpoint, c.Region, c.Bucket, c.AccessKey, c.SecretKey, c.SessionToken, c.PublicURL, c.PathStyle, c.R2Connection}
 	return &galleryDiskCache{root: root, dir: filepath.Join(root, galleryDigest(identity)), limit: galleryCacheLimit, epoch: galleryCacheEpoch.Load()}
 }
 

@@ -55,7 +55,7 @@ type Service struct {
 }
 
 func (s Service) Upload(ctx context.Context, data []byte, name string) (Result, error) {
-	client, err := storage.New(s.Config)
+	client, err := storage.NewWithConfigPath(ctx, s.Config, s.ConfigPath)
 	if err != nil {
 		return Result{}, err
 	}

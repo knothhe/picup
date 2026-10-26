@@ -17,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/knothhe/picup/internal/config"
+	"github.com/knothhe/picup/internal/r2oauth"
 )
 
 type Client struct {
@@ -25,12 +26,42 @@ type Client struct {
 }
 
 func New(c config.Config) (*Client, error) {
+	path := ""
+	if c.R2Connection != "" {
+		var err error
+		path, err = config.Path()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return NewWithConfigPath(context.Background(), c, path)
+}
+
+// NewWithConfigPath binds OAuth credentials to the same data directory as the
+// selected profile. S3 retrieves credentials lazily on the operation's worker.
+func NewWithConfigPath(_ context.Context, c config.Config, path string) (*Client, error) {
 	if err := c.ValidateStorage(); err != nil {
 		return nil, err
 	}
-	api := s3.New(s3.Options{Region: c.Region, Credentials: credentials.NewStaticCredentialsProvider(c.AccessKey, c.SecretKey, c.SessionToken), UsePathStyle: c.PathStyle, HTTPClient: &http.Client{Timeout: 90 * time.Second}, BaseEndpoint: optional(c.Endpoint), RequestChecksumCalculation: aws.RequestChecksumCalculationWhenRequired, ResponseChecksumValidation: aws.ResponseChecksumValidationWhenRequired})
+	var provider aws.CredentialsProvider = credentials.NewStaticCredentialsProvider(c.AccessKey, c.SecretKey, c.SessionToken)
+	if c.R2Connection != "" {
+		if path == "" {
+			return nil, fmt.Errorf("configuration path is required for Cloudflare OAuth")
+		}
+		manager := r2oauth.New(path)
+
+		provider = aws.CredentialsProviderFunc(func(ctx context.Context) (aws.Credentials, error) {
+			key, secret, err := manager.Resolve(ctx, c.R2Connection, c.Endpoint, c.Bucket)
+			if err != nil {
+				return aws.Credentials{}, err
+			}
+			return aws.Credentials{AccessKeyID: key, SecretAccessKey: secret, Source: "Picup Cloudflare OAuth"}, nil
+		})
+	}
+	api := s3.New(s3.Options{Region: c.Region, Credentials: provider, UsePathStyle: c.PathStyle, HTTPClient: &http.Client{Timeout: 90 * time.Second}, BaseEndpoint: optional(c.Endpoint), RequestChecksumCalculation: aws.RequestChecksumCalculationWhenRequired, ResponseChecksumValidation: aws.ResponseChecksumValidationWhenRequired})
 	return &Client{api, c}, nil
 }
+
 func optional(s string) *string {
 	if s == "" {
 		return nil

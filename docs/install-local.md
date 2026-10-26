@@ -19,7 +19,7 @@ make package          # 构建并打包当前平台
 make package-release  # 构建本机 macOS 发布 ZIP
 ```
 
-构建产物是 `build/bin/picup` 和 `build/bin/picup-gui`。开发运行时，将两个程序放在同一目录，桌面端才能找到附带的 CLI。打包产物位于 `build/dist/`，应用包会包含 CLI。
+构建产物是 `build/bin/picup` 和 `build/bin/picup-gui`。`make build` / `make run` 默认同时带 `picup_dev` 标签，使用 `picup-dev` 配置目录与 development 凭据通道；开发运行时将两个程序放在同一目录，桌面端才能找到附带的 CLI。`BUILD_TAGS` 可覆盖开发标签。打包和安装入口会重新构建正式 CLI 与 GUI，使用正式 `picup` 数据目录；打包产物位于 `build/dist/`，应用包会包含 CLI。
 
 `make package-release` 将经过版本与内容校验的应用包输出为 `build/release/Picup-<version>-darwin-<arch>.zip`，不生成 DMG。版本来自 `mygo.json`；可传 `VERSION=0.1.0` 校验预期版本，版本不符时停止，不改写源码版本。此命令只打包，不安装或发布。
 
