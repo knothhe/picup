@@ -60,7 +60,6 @@ func (a *application) aboutContent(c *ui.Context) {
 					components.Text(c, aboutSourceLabel(aboutSource())).FontSize(11).TextColor(c.Theme().TextMuted)
 				})
 			})
-			guideParagraph(c, "轻量图片上传工具，连接 S3 / R2，上传并管理你的图片。")
 			ui.Row(c).FillWidth().MinWidth(0).Wrap().Gap(8).Children(func() {
 				for _, link := range []struct{ label, target string }{{"项目主页", picup.RepositoryURL}, {"反馈问题", picup.IssuesURL}, {"发行记录", picup.ReleasesURL}} {
 					if components.Button(c, tr(link.label), components.ButtonOutline).Key(link.target).Clicked() {
@@ -70,7 +69,7 @@ func (a *application) aboutContent(c *ui.Context) {
 			})
 		})
 		settingsGroup(c, "about-local", tr("本机信息"), func() {
-			a.preference(c, "about-config", "配置文件", "桌面端与 CLI 共用。", func() {
+			a.preference(c, "about-config", "配置文件", "", func() {
 				if components.Button(c, tr("复制配置路径"), components.ButtonOutline).Clicked() {
 					c.WriteClipboard(a.path)
 					a.feedback(tr("已复制配置路径"), nil)
@@ -104,9 +103,6 @@ func (a *application) aboutContent(c *ui.Context) {
 					a.feedback("已复制诊断信息", nil)
 				}
 			})
-		})
-		guideSection(c, "about-menu", "菜单栏快捷上传", func() {
-			guideParagraph(c, "直接选择图片或上传剪贴板。关闭窗口后可从菜单栏重新打开，退出请使用菜单栏的「退出 Picup」。")
 		})
 		settingsGroup(c, "about-dependencies", "主要依赖", func() {
 			ui.Column(c).FillWidth().MinWidth(0).Padding(16).Gap(12).Children(func() {

@@ -17,28 +17,45 @@ func profileName(id, name string) string {
 	return name
 }
 
-// The workspace owns one profile switcher, in the sidebar or compact titlebar.
+// The workspace owns one profile switcher, as a card in the sidebar or an
+// avatar in the collapsed rail.
 func (a *application) storageIndicator(c *ui.Context, compact bool) {
+	t := c.Theme()
 	cfg := a.uploadDisplayConfig().Clone()
 	cfg.EnsureProfiles()
 	name := profileName(cfg.ActiveProfile, cfg.CurrentProfileName())
 	summary := profileDestination(cfg.Provider, cfg.Bucket)
-	trigger := ui.ButtonBase(c).Key("current-storage").Label(tr("切换配置")).MinWidth(0).Height(32).Padding(0, 10).Gap(6).Radius(7).AlignItems(ui.Center).Background(ui.Color{}).Disabled(a.profileSwitchBlocked())
+	unconfigured := cfg.ValidateStorage() != nil
+	trigger := ui.ButtonBase(c).Key("current-storage").Label(tr("切换配置")).Radius(9).AlignItems(ui.Center).Background(ui.Color{}).Disabled(a.profileSwitchBlocked())
+	avatar := func(size float32) {
+		ui.Box(c).Size(size, size).Shrink(0).Radius(7).Background(profileColor(cfg.ActiveProfile)).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+			components.Text(c, profileInitial(name)).FontSize(12).FontWeight(600).TextColor(ui.Hex("#ffffff"))
+		})
+	}
 	if compact {
-		trigger.MaxWidth(120).Shrink(0).Height(30).Padding(0, 6)
-	} else {
-		trigger.FillWidth()
-	}
-	if trigger.Hovered() || a.profiles.menuOpen {
-		trigger.Background(c.Theme().Surface)
-	}
-	trigger.Children(func() {
-		text := components.Text(c, name).Shrink(1).MinWidth(0).SingleLine().Ellipsis("…").FontSize(12)
-		if !compact {
-			text.Grow(1)
+		trigger.Size(36, 36).Shrink(0).Justify(ui.Center)
+		if trigger.Hovered() || a.profiles.menuOpen {
+			trigger.Background(t.Text.Alpha(.06))
 		}
-		components.Icon(c, lucide.ChevronDown()).Size(10, 10).Shrink(0).TextColor(c.Theme().TextMuted)
-	})
+		trigger.Children(func() { avatar(28) })
+	} else {
+		trigger.FillWidth().MinWidth(0).Height(46).Padding(0, 8).Gap(10).Border(1, t.Border).Background(t.Surface)
+		if trigger.Hovered() || a.profiles.menuOpen {
+			trigger.Background(t.SurfaceHover)
+		}
+		trigger.Children(func() {
+			avatar(28)
+			ui.Column(c).Grow(1).Shrink(1).MinWidth(0).Gap(1).Children(func() {
+				components.Text(c, name).FillWidth().MinWidth(0).SingleLine().Ellipsis("…").FontSize(12.5).FontWeight(600)
+				color := t.TextMuted
+				if unconfigured {
+					color = t.Danger
+				}
+				components.Text(c, summary).FillWidth().MinWidth(0).SingleLine().Ellipsis("…").FontSize(11).TextColor(color)
+			})
+			components.Icon(c, lucide.ChevronsUpDown()).Size(14, 14).Shrink(0).TextColor(t.TextMuted)
+		})
+	}
 	tooltip := name + "\n" + summary
 	if a.profileSwitchBlocked() {
 		tooltip = tr("当前任务完成后可切换配置。")
@@ -52,9 +69,6 @@ func (a *application) storageIndicator(c *ui.Context, compact bool) {
 	}
 	if a.profileSwitchBlocked() {
 		a.profiles.menuOpen = false
-	}
-	if compact != a.sidebarCollapsed {
-		return
 	}
 	a.profileMenu(c, trigger, compact, cfg)
 }
@@ -70,8 +84,10 @@ func (a *application) profileMenu(c *ui.Context, anchor ui.Element, compact bool
 	components.Popover(c, anchor, &a.profiles.menuOpen, func(panel ui.Element) {
 		width, height := c.Size()
 		panel.Label(tr("配置菜单")).Width(280).MaxWidth(width - 24).Padding(5).Gap(4)
-		if !compact {
-			panel.AttachTo(anchor, ui.AnchorTopStart, ui.AnchorBottomStart).Margin(0, 0, 4, 0)
+		if compact {
+			panel.AttachTo(anchor, ui.AnchorTopEnd, ui.AnchorTopStart).Margin(0, 0, 0, 8)
+		} else {
+			panel.AttachTo(anchor, ui.AnchorBottomStart, ui.AnchorTopStart).Margin(4, 0, 0, 0)
 		}
 		components.Text(c, tr("切换配置")).FontSize(10).TextColor(c.Theme().TextMuted).Padding(6, 10)
 		listHeight := min(float32(len(cfg.Profiles))*56, min(float32(320), max(float32(112), height-200)))
@@ -85,6 +101,9 @@ func (a *application) profileMenu(c *ui.Context, anchor ui.Element, compact bool
 						option.Background(c.Theme().Text.Alpha(.04))
 					}
 					option.Children(func() {
+						ui.Box(c).Size(28, 28).Shrink(0).Radius(7).Background(profileColor(profile.ID)).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+							components.Text(c, profileInitial(profileName(profile.ID, profile.Name))).FontSize(12).FontWeight(600).TextColor(ui.Hex("#ffffff"))
+						})
 						ui.Column(c).Grow(1).Shrink(1).MinWidth(0).Gap(4).Children(func() {
 							components.Text(c, profileName(profile.ID, profile.Name)).FillWidth().MinWidth(0).SingleLine().Ellipsis("…").FontSize(12)
 							components.Text(c, profileDestination(profile.Provider, profile.Bucket)).FillWidth().MinWidth(0).SingleLine().Ellipsis("…").FontSize(11).TextColor(c.Theme().TextMuted)
@@ -114,10 +133,7 @@ func (a *application) profileSettings(c *ui.Context) {
 	cfg := a.currentSettings().Clone()
 	cfg.EnsureProfiles()
 	ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(12).Children(func() {
-		ui.Column(c).Grow(1).Shrink(1).MinWidth(0).Gap(5).Children(func() {
-			components.Text(c, tr("配置管理")).FontSize(16).Bold()
-			components.Text(c, tr("为不同存储和使用场景分别保存设置。")).FillWidth().Wrap().FontSize(12).TextColor(c.Theme().TextMuted)
-		})
+		ui.Spacer(c)
 		if components.Button(c, tr("新建配置"), components.ButtonPrimary).Shrink(0).Clicked() {
 			a.beginProfileEdit("new")
 		}
@@ -156,7 +172,6 @@ func (a *application) profileSettings(c *ui.Context) {
 			})
 		})
 	}
-	components.Text(c, tr("存储、图片与输出随配置切换。语言、外观和快捷键在所有配置间共用。")).FillWidth().MinWidth(0).Wrap().FontSize(11).TextColor(c.Theme().TextMuted)
 }
 
 func (a *application) beginProfileEdit(mode string) {

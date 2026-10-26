@@ -40,12 +40,14 @@ type application struct {
 	win                               *mygo.Window
 	tray                              *mygo.Tray
 	quickUpload                       quickUploadState
-	quitting, settingsAdvanced        bool
+	quitting                          bool
 	languagePreview                   bool
 	tab, settingsTab, nextID          int
 	guideTab                          int
 	guideFAQ                          [3]bool
 	sidebarCollapsed                  bool
+	sidebarWidth                      float32
+	storageTest                       storageTestState
 	previousTab                       int
 	jobs                              []*job
 	uploadPreviews                    uploadPreviewState
@@ -495,16 +497,19 @@ func (a *application) test() {
 	c := a.config
 	c.Quality = int(a.quality)
 	c.MaxWidth = int(a.maxWidth)
+	signature := storageSignature(c)
 	err := c.ApplyEnv()
 	var client *storage.Client
 	if err == nil {
 		client, err = storage.NewWithConfigPath(context.Background(), c, a.path)
 	}
 	if err != nil {
+		a.storageTest = storageTestState{signature: signature, err: err, done: true}
 		a.feedback("配置检查失败", err)
 		return
 	}
 	a.busy = true
+	a.storageTest = storageTestState{running: true}
 	a.feedback("正在写入并清理临时测试对象…", nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	a.cancel = cancel
@@ -514,6 +519,7 @@ func (a *application) test() {
 		mygo.RunOnMain(func() {
 			a.busy = false
 			a.cancel = nil
+			a.storageTest = storageTestState{signature: signature, err: err, done: true}
 			if err != nil {
 				a.feedback("连接测试失败", err)
 			} else {

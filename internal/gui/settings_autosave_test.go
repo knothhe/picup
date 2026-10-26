@@ -29,18 +29,13 @@ func TestCredentialAutosaveDebouncesAndSurvivesNavigation(t *testing.T) {
 	if _, err := os.Stat(a.path); !os.IsNotExist(err) {
 		t.Fatal("opening settings wrote a configuration")
 	}
-	// Browser authorization precedes the manual form, which can extend below
-	// the viewport. Bring the credential input into view before editing it.
+	// A new R2 profile starts on Cloudflare authorization; keys are one switch away.
+	if err := tt.Click("访问密钥"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
 	tt.Scroll(900, 500, 0, 300)
-	label, ok := tt.Find("Secret key")
-	if !ok {
-		t.Fatal("secret key field is missing")
-	}
-	// The static label precedes the equally labeled input in the tester.
-	tt.ClickAt(label.X+45, label.Y+label.H+23)
-	if active, _ := tt.TextInputActive(); !active {
-		t.Fatal("secret key input did not receive focus")
-	}
+	focusStorageField(t, tt, "Secret key")
 	tt.Type("test-secret")
 	tt.Advance(400 * time.Millisecond)
 	tt.Type("-latest")

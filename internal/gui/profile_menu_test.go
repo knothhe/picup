@@ -60,22 +60,20 @@ func TestProfileMenuPlacementAndCompactTriggerFit(t *testing.T) {
 				if !ok || trigger.X < 0 || trigger.X+trigger.W > 760 || trigger.Y < 0 || trigger.Y+trigger.H > 620 {
 					t.Fatal("profile trigger is outside the minimum window", trigger)
 				}
-				if collapsed && trigger.Y+trigger.H > 48 || !collapsed && trigger.X+trigger.W > 188 {
-					t.Fatal("profile trigger is outside its navigation area", trigger)
-				}
+				width := sidebarExpandedWidth
 				if collapsed {
-					guide, _ := tt.Find(tr("指南"))
-					settings, _ := tt.Find(tr("设置"))
-					if trigger.W > 120 || guide.X-(trigger.X+trigger.W) > 2.1 || settings.X+settings.W < 748 {
-						t.Fatal("compact profile controls are too wide or not aligned to the right", trigger, guide, settings)
-					}
+					width = sidebarRailWidth
+				}
+				// The switcher heads the sidebar, or the rail when collapsed.
+				if trigger.X+trigger.W > width || trigger.Y > 120 {
+					t.Fatal("profile trigger is outside its navigation area", trigger)
 				}
 				clickProfileControl(t, tt, "切换配置")
 				panel, ok := tt.Find(tr("配置菜单"))
 				if !ok || panel.X < 0 || panel.X+panel.W > 760 || panel.Y < 0 || panel.Y+panel.H > 620 {
 					t.Fatal("profile menu is outside the minimum window", panel)
 				}
-				if collapsed && panel.Y < trigger.Y+trigger.H || !collapsed && panel.Y+panel.H > trigger.Y {
+				if collapsed && panel.X < trigger.X+trigger.W || !collapsed && panel.Y < trigger.Y+trigger.H {
 					t.Fatal("profile menu did not open toward the available space", trigger, panel)
 				}
 				manage, ok := tt.Find(tr("管理配置…"))

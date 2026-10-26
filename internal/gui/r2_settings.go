@@ -13,6 +13,7 @@ import (
 	"github.com/knothhe/picup/internal/config"
 	"github.com/knothhe/picup/internal/r2oauth"
 	"github.com/oneo-me/onevra/source/components"
+	"github.com/oneo-me/onevra/source/icons/lucide"
 )
 
 // The settings view holds only public account/bucket choices. Secrets and the
@@ -36,6 +37,8 @@ type r2SettingsState struct {
 	pending                       []r2oauth.Connection
 	infoGeneration                uint64
 	infoID                        string
+	// mode is the viewer's connection choice for modeProfile; see r2Mode.
+	mode, modeProfile string
 }
 
 func (s *r2SettingsState) recordError(err error) {
@@ -356,126 +359,177 @@ func (a *application) finishR2RequestedQuit() {
 }
 
 func (a *application) r2ConnectionSettings(c *ui.Context) {
+	t := c.Theme()
 	storageFormSection(c, "cloudflare-oauth", "Cloudflare 授权", func() {
-		components.Text(c, tr("在浏览器授权，选择账号和存储桶，自动配置访问凭据。")).FillWidth().MinWidth(0).Wrap().FontSize(11).TextColor(c.Theme().TextMuted)
 		if a.config.R2Connection != "" {
-			components.Text(c, a.config.Bucket).FontSize(13).Bold()
-			components.Text(c, a.config.Endpoint).FillWidth().MinWidth(0).Wrap().FontSize(11).TextColor(c.Theme().TextMuted)
-			components.Text(c, tr("访问凭据保存在系统钥匙串中。")).FontSize(11).Wrap()
-			if connection := a.r2.connection; connection != nil {
-				components.Text(c, tf("凭据到期：%s", connection.ExpiresAt.Local().Format("2006-01-02"))).FontSize(11)
-				if !connection.Renewable {
-					components.Text(c, tr("此授权无法静默续期，到期前请重新连接。")).FontSize(11).Wrap()
-				}
-			}
-			ui.Column(c).Disabled(a.r2.working || a.r2.active).Children(func() {
-				if !a.r2.disconnectOpen {
-					if components.Button(c, tr("断开 Cloudflare"), components.ButtonOutline).Clicked() {
-						a.r2.disconnectOpen = true
+			ui.Row(c).FillWidth().MinWidth(0).Gap(12).AlignItems(ui.Center).Children(func() {
+				iconTile(c, lucide.ShieldCheck(), 36)
+				ui.Column(c).Grow(1).Shrink(1).MinWidth(0).Gap(2).Children(func() {
+					components.Text(c, a.config.Bucket).FontSize(13).FontWeight(600).SingleLine().Ellipsis("…").MinWidth(0)
+					components.Text(c, a.config.Endpoint).FillWidth().MinWidth(0).SingleLine().Ellipsis("…").Tooltip(a.config.Endpoint).FontSize(11.5).TextColor(t.TextMuted)
+				})
+				statusPill(c, tr("已连接"), toneSuccess)
+			})
+			ui.Column(c).FillWidth().MinWidth(0).Gap(4).Children(func() {
+				if connection := a.r2.connection; connection != nil {
+					components.Text(c, tf("凭据到期：%s", connection.ExpiresAt.Local().Format("2006-01-02"))).FontSize(12).TextColor(t.TextMuted)
+					if !connection.Renewable {
+						components.Text(c, tr("此授权无法静默续期，到期前请重新连接。")).FontSize(12).Wrap().TextColor(t.Danger)
 					}
-				} else {
-					components.Text(c, tr("撤销此连接及其副本的访问凭据？桶内图片会保留。")).FillWidth().Wrap().FontSize(12)
-					ui.Row(c).Gap(8).Children(func() {
-						if components.Button(c, tr("确认断开"), components.ButtonOutline).Clicked() {
-							a.disconnectR2()
-						}
-						if components.Button(c, tr("取消"), components.ButtonGhost).Clicked() {
-							a.r2.disconnectOpen = false
-						}
-					})
 				}
 			})
+			a.r2DisconnectControls(c)
 		}
 		if !a.r2.active {
-			ui.Column(c).Disabled(a.r2.working || a.r2.configurationError != nil).Children(func() {
-				if components.Button(c, tr("连接 Cloudflare R2"), components.ButtonPrimary).Clicked() {
+			if a.config.R2Connection == "" {
+				components.Text(c, tr("授权后会新建一个配置，当前配置保持不变。")).FillWidth().MinWidth(0).Wrap().FontSize(12).TextColor(t.TextMuted)
+			}
+			ui.Column(c).AlignSelf(ui.Start).Disabled(a.r2.working || a.r2.configurationError != nil).Children(func() {
+				variant := components.ButtonPrimary
+				if a.config.R2Connection != "" {
+					variant = components.ButtonOutline
+				}
+				if components.Button(c, tr("连接 Cloudflare R2"), variant).Clicked() {
 					a.beginR2Connection()
 				}
 			})
 			if a.r2.initialized && a.r2.configurationError != nil {
-				components.Text(c, tr("当前构建尚未启用 Cloudflare 授权，请联系应用发行者。")).FillWidth().Wrap().FontSize(11).TextColor(c.Theme().TextMuted)
+				components.Text(c, tr("当前构建尚未启用 Cloudflare 授权，请联系应用发行者。")).FillWidth().Wrap().FontSize(12).TextColor(t.TextMuted)
 			}
 		} else {
-			components.Text(c, tr("授权页如有 Sensitive scopes，请在 Edit Permissions 中开启 Account API Tokens Write。")).FillWidth().Wrap().FontSize(11).TextColor(c.Theme().TextMuted)
+			components.Text(c, tr("授权页如有 Sensitive scopes，请在 Edit Permissions 中开启 Account API Tokens Write。")).FillWidth().Wrap().FontSize(12).TextColor(t.TextMuted)
 			if len(a.r2.accounts) == 0 {
 				text := "等待浏览器授权…"
 				if !a.r2.working {
 					text = "没有可访问的 Cloudflare 账号，请检查授权权限。"
 				}
-				components.Text(c, tr(text)).FontSize(12).Wrap()
+				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+					if a.r2.working {
+						components.Spinner(c, components.SpinnerRing).Size(14, 14)
+					}
+					components.Text(c, tr(text)).FontSize(12.5).Wrap()
+				})
+				if components.Button(c, tr("取消连接"), components.ButtonGhost).AlignSelf(ui.Start).Clicked() {
+					a.cancelR2Connection()
+				}
 			} else {
 				a.r2BucketChoices(c)
 			}
-			ui.Row(c).Gap(8).Children(func() {
-				ui.Column(c).Children(func() {
-					if components.Button(c, tr("取消连接"), components.ButtonGhost).Clicked() {
-						a.cancelR2Connection()
-					}
-				})
-			})
 		}
 		if a.r2.working && !a.r2.active {
-			components.Text(c, tr("正在处理 Cloudflare 连接…")).FontSize(11)
+			components.Text(c, tr("正在处理 Cloudflare 连接…")).FontSize(12).TextColor(t.TextMuted)
 		}
-		for _, pending := range a.r2.pending {
-			ui.Column(c).Key("pending-" + pending.ID).FillWidth().Gap(8).Children(func() {
-				components.Text(c, tf("待清理的 Cloudflare 连接：%s", pending.Bucket)).FontSize(11).Wrap()
-				if components.Button(c, tr("重试清理临时连接"), components.ButtonOutline).Disabled(a.r2.working).Clicked() {
-					a.disconnectR2ID(pending.ID)
-				}
-			})
-		}
+		a.r2PendingCleanup(c)
 		if a.r2.err != nil && a.r2.err != context.Canceled {
-			components.Text(c, a.r2.err.Error()).FillWidth().MinWidth(0).Wrap().FontSize(11).TextColor(c.Theme().Danger)
+			components.Text(c, a.r2.err.Error()).FillWidth().MinWidth(0).Wrap().FontSize(12).TextColor(t.Danger)
 		}
 	})
 }
 
-func (a *application) r2BucketChoices(c *ui.Context) {
-	ui.Column(c).FillWidth().Gap(10).Disabled(a.r2.saving).Children(func() {
-		ids, labels := make([]string, len(a.r2.accounts)), make([]string, len(a.r2.accounts))
-		for i, account := range a.r2.accounts {
-			ids[i], labels[i] = account.ID, account.Name
-		}
-		beforeAccount, beforeJurisdiction := a.r2.account, a.r2.jurisdiction
-		components.Text(c, tr("Cloudflare 账号")).FontSize(12)
-		selectControl(c, "Cloudflare 账号", &a.r2.account, ids, labels)
-		components.Text(c, tr("数据辖区")).FontSize(12)
-		jurisdictionLabels := make([]string, len(cloudflare.Jurisdictions))
-		for i, jurisdiction := range cloudflare.Jurisdictions {
-			jurisdictionLabels[i] = map[string]string{"default": "默认", "eu": "欧盟", "us": "美国", "fedramp": "FedRAMP", "fedramp-high": "FedRAMP High"}[jurisdiction]
-			if jurisdictionLabels[i] == "" {
-				jurisdictionLabels[i] = jurisdiction
-			}
-		}
-		selectControl(c, "数据辖区", &a.r2.jurisdiction, cloudflare.Jurisdictions, jurisdictionLabels)
-		if beforeAccount != a.r2.account || beforeJurisdiction != a.r2.jurisdiction {
-			a.loadR2Buckets()
-		}
-		if a.r2.working {
-			components.Text(c, tr("正在加载存储桶…")).FontSize(11)
-		} else if len(a.r2.buckets) == 0 {
-			components.Text(c, tr("此辖区没有可访问的桶。请先在 Cloudflare 开通 R2 并创建桶。")).FontSize(11).Wrap()
-		}
-		if len(a.r2.buckets) > 0 {
-			names := make([]string, len(a.r2.buckets))
-			for i, bucket := range a.r2.buckets {
-				names[i] = bucket.Name
-			}
-			components.Text(c, tr("存储桶")).FontSize(12)
-			selectControl(c, "存储桶", &a.r2.bucket, names, names)
-		}
-		ui.Row(c).Gap(8).Children(func() {
-			ui.Column(c).Disabled(a.r2.working || a.r2.bucket == "").Children(func() {
-				if components.Button(c, tr("连接所选存储桶"), components.ButtonPrimary).Clicked() {
-					a.saveR2Connection()
-				}
-			})
-			ui.Column(c).Disabled(a.r2.working).Children(func() {
-				if components.Button(c, tr("刷新存储桶"), components.ButtonGhost).Clicked() {
-					a.loadR2Buckets()
-				}
-			})
+// An authorized profile's keys belong to its connection; manual keys need the
+// authorization removed first, which revokes the remote credentials.
+func (a *application) r2ManagedKeysNotice(c *ui.Context) {
+	t := c.Theme()
+	storageFormSection(c, "r2-managed-keys", "访问密钥", func() {
+		ui.Row(c).FillWidth().MinWidth(0).Gap(10).AlignItems(ui.Start).Children(func() {
+			components.Icon(c, lucide.Info()).Size(15, 15).Shrink(0).TextColor(t.TextMuted)
+			components.Text(c, tr("此配置的凭据由 Cloudflare 授权管理。改用访问密钥前，请先断开授权，桶内图片会保留。")).Grow(1).MinWidth(0).Wrap().FontSize(12).TextColor(t.TextMuted)
 		})
+		a.r2DisconnectControls(c)
+		if a.r2.err != nil && a.r2.err != context.Canceled {
+			components.Text(c, a.r2.err.Error()).FillWidth().MinWidth(0).Wrap().FontSize(12).TextColor(t.Danger)
+		}
+	})
+}
+
+func (a *application) r2DisconnectControls(c *ui.Context) {
+	ui.Column(c).FillWidth().Gap(8).Disabled(a.r2.working || a.r2.active).Children(func() {
+		if !a.r2.disconnectOpen {
+			if components.Button(c, tr("断开 Cloudflare"), components.ButtonOutline).TextColor(c.Theme().Danger).AlignSelf(ui.Start).Clicked() {
+				a.r2.disconnectOpen = true
+			}
+			return
+		}
+		components.Text(c, tr("撤销此连接及其副本的访问凭据？桶内图片会保留。")).FillWidth().Wrap().FontSize(12.5)
+		ui.Row(c).Gap(8).Children(func() {
+			if components.Button(c, tr("确认断开"), components.ButtonOutline).TextColor(c.Theme().Danger).Clicked() {
+				a.disconnectR2()
+			}
+			if components.Button(c, tr("取消"), components.ButtonGhost).Clicked() {
+				a.r2.disconnectOpen = false
+			}
+		})
+	})
+}
+
+func (a *application) r2PendingCleanup(c *ui.Context) {
+	for _, pending := range a.r2.pending {
+		ui.Column(c).Key("pending-" + pending.ID).FillWidth().Gap(8).Children(func() {
+			components.Text(c, tf("待清理的 Cloudflare 连接：%s", pending.Bucket)).FontSize(12).Wrap()
+			if components.Button(c, tr("重试清理临时连接"), components.ButtonOutline).Disabled(a.r2.working).Clicked() {
+				a.disconnectR2ID(pending.ID)
+			}
+		})
+	}
+}
+
+func (a *application) r2BucketChoices(c *ui.Context) {
+	ui.Column(c).FillWidth().Gap(10).Children(func() {
+		ui.Column(c).FillWidth().Gap(10).Disabled(a.r2.saving).Children(func() { a.r2BucketSelects(c) })
+		a.r2BucketActions(c)
+	})
+}
+
+func (a *application) r2BucketSelects(c *ui.Context) {
+	ids, labels := make([]string, len(a.r2.accounts)), make([]string, len(a.r2.accounts))
+	for i, account := range a.r2.accounts {
+		ids[i], labels[i] = account.ID, account.Name
+	}
+	beforeAccount, beforeJurisdiction := a.r2.account, a.r2.jurisdiction
+	components.Text(c, tr("Cloudflare 账号")).FontSize(12.5)
+	selectControl(c, "Cloudflare 账号", &a.r2.account, ids, labels)
+	components.Text(c, tr("数据辖区")).FontSize(12.5)
+	jurisdictionLabels := make([]string, len(cloudflare.Jurisdictions))
+	for i, jurisdiction := range cloudflare.Jurisdictions {
+		jurisdictionLabels[i] = map[string]string{"default": "默认", "eu": "欧盟", "us": "美国", "fedramp": "FedRAMP", "fedramp-high": "FedRAMP High"}[jurisdiction]
+		if jurisdictionLabels[i] == "" {
+			jurisdictionLabels[i] = jurisdiction
+		}
+	}
+	selectControl(c, "数据辖区", &a.r2.jurisdiction, cloudflare.Jurisdictions, jurisdictionLabels)
+	if beforeAccount != a.r2.account || beforeJurisdiction != a.r2.jurisdiction {
+		a.loadR2Buckets()
+	}
+	if a.r2.working {
+		components.Text(c, tr("正在加载存储桶…")).FontSize(11)
+	} else if len(a.r2.buckets) == 0 {
+		components.Text(c, tr("此辖区没有可访问的桶。请先在 Cloudflare 开通 R2 并创建桶。")).FontSize(11).Wrap()
+	}
+	if len(a.r2.buckets) > 0 {
+		names := make([]string, len(a.r2.buckets))
+		for i, bucket := range a.r2.buckets {
+			names[i] = bucket.Name
+		}
+		components.Text(c, tr("存储桶")).FontSize(12)
+		selectControl(c, "存储桶", &a.r2.bucket, names, names)
+	}
+}
+
+func (a *application) r2BucketActions(c *ui.Context) {
+	ui.Row(c).FillWidth().Gap(8).Children(func() {
+		ui.Column(c).Disabled(a.r2.working || a.r2.bucket == "").Children(func() {
+			if components.Button(c, tr("连接所选存储桶"), components.ButtonPrimary).Clicked() {
+				a.saveR2Connection()
+			}
+		})
+		ui.Column(c).Disabled(a.r2.working).Children(func() {
+			if components.Button(c, tr("刷新存储桶"), components.ButtonGhost).Clicked() {
+				a.loadR2Buckets()
+			}
+		})
+		ui.Spacer(c)
+		if components.Button(c, tr("取消连接"), components.ButtonGhost).Clicked() {
+			a.cancelR2Connection()
+		}
 	})
 }

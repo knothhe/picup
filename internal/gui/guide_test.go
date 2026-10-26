@@ -96,7 +96,7 @@ func TestCompactGuideAndAboutLayouts(t *testing.T) {
 							}
 						}
 						r, ok := tt.Find(label)
-						if !ok || r.X < 0 || r.X+r.W > float32(size[0])+1 || r.Y < 48 || r.Y+r.H > float32(size[1]) {
+						if !ok || r.X < 0 || r.X+r.W > float32(size[0])+1 || r.Y < 0 || r.Y+r.H > float32(size[1]) {
 							t.Fatalf("primary action outside window: %s %v", label, r)
 						}
 						if tab == 5 {
@@ -183,7 +183,7 @@ func TestSettingsLanguagePreviewsAndAutosaves(t *testing.T) {
 		t.Fatal(err)
 	}
 	tt.Advance(400 * time.Millisecond)
-	if a.config.Language != "en" || !tt.HasText("Changes are saved automatically and shared with the CLI.") {
+	if a.config.Language != "en" || !tt.HasText("Shared by all profiles") || !tt.HasText("Saving…") {
 		t.Fatal("language selection did not preview immediately", a.config.Language, tt.Texts())
 	}
 	if _, err := os.Stat(a.path); !os.IsNotExist(err) {

@@ -5,20 +5,12 @@ import (
 	"strings"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/knothhe/picup/internal/config"
 	"github.com/knothhe/picup/internal/service"
 	"github.com/oneo-me/onevra/source/components"
 	"github.com/oneo-me/onevra/source/icons/lucide"
 )
 
-func heading(c *ui.Context, title, subtitle string) {
-	ui.Column(c).FillWidth().Gap(6).Children(func() {
-		components.Text(c, title).FontSize(25).Bold().ContentTransition(navigationContentTransition())
-		components.Text(c, subtitle).FontSize(12).TextColor(c.Theme().TextMuted).Wrap().ContentTransition(navigationContentTransition())
-	})
-}
-func card(c *ui.Context, key string, build func()) {
-	ui.Column(c).Key(key).FillWidth().Background(c.Theme().Surface).Radius(12).Padding(20).Gap(16).Children(build)
-}
 func bytesLabel(n int) string {
 	if n >= 1<<20 {
 		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
@@ -29,163 +21,287 @@ func bytesLabel(n int) string {
 	return fmt.Sprintf("%d B", n)
 }
 
-func uploadSizeSummary(r *service.Result) string {
-	summary := fmt.Sprintf("%s → %s · %d × %d", bytesLabel(r.OriginalBytes), bytesLabel(r.Bytes), r.Width, r.Height)
+// uploadSizeParts separates the measured sizes from the size change, so the
+// change can carry its own tone.
+func uploadSizeParts(r *service.Result) (sizes, change string, saved bool) {
+	sizes = fmt.Sprintf("%s → %s · %d × %d", bytesLabel(r.OriginalBytes), bytesLabel(r.Bytes), r.Width, r.Height)
 	if r.OriginalBytes <= 0 {
-		return summary
+		return sizes, "", false
 	}
 	if r.Bytes == r.OriginalBytes {
-		return summary + " · " + tr("体积未减少")
+		return sizes, tr("体积未减少"), false
 	}
-	change := 100 * float64(r.OriginalBytes-r.Bytes) / float64(r.OriginalBytes)
-	if change > 0 {
-		return summary + " · " + tf("节省 %s", fmt.Sprintf("%.1f%%", change))
+	delta := 100 * float64(r.OriginalBytes-r.Bytes) / float64(r.OriginalBytes)
+	if delta > 0 {
+		return sizes, tf("节省 %s", fmt.Sprintf("%.1f%%", delta)), true
 	}
-	return summary + " · " + tf("体积增加 %s", fmt.Sprintf("%.1f%%", -change))
+	return sizes, tf("体积增加 %s", fmt.Sprintf("%.1f%%", -delta)), false
+}
+
+func uploadSizeSummary(r *service.Result) string {
+	sizes, change, _ := uploadSizeParts(r)
+	if change == "" {
+		return sizes
+	}
+	return sizes + " · " + change
+}
+
+func storageDestination(cfg config.Config) string {
+	if cfg.Bucket == "" {
+		return tr("尚未配置存储")
+	}
+	return strings.ToUpper(cfg.Provider) + " · " + cfg.Bucket
+}
+
+type statusTone int
+
+const (
+	toneNeutral statusTone = iota
+	toneAccent
+	toneSuccess
+	toneDanger
+)
+
+// statusPill is the shared capsule for per-item states.
+func statusPill(c *ui.Context, text string, tone statusTone) {
+	t := c.Theme()
+	background, color := sunkenColor(t), t.TextMuted
+	switch tone {
+	case toneAccent:
+		background, color = accentSoft(t), t.Accent
+	case toneSuccess:
+		background, color = successSoft(t), t.Success
+	case toneDanger:
+		background, color = dangerSoft(t), t.Danger
+	}
+	ui.Row(c).Height(22).Shrink(0).Padding(0, 8).Gap(4).Radius(11).Background(background).AlignItems(ui.Center).Children(func() {
+		switch tone {
+		case toneAccent:
+			components.Spinner(c, components.SpinnerRing).Size(11, 11).TextColor(color)
+		case toneSuccess:
+			components.Icon(c, lucide.Check()).Size(12, 12).TextColor(color)
+		}
+		components.Text(c, text).FontSize(11.5).TextColor(color).SingleLine()
+	})
+}
+
+// iconTile frames a page-level symbol on a soft accent square.
+func iconTile(c *ui.Context, icon *ui.SVG, size float32) {
+	t := c.Theme()
+	ui.Box(c).Size(size, size).Shrink(0).Radius(size / 4).Background(accentSoft(t)).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+		components.Icon(c, icon).Size(size/2, size/2).TextColor(t.Accent)
+	})
+}
+
+func (a *application) shortcutHint(c *ui.Context, id string, color ui.Color) {
+	if binding := a.shortcutBinding(id); binding.key != ui.KeyUnknown {
+		components.Text(c, binding.label()).FontSize(11).TextColor(color).SingleLine().Shrink(0)
+	}
+}
+
+func (a *application) uploadHeaderContext(c *ui.Context) {
+	headerChip(c, lucide.Cloud(), storageDestination(a.uploadDisplayConfig()))
+}
+
+func (a *application) uploadHeaderActions(c *ui.Context) {
+	if components.Button(c, tr("存储设置"), components.ButtonGhost).TextColor(c.Theme().TextMuted).Clicked() {
+		a.openSettings(0)
+	}
 }
 
 func (a *application) uploadView(c *ui.Context) {
 	a.loadUploadPreviews(a.jobs)
 	counts := a.uploadCounts()
 	config := a.uploadDisplayConfig()
-	t := c.Theme()
-	ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(12).Children(func() {
-		components.Text(c, tr("上传")).FontSize(22).Bold()
-		ui.Row(c).Grow(1).MinWidth(0).AlignItems(ui.Center).Gap(7).Children(func() {
-			components.Icon(c, lucide.Cloud()).Size(14, 14).TextColor(t.TextMuted)
-			destination := tr("尚未配置存储")
-			if config.Bucket != "" {
-				destination = strings.ToUpper(config.Provider) + " · " + config.Bucket
-			}
-			components.Text(c, destination).SingleLine().Ellipsis("…").FontSize(11).TextColor(t.TextMuted).MinWidth(0)
-		})
-		if components.Button(c, tr("存储设置"), components.ButtonGhost).Shrink(0).Clicked() {
-			a.openSettings(0)
+	unconfigured := config.ValidateStorage() != nil
+	ui.Column(c).FillWidth().Grow(1).MinHeight(0).Padding(20, 24).Gap(14).Children(func() {
+		if unconfigured {
+			a.uploadSetup(c, counts.total > 0)
+		}
+		a.uploadDropZone(c, counts.total > 0)
+		if counts.total > 0 {
+			a.uploadQueueToolbar(c, counts)
+			jobs := append([]*job(nil), a.jobs...)
+			scrollView(c).Key("upload-files").FillWidth().Grow(1).MinHeight(0).Children(func() {
+				ui.Column(c).FillWidth().Radius(10).Border(1, c.Theme().Border).Clip().Children(func() {
+					for i, j := range jobs {
+						a.jobView(c, j, i == 0)
+					}
+				})
+			})
 		}
 	})
-	if config.ValidateStorage() != nil {
-		ui.Row(c).FillWidth().Shrink(0).Padding(8, 12).Radius(8).Border(1, t.Border).Background(t.Surface).AlignItems(ui.Center).Gap(8).Children(func() {
+	a.uploadActionBar(c, counts, config)
+}
+
+// uploadSetup walks a new profile through connecting storage. Once files are
+// queued it shrinks to a single line so the queue keeps its room.
+func (a *application) uploadSetup(c *ui.Context, compact bool) {
+	t := c.Theme()
+	if compact {
+		ui.Row(c).FillWidth().Shrink(0).Padding(8, 12).Radius(8).Border(1, t.Border).Background(sunkenColor(t)).AlignItems(ui.Center).Gap(8).Children(func() {
 			components.Icon(c, lucide.Info()).Size(14, 14).TextColor(t.TextMuted)
-			components.Text(c, tr("连接存储后，即可上传图片。")).Grow(1).MinWidth(0).Wrap().FontSize(11).TextColor(t.TextMuted)
-			if components.Button(c, tr("配置存储"), components.ButtonGhost).Shrink(0).Clicked() {
+			components.Text(c, tr("连接存储后，即可上传图片。")).Grow(1).MinWidth(0).Wrap().FontSize(12).TextColor(t.TextMuted)
+			if components.Button(c, tr("配置存储"), components.ButtonGhost).Shrink(0).TextColor(t.Accent).Clicked() {
 				a.openSettings(0)
 			}
 		})
+		return
 	}
-	a.uploadDropZone(c, counts.total > 0)
-	if counts.total > 0 {
-		a.uploadQueueToolbar(c, counts)
-		jobs := append([]*job(nil), a.jobs...)
-		scrollView(c).Key("upload-files").FillWidth().Grow(1).MinHeight(0).Children(func() {
-			ui.Column(c).FillWidth().Gap(8).Children(func() {
-				for _, j := range jobs {
-					a.jobView(c, j)
+	ui.Column(c).Key("upload-setup").FillWidth().Shrink(0).Padding(16, 18).Radius(12).Border(1, t.Border).Background(t.Surface).Gap(4).Children(func() {
+		components.Text(c, tr("连接存储，开始上传")).FontSize(15).FontWeight(600)
+		steps := []string{"填写存储连接", "测试上传与清理", "上传第一张图片"}
+		for i, step := range steps {
+			ui.Row(c).Key(i).FillWidth().Padding(10, 0, 0, 0).Gap(12).AlignItems(ui.Center).Children(func() {
+				number := ui.Box(c).Size(22, 22).Shrink(0).Radius(11).AlignItems(ui.Center).Justify(ui.Center)
+				color := t.TextMuted
+				if i == 0 {
+					number.Background(t.Accent)
+					color = t.AccentText
+				} else {
+					number.Border(1.5, controlBorder(t))
+				}
+				number.Children(func() { components.Text(c, fmt.Sprint(i+1)).FontSize(11).FontWeight(600).TextColor(color) })
+				components.Text(c, tr(step)).Grow(1).MinWidth(0).FontSize(13).FontWeight(500)
+				if i == 0 && components.Button(c, tr("配置存储"), components.ButtonPrimary).Shrink(0).Clicked() {
+					a.openSettings(0)
 				}
 			})
-		})
-	} else {
-		ui.Spacer(c)
-	}
-	ui.Row(c).FillWidth().Shrink(0).Wrap().AlignItems(ui.Center).Gap(8).Children(func() {
-		components.Icon(c, lucide.Sparkles()).Size(14, 14).TextColor(t.Accent)
-		label := tr("保留原图")
-		if config.Compress {
-			label = tf("默认压缩 · 质量 %d", config.Quality)
 		}
-		components.Text(c, label).FontSize(11).TextColor(t.TextMuted)
-		if components.Button(c, tr("图片设置"), components.ButtonGhost).Clicked() {
-			a.openSettings(1)
-		}
-		ui.Spacer(c)
-		components.Text(c, tr("添加后手动开始上传")).FontSize(11).TextColor(t.TextMuted)
 	})
 }
 
+// The drop zone is a slim bar beside a queue and the page's centre when empty.
+// Files dropped anywhere in the window are accepted as well.
 func (a *application) uploadDropZone(c *ui.Context, compact bool) {
 	t := c.Theme()
-	height := float32(300)
+	zone := ui.Box(c).Key("drop-zone").FillWidth().Radius(12).Border(1.5, controlBorder(t)).BorderStyle(ui.BorderDashed).Background(sunkenColor(t)).Disabled(a.busy)
 	if compact {
-		height = 132
-	}
-	zone := ui.Box(c).Key("drop-zone").FillWidth().Shrink(0).Height(height).Radius(12).Border(1, t.Border.Mix(t.TextMuted, .25)).BorderStyle(ui.BorderDashed).Background(t.Surface).Disabled(a.busy)
-	if !compact {
-		zone.Shrink(1).MinHeight(180)
+		zone.Shrink(0).Height(68).Radius(10)
+	} else {
+		zone.Grow(1).MinHeight(200)
 	}
 	dragging := zone.FileDragOver()
 	if paths := zone.DroppedFiles(); len(paths) > 0 {
 		a.addFiles(paths)
 	}
+	if dragging {
+		zone.BorderColor(t.Accent).BorderStyle(ui.BorderSolid).Background(accentSoft(t))
+	}
 	zone.Children(func() {
-		selectFiles := ui.ButtonBase(c).Key("choose-files").Label(tr("选择图片")).Fill().Background(ui.Color{}).Radius(12)
-		if selectFiles.Hovered() || selectFiles.FocusVisible() || dragging {
-			zone.BorderColor(t.Accent).Background(t.Surface.Mix(t.Accent, .035))
-		}
-		selectFiles.Children(func() {
-			ui.Column(c).FillWidth().AlignItems(ui.Center).Justify(ui.Center).Padding(0, 16, 34, 16).Gap(10).Children(func() {
-				if compact {
-					ui.Row(c).AlignItems(ui.Center).Gap(12).Children(func() {
-						components.Icon(c, lucide.ImageUp()).Size(28, 28).TextColor(t.TextMuted)
-						ui.Column(c).Gap(5).Children(func() { uploadDropCopy(c, true, dragging) })
-					})
-				} else {
-					components.Icon(c, lucide.ImageUp()).Size(44, 44).TextColor(t.TextMuted)
-					uploadDropCopy(c, false, dragging)
-				}
-			})
-		})
-		if selectFiles.Clicked() {
-			a.choose()
-		}
-		bottom := float32(28)
 		if compact {
-			bottom = 10
+			ui.Row(c).Fill().Padding(0, 12, 0, 14).Gap(12).AlignItems(ui.Center).Children(func() {
+				pick := ui.ButtonBase(c).Key("choose-files").Label(tr("选择图片")).Grow(1).MinWidth(0).FillHeight().Gap(14).AlignItems(ui.Center).Justify(ui.Start).Background(ui.Color{})
+				if pick.Hovered() || pick.FocusVisible() {
+					zone.BorderColor(t.Accent)
+				}
+				pick.Children(func() {
+					iconTile(c, lucide.ImageUp(), 40)
+					ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() { uploadDropCopy(c, true, dragging) })
+				})
+				if pick.Clicked() {
+					a.choose()
+				}
+				a.pasteButton(c, components.ButtonOutline)
+			})
+			return
 		}
-		ui.Row(c).Absolute().Left(0).Right(0).Bottom(bottom).Height(30).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
-			if components.Button(c, tr("从剪贴板粘贴"), components.ButtonGhost).TextColor(t.Accent).Clicked() {
-				a.paste()
-			}
-			if binding := a.shortcutBinding("paste"); binding.key != ui.KeyUnknown {
-				components.Text(c, binding.label()).FontSize(10).TextColor(t.TextMuted)
-			}
+		ui.Column(c).Fill().Padding(24).AlignItems(ui.Center).Justify(ui.Center).Gap(12).Children(func() {
+			iconTile(c, lucide.ImageUp(), 64)
+			uploadDropCopy(c, false, dragging)
+			ui.Row(c).Gap(8).Padding(4, 0, 0, 0).AlignItems(ui.Center).Children(func() {
+				choose := components.Button(c, "", components.ButtonPrimary).Key("choose-files").Label(tr("选择图片")).Gap(8)
+				choose.Children(func() {
+					components.Text(c, tr("选择图片")).FontSize(12.5).FontWeight(500).TextColor(t.AccentText)
+					a.shortcutHint(c, "choose", t.AccentText.Alpha(.75))
+				})
+				if choose.Clicked() {
+					a.choose()
+				}
+				a.pasteButton(c, components.ButtonOutline)
+			})
+			components.Text(c, "PNG · JPEG · WebP · GIF · HEIC / AVIF · TIFF").FontSize(11.5).TextColor(t.TextMuted)
 		})
 	})
 }
 
-func uploadDropCopy(c *ui.Context, compact, dragging bool) {
-	size := float32(16)
-	if compact {
-		size = 13
+func (a *application) pasteButton(c *ui.Context, variant components.ButtonVariant) {
+	t := c.Theme()
+	paste := components.Button(c, "", variant).Shrink(0).Gap(6).Label(tr("从剪贴板粘贴"))
+	paste.Children(func() {
+		components.Icon(c, lucide.Clipboard()).Size(14, 14).TextColor(t.TextMuted)
+		components.Text(c, tr("从剪贴板粘贴")).FontSize(12.5)
+		a.shortcutHint(c, "paste", t.TextMuted)
+	})
+	if paste.Clicked() {
+		a.paste()
 	}
-	ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
+}
+
+func uploadDropCopy(c *ui.Context, compact, dragging bool) {
+	t := c.Theme()
+	if !compact {
+		title := tr("拖入图片开始上传")
+		if dragging {
+			title = tr("松开即可添加图片")
+		}
+		components.Text(c, title).FontSize(18).FontWeight(600)
+		return
+	}
+	ui.Row(c).AlignItems(ui.Center).Gap(5).Children(func() {
 		label := tr("拖入图片，或")
 		if dragging {
 			label = tr("松开即可添加图片")
 		}
-		components.Text(c, label).FontSize(size).Bold()
+		components.Text(c, label).FontSize(13).FontWeight(600).SingleLine()
 		if !dragging {
-			components.Text(c, tr("选择图片")).FontSize(size).Bold().TextColor(c.Theme().Accent)
+			components.Text(c, tr("选择图片")).FontSize(13).FontWeight(600).TextColor(t.Accent).SingleLine()
 		}
 	})
-	components.Text(c, "PNG · JPEG · WebP · GIF · HEIC / AVIF · TIFF").FontSize(11).TextColor(c.Theme().TextMuted)
+	components.Text(c, "PNG · JPEG · WebP · GIF · HEIC / AVIF · TIFF").FontSize(11.5).TextColor(t.TextMuted).SingleLine().Ellipsis("…").MinWidth(0)
+}
+
+func summaryDot(c *ui.Context, text string, color ui.Color) {
+	ui.Row(c).Gap(5).AlignItems(ui.Center).Children(func() {
+		ui.Box(c).Size(6, 6).Radius(3).Background(color)
+		components.Text(c, text).FontSize(12).TextColor(c.Theme().TextMuted).SingleLine()
+	})
 }
 
 func (a *application) uploadQueueToolbar(c *ui.Context, counts uploadQueueCounts) {
-	ui.Row(c).FillWidth().Shrink(0).Wrap().AlignItems(ui.Center).Gap(8).Children(func() {
-		components.Text(c, tf("文件列表 (%d)", counts.total)).FontSize(12).Bold()
-		if a.uploading {
-			components.Spinner(c, components.SpinnerRing).Size(14, 14)
-			components.Text(c, tf("已处理 %d / %d", a.uploadBatchDone, a.uploadBatchTotal)).FontSize(11).TextColor(c.Theme().TextMuted)
-		} else if counts.failed > 0 {
-			components.Text(c, tf("%d 张失败", counts.failed)).FontSize(11).TextColor(c.Theme().Danger)
-		} else if counts.uploaded > 0 {
-			components.Text(c, tf("已上传 %d 张", counts.uploaded)).FontSize(11).TextColor(c.Theme().Success)
-		}
+	t := c.Theme()
+	ui.Row(c).FillWidth().Shrink(0).Wrap().MinHeight(30).AlignItems(ui.Center).Gap(8).Children(func() {
+		ui.Row(c).Gap(5).AlignItems(ui.Center).Children(func() {
+			components.Text(c, tr("队列")).FontSize(13).FontWeight(600)
+			components.Text(c, fmt.Sprint(counts.total)).FontSize(13).TextColor(t.TextMuted)
+		})
+		ui.Row(c).Padding(0, 0, 0, 6).Gap(12).AlignItems(ui.Center).Children(func() {
+			if a.uploading {
+				components.Spinner(c, components.SpinnerRing).Size(14, 14)
+				components.Text(c, tf("已处理 %d / %d", a.uploadBatchDone, a.uploadBatchTotal)).FontSize(12).TextColor(t.TextMuted)
+				return
+			}
+			if counts.uploaded > 0 {
+				summaryDot(c, tf("%d 已上传", counts.uploaded), t.Success)
+			}
+			if waiting := counts.pending - counts.failed; waiting > 0 {
+				summaryDot(c, tf("%d 待上传", waiting), controlBorder(t))
+			}
+			if counts.failed > 0 {
+				summaryDot(c, tf("%d 失败", counts.failed), t.Danger)
+			}
+		})
 		ui.Spacer(c)
 		if counts.uploaded > 0 {
-			if components.Button(c, tr("清除已完成"), components.ButtonGhost).Disabled(a.busy).Clicked() {
+			if components.Button(c, tr("清除已完成"), components.ButtonGhost).TextColor(t.TextMuted).Disabled(a.busy).Clicked() {
 				a.clearUploadedJobs()
 			}
-			if components.IconButton(c, lucide.Copy(), tr("复制全部结果"), components.IconButtonToolbar).Clicked() {
+			copyAll := components.Button(c, "", components.ButtonGhost).Gap(6).Label(tr("复制全部结果")).TextColor(t.TextMuted)
+			copyAll.Children(func() {
+				components.Icon(c, lucide.Copy()).Size(14, 14)
+				components.Text(c, tr("复制全部结果")).FontSize(12.5)
+			})
+			if copyAll.Clicked() {
 				c.WriteClipboard(service.Format(a.uploadedResults(), a.uploadDisplayConfig().Output))
 				a.feedback("已复制全部结果", nil)
 			}
@@ -193,77 +309,137 @@ func (a *application) uploadQueueToolbar(c *ui.Context, counts uploadQueueCounts
 		if components.IconButton(c, lucide.ListX(), tr("清空"), components.IconButtonPlain).Disabled(a.busy).Clicked() {
 			a.jobs = nil
 		}
+	})
+}
+
+var formatLabels = map[string]string{"original": "保留原格式", "webp": "WebP", "avif": "AVIF", "jpeg": "JPEG", "png": "PNG"}
+var outputLabels = map[string]string{"url": "URL", "markdown": "Markdown", "json": "JSON"}
+
+// uploadChip summarizes a setting the next upload will use and opens it.
+func uploadChip(c *ui.Context, label string, icon *ui.SVG, text string) bool {
+	t := c.Theme()
+	chip := ui.ButtonBase(c).Label(label).Tooltip(label).Height(28).MinWidth(0).Shrink(1).Padding(0, 10).Gap(6).Radius(7).Border(1, t.Border).Background(t.Surface).AlignItems(ui.Center)
+	if chip.Hovered() || chip.FocusVisible() {
+		chip.Background(t.SurfaceHover)
+	}
+	chip.Children(func() {
+		components.Icon(c, icon).Size(14, 14).Shrink(0).TextColor(t.Accent)
+		components.Text(c, text).FontSize(12).TextColor(t.TextMuted).SingleLine().Ellipsis("…").MinWidth(0)
+	})
+	return chip.Clicked()
+}
+
+func (a *application) uploadActionBar(c *ui.Context, counts uploadQueueCounts, config config.Config) {
+	t := c.Theme()
+	ui.Row(c).Key("upload-actions").FillWidth().Height(56).Shrink(0).Padding(0, 16, 0, 24).Gap(8).AlignItems(ui.Center).BorderWidth(1, 0, 0, 0).BorderColor(t.Border).Children(func() {
+		processing := tr("保留原图")
+		if config.Compress {
+			processing = tf("默认压缩 · 质量 %d", config.Quality)
+			if format := formatLabels[config.Format]; format != "" && config.Format != "original" {
+				processing += " · " + format
+			}
+		}
+		if uploadChip(c, tr("图片设置"), lucide.Sparkles(), processing) {
+			a.openSettings(1)
+		}
+		output := outputLabels[config.Output]
+		if output == "" {
+			output = config.Output
+		}
+		copied := tf("复制为 %s", output)
+		if config.Copy {
+			copied = tf("自动复制 %s", output)
+		}
+		if uploadChip(c, tr("链接与剪贴板"), lucide.Clipboard(), copied) {
+			a.openSettings(1)
+		}
+		ui.Spacer(c)
 		if a.uploading {
-			if components.Button(c, tr("取消上传"), components.ButtonOutline).Clicked() && a.cancel != nil {
+			if components.Button(c, tr("取消上传"), components.ButtonOutline).Shrink(0).Clicked() && a.cancel != nil {
 				a.cancel()
 			}
-		} else if counts.pending > 0 {
-			if components.Button(c, tf("上传 %d 张图片", counts.pending), components.ButtonPrimary).Disabled(a.busy).Clicked() {
+			return
+		}
+		if counts.pending > 0 {
+			if components.Button(c, tf("上传 %d 张图片", counts.pending), components.ButtonPrimary).Shrink(0).Disabled(a.busy).Clicked() {
 				a.upload()
 			}
 		}
 	})
 }
 
-func (a *application) jobView(c *ui.Context, j *job) {
+func (a *application) jobView(c *ui.Context, j *job, first bool) {
 	t := c.Theme()
-	ui.Column(c).Key(fmt.Sprintf("job-%d", j.id)).FillWidth().Padding(11, 12).Gap(8).Radius(10).Border(1, t.Border).Background(t.Surface).Children(func() {
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(12).Children(func() {
-			ui.Box(c).Size(44, 44).Shrink(0).Radius(6).Background(t.Background).Clip().AlignItems(ui.Center).Justify(ui.Center).Children(func() {
-				if j.preview != nil {
-					components.Image(c, j.preview).Fill().Fit(ui.Cover).Label(j.name)
-				} else {
-					components.Icon(c, lucide.Image()).Size(20, 20).TextColor(t.TextMuted)
-				}
-			})
-			ui.Column(c).Grow(1).Shrink(1).MinWidth(0).Gap(5).Children(func() {
-				components.Text(c, j.name).SingleLine().Ellipsis("…").FontSize(12).Bold()
-				ui.Row(c).Wrap().AlignItems(ui.Center).Gap(8).Children(func() {
-					if j.result != nil {
-						r := j.result
-						components.Text(c, uploadSizeSummary(r)).FontSize(11).TextColor(t.TextMuted).Wrap()
-					} else if j.sourceBytes > 0 {
-						components.Text(c, bytesLabel(j.sourceBytes)).FontSize(11).TextColor(t.TextMuted)
-					}
-					status, tone := tr("待上传"), components.BadgeNeutral
-					if j.result != nil {
-						status, tone = tr("已上传"), components.BadgeSuccess
-					} else if j.status == "上传失败" {
-						status, tone = tr("上传失败"), components.BadgeDanger
-					} else if j.status == "正在处理与上传" {
-						status, tone = tr("正在处理与上传"), components.BadgeAccent
-					}
-					components.Badge(c, status, components.BadgeOptions{Tone: tone}).FontSize(10).Radius(5).Padding(2, 5)
-				})
-			})
-			ui.Row(c).Shrink(0).AlignItems(ui.Center).Gap(2).Children(func() {
-				if j.result != nil {
-					if components.IconButton(c, lucide.Link(), tr("复制链接"), components.IconButtonToolbar).Clicked() {
-						c.WriteClipboard(j.result.URL)
-						a.feedback("已复制链接", nil)
-					}
-					if components.IconButton(c, lucide.Code(), tr("复制 Markdown"), components.IconButtonToolbar).Clicked() {
-						c.WriteClipboard(j.result.Markdown())
-						a.feedback("已复制 Markdown", nil)
-					}
-				} else if j.status == "正在处理与上传" {
-					components.Spinner(c, components.SpinnerRing).Size(18, 18).Label(tr("正在处理与上传"))
-				} else {
-					icon, label := lucide.Upload(), tf("上传 %s", j.name)
-					if j.status == "上传失败" {
-						icon, label = lucide.RotateCcw(), tf("重试上传 %s", j.name)
-					}
-					if components.IconButton(c, icon, label, components.IconButtonToolbar).Disabled(a.busy).Clicked() {
-						a.uploadSingle(j)
-					}
-				}
-				if components.IconButton(c, lucide.X(), tf("移除 %s", j.name), components.IconButtonPlain).Disabled(a.busy).Clicked() {
-					a.removeUploadJob(j)
-				}
-			})
+	row := ui.Row(c).Key(fmt.Sprintf("job-%d", j.id)).FillWidth().MinHeight(62).Padding(10, 10, 10, 12).Gap(12).AlignItems(ui.Center)
+	if !first {
+		row.BorderWidth(1, 0, 0, 0).BorderColor(t.Border)
+	}
+	failed := j.status == "上传失败" && j.result == nil
+	processing := j.status == "正在处理与上传"
+	if processing {
+		row.Background(accentSoft(t).Alpha(.5))
+	}
+	row.Children(func() {
+		ui.Box(c).Size(40, 40).Shrink(0).Radius(7).Background(sunkenColor(t)).Clip().AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+			if j.preview != nil {
+				components.Image(c, j.preview).Fill().Fit(ui.Cover).Label(j.name)
+			} else {
+				components.Icon(c, lucide.Image()).Size(18, 18).TextColor(t.TextMuted)
+			}
 		})
-		if j.status == "上传失败" && j.result == nil && j.detail != "" {
-			components.Text(c, j.detail).FillWidth().MinWidth(0).Wrap().FontSize(11).TextColor(t.Danger)
+		ui.Column(c).Grow(1).Shrink(1).MinWidth(0).Gap(3).Children(func() {
+			components.Text(c, j.name).SingleLine().Ellipsis("…").FontSize(13).FontWeight(500)
+			ui.Row(c).FillWidth().MinWidth(0).Wrap().AlignItems(ui.Center).Gap(10).Children(func() {
+				if j.result != nil {
+					sizes, change, saved := uploadSizeParts(j.result)
+					components.Text(c, sizes).FontSize(12).TextColor(t.TextMuted)
+					if change != "" {
+						color := t.TextMuted
+						if saved {
+							color = t.Success
+						}
+						components.Text(c, change).FontSize(12).FontWeight(500).TextColor(color)
+					}
+				} else if j.sourceBytes > 0 {
+					components.Text(c, bytesLabel(j.sourceBytes)).FontSize(12).TextColor(t.TextMuted)
+				}
+			})
+			if failed && j.detail != "" {
+				components.Text(c, j.detail).FillWidth().MinWidth(0).Wrap().MaxLines(2).Tooltip(j.detail).FontSize(12).TextColor(t.Danger)
+			}
+		})
+		switch {
+		case j.result != nil:
+			statusPill(c, tr("已上传"), toneSuccess)
+		case failed:
+			statusPill(c, tr("上传失败"), toneDanger)
+		case processing:
+			statusPill(c, tr("正在处理与上传"), toneAccent)
+		default:
+			statusPill(c, tr("待上传"), toneNeutral)
 		}
+		ui.Row(c).Width(96).Shrink(0).Justify(ui.End).AlignItems(ui.Center).Gap(2).Children(func() {
+			if j.result != nil {
+				if components.IconButton(c, lucide.Link(), tr("复制链接"), components.IconButtonPlain).Clicked() {
+					c.WriteClipboard(j.result.URL)
+					a.feedback("已复制链接", nil)
+				}
+				if components.IconButton(c, lucide.Code(), tr("复制 Markdown"), components.IconButtonPlain).Clicked() {
+					c.WriteClipboard(j.result.Markdown())
+					a.feedback("已复制 Markdown", nil)
+				}
+			} else if !processing {
+				icon, label := lucide.Upload(), tf("上传 %s", j.name)
+				if failed {
+					icon, label = lucide.RotateCcw(), tf("重试上传 %s", j.name)
+				}
+				if components.IconButton(c, icon, label, components.IconButtonPlain).TextColor(t.Accent).Disabled(a.busy).Clicked() {
+					a.uploadSingle(j)
+				}
+			}
+			if !processing && components.IconButton(c, lucide.X(), tf("移除 %s", j.name), components.IconButtonPlain).Disabled(a.busy).Clicked() {
+				a.removeUploadJob(j)
+			}
+		})
 	})
 }

@@ -52,16 +52,8 @@ func (a *application) guideCopy(c *ui.Context, label, text string) {
 }
 
 func (a *application) guideView(c *ui.Context) {
-	ui.Row(c).FillWidth().MinWidth(0).AlignItems(ui.Center).Gap(12).Children(func() {
-		ui.Column(c).Grow(1).Shrink(1).MinWidth(0).Children(func() {
-			heading(c, tr("使用入门"), tr("完成配置，上传第一张图片。"))
-		})
-		if components.Button(c, tr("打开存储设置"), components.ButtonOutline).Shrink(0).Clicked() {
-			a.openSettings(0)
-		}
-	})
 	scrollView(c).Key("guide-scroll").FillWidth().Grow(1).MinHeight(0).Children(func() {
-		ui.Column(c).FillWidth().MinWidth(0).Gap(16).Children(func() {
+		ui.Column(c).FillWidth().MinWidth(0).MaxWidth(760).Padding(24, 32).Gap(16).Children(func() {
 			guideSection(c, "guide-connect", "01  连接你的存储", func() {
 				guideParagraph(c, "R2 可点击「连接 Cloudflare R2」，在浏览器授权后选择账号和桶，访问凭据自动保存至系统钥匙串。")
 				guideParagraph(c, "在设置中选择 S3 或 R2，填写存储桶、访问凭据和图片公开地址。")

@@ -11,17 +11,28 @@ import (
 	"github.com/knothhe/picup/internal/config"
 )
 
+// focusStorageField focuses the input beside a storage form row's label.
+func focusStorageField(t *testing.T, tt *ui.Tester, label string) {
+	t.Helper()
+	r, ok := tt.Find(label)
+	if !ok {
+		t.Fatalf("%s field is missing", label)
+	}
+	tt.ClickAt(r.X+220, r.Y+16)
+	if active, _ := tt.TextInputActive(); !active {
+		t.Fatalf("%s input did not receive focus", label)
+	}
+}
+
 func TestStorageRegionEditStaysInCurrentProfileWithoutTestingConnection(t *testing.T) {
 	a, archiveID := profileFixture(t)
 	a.tab, a.settingsTab = 2, 0
 	tt := ui.NewTester(nativeTestView(a), 1040, 760)
 	tt.SetPreferences(ui.Preferences{ReduceMotion: true, TextScale: 1})
 	tt.Frame()
-	label, ok := tt.Find("Region")
-	if !ok {
-		t.Fatal("Region is missing from the main R2 storage form")
+	if err := tt.Click("Region"); err != nil {
+		t.Fatal("Region is missing from the main R2 storage form", err)
 	}
-	tt.ClickAt(label.X+45, label.Y+label.H+23)
 	if active, _ := tt.TextInputActive(); !active {
 		t.Fatal("Region input did not receive focus")
 	}
@@ -38,7 +49,7 @@ func TestStorageRegionEditStaysInCurrentProfileWithoutTestingConnection(t *testi
 	if err := saved.SwitchProfile(archiveID); err != nil || saved.Region != "auto" {
 		t.Fatal("editing Region changed another profile", err)
 	}
-	if err := tt.Click("管理配置"); err != nil {
+	if err := tt.Click("配置"); err != nil {
 		t.Fatal(err)
 	}
 	tt.Frame()
@@ -53,20 +64,9 @@ func TestStorageAdvancedSettingsAutosaveWithoutConnectionTest(t *testing.T) {
 	tt := ui.NewTester(nativeTestView(a), 1040, 760)
 	tt.SetPreferences(ui.Preferences{ReduceMotion: true, TextScale: 1})
 	tt.Frame()
-	tt.Scroll(900, 500, 0, 1200)
-	if err := tt.Click("高级选项"); err != nil {
-		t.Fatal(err)
-	}
+	tt.Scroll(900, 500, 0, 300)
 	tt.Advance(time.Second)
-	tt.Scroll(900, 500, 0, 400)
-	label, ok := tt.Find("Session token")
-	if !ok {
-		t.Fatal("advanced settings did not reveal the temporary credential input")
-	}
-	tt.ClickAt(label.X+45, label.Y+label.H+23)
-	if active, _ := tt.TextInputActive(); !active {
-		t.Fatal("Session token input did not receive focus")
-	}
+	focusStorageField(t, tt, "Session token")
 	tt.Type("temporary-token")
 	tt.Advance(settingsAutosaveDelay + time.Millisecond)
 	saved, err := config.Load(a.path)

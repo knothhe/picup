@@ -164,7 +164,7 @@ func TestUploadRemoveUsesJobIdentityForDuplicateNames(t *testing.T) {
 	// application still contains both files with the same basename.
 	tt := ui.NewTester(func(c *ui.Context) {
 		c.SetTheme(palette(c))
-		ui.Column(c).Fill().Padding(12).Children(func() { a.jobView(c, second) })
+		ui.Column(c).Fill().Padding(12).Children(func() { a.jobView(c, second, true) })
 	}, 600, 150)
 	tt.SetPreferences(ui.Preferences{ReduceMotion: true, TextScale: 1})
 	tt.Frame()
@@ -213,7 +213,8 @@ func TestUploadSummaryUsesSavedSettings(t *testing.T) {
 func assertUploadControlWithin(t *testing.T, tt *ui.Tester, label string, width, height int) ui.Rect {
 	t.Helper()
 	r, ok := tt.Find(label)
-	if !ok || r.W <= 0 || r.H <= 0 || r.X < 0 || r.Y < 48 || r.X+r.W > float32(width)+1 || r.Y+r.H > float32(height)+1 {
+	// Page actions sit in the titlebar, so only the window bounds apply.
+	if !ok || r.W <= 0 || r.H <= 0 || r.X < 0 || r.Y < 0 || r.X+r.W > float32(width)+1 || r.Y+r.H > float32(height)+1 {
 		t.Fatalf("upload control %q outside window: %v found=%t", label, r, ok)
 	}
 	return r
@@ -242,14 +243,14 @@ func TestUploadActionsAndLongRowsFitNativeWindow(t *testing.T) {
 							for _, label := range []string{tr("存储设置"), tr("选择图片"), tr("从剪贴板粘贴"), tr("图片设置")} {
 								assertUploadControlWithin(t, tt, label, size[0], size[1])
 							}
-							footer := assertUploadControlWithin(t, tt, tr("添加后手动开始上传"), size[0], size[1])
+							chips := assertUploadControlWithin(t, tt, tr("图片设置"), size[0], size[1])
 							if state == "processing" {
 								assertUploadControlWithin(t, tt, tr("取消上传"), size[0], size[1])
 								assertUploadControlWithin(t, tt, tf("已处理 %d / %d", 1, 3), size[0], size[1])
 							} else if pending := a.uploadCounts().pending; pending > 0 {
 								primary := assertUploadControlWithin(t, tt, tf("上传 %d 张图片", pending), size[0], size[1])
-								if primary.Y+primary.H > footer.Y {
-									t.Fatal("upload action overlaps compression footer", primary, footer)
+								if primary.X < chips.X+chips.W || primary.Y > chips.Y+chips.H || chips.Y > primary.Y+primary.H {
+									t.Fatal("upload action left the action bar beside the image settings", primary, chips)
 								}
 							}
 							if state == "partial-failure" {

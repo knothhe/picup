@@ -8,22 +8,20 @@ import (
 	"github.com/knothhe/picup/internal/config"
 	"github.com/knothhe/picup/internal/install"
 	"github.com/oneo-me/onevra/source/components"
+	"github.com/oneo-me/onevra/source/icons/lucide"
 )
 
 type settingsScrollIdentity int
 
 func settingsGroup(c *ui.Context, key, title string, build func()) {
-	ui.Column(c).Key(key).FillWidth().MinWidth(0).Gap(9).Children(func() {
-		components.Text(c, tr(title)).FontSize(11).Bold().TextColor(c.Theme().TextMuted).Padding(0, 2)
+	ui.Column(c).Key(key).FillWidth().MinWidth(0).Gap(8).Children(func() {
+		components.Text(c, tr(title)).FontSize(13).FontWeight(600)
 		ui.Column(c).FillWidth().MinWidth(0).Radius(10).Border(1, c.Theme().Border).Background(c.Theme().Surface).Clip().Children(build)
 	})
 }
 
 func (a *application) preference(c *ui.Context, key, title, description string, build func(), activate ...func()) {
-	width, _ := c.Size()
-	if !a.sidebarCollapsed {
-		width -= 188
-	}
+	width := a.settingsContentWidth(c)
 	controlWidth := min(float32(260), max(float32(200), (width-80)*.44))
 	ui.Row(c).Key(key).FillWidth().MinWidth(0).Padding(13, 16).Gap(16).AlignItems(ui.Center).Children(func() {
 		text := ui.Column(c).Grow(1).Shrink(1).MinWidth(0).Gap(4)
@@ -31,9 +29,9 @@ func (a *application) preference(c *ui.Context, key, title, description string, 
 			text.OnClick(activate[0])
 		}
 		text.Children(func() {
-			components.Text(c, tr(title)).FontSize(12).Wrap()
+			components.Text(c, tr(title)).FontSize(13).FontWeight(500).Wrap()
 			if description != "" {
-				components.Text(c, tr(description)).FontSize(11).TextColor(c.Theme().TextMuted).Wrap()
+				components.Text(c, tr(description)).FontSize(12).TextColor(c.Theme().TextMuted).Wrap()
 			}
 		})
 		ui.Column(c).Width(controlWidth).Shrink(0).AlignItems(ui.End).Children(build)
@@ -76,18 +74,17 @@ func (a *application) switchPreference(c *ui.Context, key, title, description st
 }
 
 func (a *application) segmentedPreference(c *ui.Context, key, title, description string, value *string, choices, labels []string) {
-	width, _ := c.Size()
-	if !a.sidebarCollapsed {
-		width -= 188
-	}
+	width := a.settingsContentWidth(c)
 	row := ui.Row(c).Key(key).FillWidth().MinWidth(0).Padding(13, 16).Gap(16).AlignItems(ui.Center)
-	if width < 850 {
+	if width < 640 {
 		row.Column().Gap(9).AlignItems(ui.Stretch)
 	}
 	row.Children(func() {
 		ui.Column(c).Grow(1).Shrink(1).MinWidth(0).Gap(4).Children(func() {
-			components.Text(c, tr(title)).FontSize(12).Wrap()
-			components.Text(c, tr(description)).FontSize(11).TextColor(c.Theme().TextMuted).Wrap()
+			components.Text(c, tr(title)).FontSize(13).FontWeight(500).Wrap()
+			if description != "" {
+				components.Text(c, tr(description)).FontSize(12).TextColor(c.Theme().TextMuted).Wrap()
+			}
 		})
 		selected := 0
 		for i, choice := range choices {
@@ -102,40 +99,63 @@ func (a *application) segmentedPreference(c *ui.Context, key, title, description
 	})
 }
 
-func (a *application) settingsView(c *ui.Context) {
-	ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
-		ui.Column(c).Grow(1).Shrink(1).MinWidth(0).Children(func() {
-			if a.settingsTab == 5 {
-				heading(c, tr("关于"), tr("Picup 的版本与本机信息。"))
-			} else {
-				heading(c, tr("设置"), tr("配置存储、图片处理和桌面偏好。"))
-			}
-		})
-		if components.Button(c, tr("使用入门"), components.ButtonOutline).Shrink(0).Clicked() {
+// settingsContentWidth is the width of the settings column inside its padding.
+func (a *application) settingsContentWidth(c *ui.Context) float32 {
+	width, _ := c.Size()
+	return min(width-a.sidebarWidth-64, settingsMaxWidth)
+}
+
+const settingsMaxWidth = 720
+
+func (a *application) settingsHeaderContext(c *ui.Context) {
+	switch a.settingsTab {
+	case 0, 1:
+		cfg := a.currentSettings().Clone()
+		cfg.EnsureProfiles()
+		headerChip(c, nil, tf("仅作用于「%s」", profileName(cfg.ActiveProfile, cfg.CurrentProfileName())))
+	case 2, 3, 4:
+		headerChip(c, nil, tr("所有配置共用"))
+	}
+}
+
+// The save state lives in the titlebar, so every settings page reports it.
+func (a *application) settingsHeaderActions(c *ui.Context) {
+	t := c.Theme()
+	if a.gallery.busy && a.gallery.cancel != nil {
+		if components.Button(c, tr("取消图库请求"), components.ButtonGhost).Shrink(0).Clicked() {
+			a.gallery.cancel()
+		}
+	}
+	defer func() {
+		if components.IconButton(c, lucide.BookOpen(), tr("使用入门"), components.IconButtonPlain).TextColor(t.TextMuted).Clicked() {
 			a.openGuide(0)
 		}
-		if a.gallery.busy && a.gallery.cancel != nil {
-			if components.Button(c, tr("取消图库请求"), components.ButtonOutline).Shrink(0).Clicked() {
-				a.gallery.cancel()
-			}
-		}
-	})
-	if a.sidebarCollapsed {
-		ui.Row(c).FillWidth().Wrap().Gap(4).Children(func() {
-			for _, category := range settingsOrder {
-				button := components.Button(c, tr(settingsLabels[category]), components.ButtonGhost).Selected(a.settingsTab == category).TextColor(c.Theme().Text)
-				if a.settingsTab == category {
-					button.Background(c.Theme().Text.Alpha(.08))
-				}
-				if button.Transition(layoutTransition()).Clicked() {
-					a.settingsTab = category
-				}
+	}()
+	switch {
+	case a.settingsSave.failed:
+		ui.Row(c).Role(ui.RoleStatus).Height(30).Padding(0, 4, 0, 10).Gap(8).Radius(7).Background(dangerSoft(t)).AlignItems(ui.Center).Children(func() {
+			components.Text(c, tr("保存失败，输入已保留")).FontSize(12).TextColor(t.Danger).SingleLine()
+			if components.Button(c, tr("重试保存"), components.ButtonGhost).Height(24).TextColor(t.Danger).Clicked() {
+				a.save()
 			}
 		})
+	case a.settingsSave.pending:
+		ui.Row(c).Role(ui.RoleStatus).Gap(6).AlignItems(ui.Center).Children(func() {
+			components.Spinner(c, components.SpinnerRing).Size(12, 12)
+			components.Text(c, tr("正在保存…")).FontSize(12).TextColor(t.TextMuted)
+		})
+	default:
+		ui.Row(c).Role(ui.RoleStatus).Gap(6).AlignItems(ui.Center).Tooltip(tr("更改会自动保存，桌面端与 CLI 共用设置。")).Children(func() {
+			components.Icon(c, lucide.Check()).Size(14, 14).TextColor(t.Success)
+			components.Text(c, tr("已自动保存")).FontSize(12).TextColor(t.TextMuted)
+		})
 	}
+}
+
+func (a *application) settingsView(c *ui.Context) {
 	scrollView(c).Key(settingsScrollIdentity(a.settingsTab)).FillWidth().Grow(1).MinHeight(0).Transition(tabTransition()).Children(func() {
 		busy := a.busy && !(a.settingsTab == 5 && a.updates.phase == "installing")
-		ui.Column(c).Key(a.settingsTab).FillWidth().MinWidth(0).Gap(20).Disabled(busy || a.gallery.busy || a.r2.saving && a.settingsTab != 0 || a.r2.working && !a.r2.active).Children(func() {
+		ui.Column(c).Key(a.settingsTab).FillWidth().MaxWidth(settingsMaxWidth+64).MinWidth(0).Padding(24, 32).Gap(22).Disabled(busy || a.gallery.busy || a.r2.saving && a.settingsTab != 0 || a.r2.working && !a.r2.active).Children(func() {
 			switch a.settingsTab {
 			case 0:
 				a.storageSettings(c)
@@ -153,12 +173,6 @@ func (a *application) settingsView(c *ui.Context) {
 				a.profileSettings(c)
 			}
 		})
-	})
-	ui.Row(c).FillWidth().Shrink(0).Padding(12, 0, 0, 0).BorderWidth(1, 0, 0, 0).BorderColor(c.Theme().Border).AlignItems(ui.Center).Gap(8).Children(func() {
-		components.Text(c, tr("更改会自动保存，桌面端与 CLI 共用设置。")).FontSize(11).TextColor(c.Theme().TextMuted).Grow(1).MinWidth(0).Wrap()
-		if a.settingsSave.failed && components.Button(c, tr("重试保存"), components.ButtonOutline).Clicked() {
-			a.save()
-		}
 	})
 }
 
@@ -179,7 +193,7 @@ func (a *application) imageSettings(c *ui.Context) {
 		})
 	})
 	settingsGroup(c, "image-output", "链接与剪贴板", func() {
-		a.preference(c, "output", "链接格式", "上传完成后复制的内容格式。", func() {
+		a.preference(c, "output", "链接格式", "", func() {
 			selectControl(c, "链接格式", &a.config.Output, []string{"url", "markdown", "json"}, []string{"URL", "Markdown", "JSON"})
 		})
 		settingsDivider(c)
@@ -189,7 +203,7 @@ func (a *application) imageSettings(c *ui.Context) {
 
 func (a *application) appearanceSettings(c *ui.Context) {
 	settingsGroup(c, "appearance", "界面", func() {
-		a.preference(c, "language", "语言", "无匹配的系统语言时使用英文。", func() {
+		a.preference(c, "language", "语言", "", func() {
 			before := a.config.Language
 			selectControl(c, "语言", &a.config.Language, []string{"system", "zh-CN", "en"}, []string{"跟随系统", "简体中文", "English"})
 			if before != a.config.Language {
@@ -197,7 +211,7 @@ func (a *application) appearanceSettings(c *ui.Context) {
 			}
 		})
 		settingsDivider(c)
-		a.preference(c, "theme", "外观", "即时生效并自动保存。", func() {
+		a.preference(c, "theme", "外观", "", func() {
 			values := []string{"system", "light", "dark"}
 			selected := 0
 			for i, value := range values {
@@ -217,38 +231,37 @@ func (a *application) appearanceSettings(c *ui.Context) {
 	})
 	a.windowSettings(c)
 	settingsGroup(c, "gallery-cache", "图库缓存", func() {
-		a.preference(c, "cache-clear", "本地缓存", "保存列表与缩略图，最多 256 MiB，自动清理较早使用的内容。", func() {
+		a.preference(c, "cache-clear", "本地缓存", "最多 256 MiB，不影响云端图片。", func() {
 			if components.Button(c, tr("清理图库缓存"), components.ButtonOutline).Clicked() {
 				a.clearGalleryCache()
 			}
 		})
 	})
-	components.Text(c, tr("清理缓存后，下次打开图库会重新加载。")).FillWidth().MinWidth(0).Wrap().FontSize(11).TextColor(c.Theme().TextMuted)
 }
 
 func (a *application) windowSettings(c *ui.Context) {
 	settingsGroup(c, "window-startup", "窗口与启动", func() {
-		a.switchPreference(c, "close-to-tray", "关闭窗口后继续运行", "关闭主窗口后保留托盘和后台上传；关闭此选项后退出应用。", &a.config.CloseToTray)
+		a.switchPreference(c, "close-to-tray", "关闭窗口后继续运行", "关闭后保留菜单栏图标和后台上传。", &a.config.CloseToTray)
 		settingsDivider(c)
 		ui.Column(c).FillWidth().Disabled(runtime.GOOS != "darwin").Children(func() {
 			a.segmentedPreference(c, "dock-icon", "Dock 图标", "跟随窗口时，仅在主窗口打开时展示。", &a.config.DockIcon, []string{config.DockIconShow, config.DockIconHide, config.DockIconFollowWindow}, []string{"展示", "隐藏", "跟随窗口"})
 		})
 		settingsDivider(c)
-		a.segmentedPreference(c, "tray-click", "点击托盘图标", "选择点击菜单栏或托盘图标时打开的位置。", &a.config.TrayClickAction, []string{config.TrayClickQuickPanel, config.TrayClickMainWindow}, []string{"打开快捷面板", "打开主窗口"})
+		a.segmentedPreference(c, "tray-click", "点击托盘图标", "", &a.config.TrayClickAction, []string{config.TrayClickQuickPanel, config.TrayClickMainWindow}, []string{"打开快捷面板", "打开主窗口"})
 		settingsDivider(c)
 		a.switchPreference(c, "lightweight", "轻量模式", "窗口和面板全部关闭一分钟后释放界面内存，再次打开时重新加载。", &a.config.LightweightMode)
 		settingsDivider(c)
 		ui.Column(c).FillWidth().Disabled(a.lifecycle.setOpenAtLogin == nil).Children(func() {
-			a.switchPreference(c, "launch-at-login", "开机自启", "登录系统后在后台启动 Picup。", &a.config.LaunchAtLogin)
+			a.switchPreference(c, "launch-at-login", "开机自启", "", &a.config.LaunchAtLogin)
 		})
 	})
 }
 
 func (a *application) cliSettings(c *ui.Context) {
 	settingsGroup(c, "cli-install", "命令行工具", func() {
-		a.textPreference(c, "install-dir", "安装目录", "默认安装到用户目录。", install.DisplayPath(install.DefaultDir()), &a.installDir, false)
+		a.textPreference(c, "install-dir", "安装目录", "", install.DisplayPath(install.DefaultDir()), &a.installDir, false)
 		settingsDivider(c)
-		a.preference(c, "install", "安装或更新", "与桌面端共用配置。", func() {
+		a.preference(c, "install", "安装或更新", "", func() {
 			if components.Button(c, tr("安装 / 更新 CLI"), components.ButtonPrimary).Clicked() {
 				a.installCLI()
 			}

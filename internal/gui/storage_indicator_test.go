@@ -27,7 +27,7 @@ func storageIndicatorTester(a *application, width, height int) *ui.Tester {
 }
 
 func TestStorageIndicatorUsesSavedConfigurationAndEnvironment(t *testing.T) {
-	a := storageIndicatorFixture(t, true, "draft-bucket")
+	a := storageIndicatorFixture(t, false, "draft-bucket")
 	saved := config.Default()
 	saved.Provider, saved.Bucket = "s3", "saved-bucket"
 	saved.EnsureProfiles()
@@ -68,11 +68,11 @@ func TestStorageIndicatorStaysBeforeGuideAtMinimumWidth(t *testing.T) {
 					if !ok {
 						t.Fatal("guide navigation is missing")
 					}
+					width := sidebarExpandedWidth
 					if collapsed {
-						if status.Y+status.H > 48 || status.X+status.W > guide.X+.1 {
-							t.Fatal("storage indicator did not stay left of the guide in the titlebar", status, guide)
-						}
-					} else if status.X+status.W > 188 || status.Y+status.H > guide.Y+.1 {
+						width = sidebarRailWidth
+					}
+					if status.X+status.W > width || status.Y+status.H > guide.Y+.1 {
 						t.Fatal("storage indicator did not stay above the guide in the sidebar", status, guide)
 					}
 					for _, text := range []string{"上传", "图库", "指南", "设置"} {

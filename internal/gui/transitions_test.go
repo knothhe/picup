@@ -123,7 +123,7 @@ func TestNativeMainTabTransitions(t *testing.T) {
 			}{
 				{name: "upload", label: "选择图片", tab: 0},
 				{name: "gallery", label: "搜索图片", tab: 4},
-				{name: "settings", label: "配置管理", tab: 2},
+				{name: "settings", label: "新建配置", tab: 2},
 				{name: "guide", label: "01  连接你的存储", tab: 3},
 			} {
 				t.Run(fmt.Sprintf("%s/reduced=%t/%s", layout.name, reduced, target.name), func(t *testing.T) {
@@ -149,13 +149,13 @@ func TestNativeSettingsTabTransitions(t *testing.T) {
 				name, label string
 				tab         int
 			}{
-				{name: "storage", label: "当前配置", tab: 0},
+				{name: "storage", label: "连接方式", tab: 0},
 				{name: "image-output", label: "图片处理", tab: 1},
 				{name: "general", label: "界面", tab: 2},
 				{name: "cli", label: "命令行工具", tab: 3},
-				{name: "shortcuts", label: "点击键位后按下新的快捷键，修改会自动保存。", tab: 4},
-				{name: "about", label: "轻量图片上传工具，连接 S3 / R2，上传并管理你的图片。", tab: 5},
-				{name: "profiles", label: "配置管理", tab: settingsProfilesTab},
+				{name: "shortcuts", label: "点击键位后按下新的快捷键。", tab: 4},
+				{name: "about", label: "本机信息", tab: 5},
+				{name: "profiles", label: "新建配置", tab: settingsProfilesTab},
 			} {
 				t.Run(fmt.Sprintf("%s/reduced=%t/%s", layout.name, reduced, target.name), func(t *testing.T) {
 					a := nativeMotionApplication(t, layout)

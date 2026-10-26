@@ -112,6 +112,10 @@ func TestR2MissingPublisherRegistrationDoesNotOpenOrSave(t *testing.T) {
 	tt := ui.NewTester(nativeTestView(a), 1040, 760)
 	tt.SetPreferences(ui.Preferences{ReduceMotion: true, TextScale: 1})
 	tt.Frame()
+	if err := tt.Click("Cloudflare 授权"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
 	if !tt.HasText("当前构建尚未启用 Cloudflare 授权，请联系应用发行者。") {
 		t.Fatal("missing registration is hidden")
 	}
@@ -161,6 +165,11 @@ func TestR2EntryFromManualS3DoesNotChangeProvider(t *testing.T) {
 	a.initSettingsAutosave()
 	tt := ui.NewTester(nativeTestView(a), 1040, 760)
 	tt.SetPreferences(ui.Preferences{ReduceMotion: true, TextScale: 1})
+	tt.Frame()
+	// Manual S3 profiles open on their keys; authorization is one switch away.
+	if err := tt.Click("Cloudflare 授权"); err != nil {
+		t.Fatal(err)
+	}
 	tt.Frame()
 	if !tt.HasText("连接 Cloudflare R2") || a.config.Provider != "s3" {
 		t.Fatal("connecting R2 requires modifying the original manual profile")

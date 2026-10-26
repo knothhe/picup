@@ -57,16 +57,17 @@ func TestFeedbackStaysVisible(t *testing.T) {
 	}
 }
 
-// Match the native shell's content inset and titlebar controls in headless renders.
+// Match the native shell in headless renders: content runs behind the
+// titlebar, which overlays the page title and actions.
 func nativeTestView(a *application) func(*ui.Context) {
 	return func(c *ui.Context) {
 		c.SetTheme(palette(c))
-		ui.Column(c).Fill().Background(c.Theme().Background).Children(func() {
-			ui.Row(c).Height(48).FillWidth().Shrink(0).Padding(6, 8, 6, 88).AlignItems(ui.Center).Children(func() {
-				ui.Row(c).Grow(1).MinWidth(0).Children(func() { a.header(c) })
+		ui.Box(c).Fill().Background(c.Theme().Background).Children(func() {
+			ui.Column(c).Fill().Children(func() { a.view(c) })
+			ui.Row(c).Absolute().Top(0).Left(0).Right(0).Height(48).Padding(6, 8, 6, headerInset(c)).AlignItems(ui.Center).Children(func() {
+				ui.Row(c).Grow(1).MinWidth(0).FillHeight().AlignItems(ui.Center).Children(func() { a.header(c) })
 				a.headerActions(c)
 			})
-			a.view(c)
 		})
 	}
 }
@@ -152,9 +153,9 @@ func TestNavigationAndSidebar(t *testing.T) {
 		if err != nil || saved.Compress {
 			t.Fatal("collapsed settings did not save", err)
 		}
-		click("设置")
+		click("返回图库")
 		if a.tab != 4 {
-			t.Fatal("settings button did not return to gallery")
+			t.Fatal("settings back button did not return to gallery")
 		}
 		tt.Key(ui.Cmd, ui.KeyComma)
 		tt.Advance(400 * time.Millisecond)

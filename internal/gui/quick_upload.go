@@ -196,15 +196,14 @@ func (a *application) quickUploadView(c *ui.Context) {
 	a.onShortcut(c, "settings", func() { a.openSettings(0); a.showWindow() })
 	a.onShortcut(c, "quit", mygo.App.Quit)
 	t := c.Theme()
-	root := ui.Column(c).Fill().Radius(12).Clip().Background(t.Background)
+	root := ui.Column(c).Fill().Radius(12).Clip().Background(t.Surface)
 	if runtime.GOOS != "darwin" {
 		root.Border(1, t.Border)
 	}
 	root.Children(func() {
 		ui.Row(c).FillWidth().Height(48).Shrink(0).Padding(0, 16).Gap(7).AlignItems(ui.Center).Children(func() {
 			ui.Image(c, brandIcon).Size(20, 20).Shrink(0)
-			components.Text(c, "Picup").FontSize(13).FontWeight(650)
-			components.Text(c, tr("快捷上传")).SingleLine().Ellipsis("…").MinWidth(0).FontSize(11).TextColor(t.TextMuted)
+			components.Text(c, tr("快捷上传")).FontSize(13).FontWeight(600).SingleLine().Shrink(0)
 			ui.Spacer(c)
 			ui.Row(c).Gap(4).Shrink(0).Children(func() {
 				a.quickHeaderAction(c, "重置状态", lucide.RotateCcw(), !a.canResetQuickUpload(), a.resetQuickUpload)
@@ -248,9 +247,20 @@ func (a *application) quickUploadCard(c *ui.Context, unconfigured bool) {
 	t := c.Theme()
 	message, detail, failed := a.quickUploadStatus()
 	hasStatus := message != "" || detail != ""
-	zone := ui.Box(c).Key("quick-drop").FillWidth().Height(128).Shrink(0).Radius(10).Border(1, t.Border).Background(t.Surface)
-	if !hasStatus && !unconfigured {
-		zone.BorderColor(t.Border.Mix(t.TextMuted, .25)).BorderStyle(ui.BorderDashed)
+	zone := ui.Box(c).Key("quick-drop").FillWidth().Height(128).Shrink(0).Radius(10).Border(1, t.Border).Background(sunkenColor(t))
+	succeeded := false
+	for _, j := range a.quickUpload.jobs {
+		succeeded = succeeded || j.result != nil
+	}
+	switch {
+	case a.busy:
+		zone.BorderColor(ui.Color{}).Background(accentSoft(t).Alpha(.6))
+	case failed:
+		zone.BorderColor(ui.Color{}).Background(dangerSoft(t))
+	case hasStatus && succeeded:
+		zone.BorderColor(ui.Color{}).Background(successSoft(t))
+	case !hasStatus && !unconfigured:
+		zone.Border(1.5, controlBorder(t)).BorderStyle(ui.BorderDashed)
 	}
 	if !a.busy && (hasStatus || unconfigured) {
 		// Buttons are accessibility leaves in MyGo. Keep the live status on
@@ -279,11 +289,11 @@ func (a *application) quickUploadCard(c *ui.Context, unconfigured bool) {
 			label, run = tr("打开 Picup 查看详情并重试"), a.openQuickUploadResults
 		}
 		button := ui.ButtonBase(c).Key("quick-card-action").Label(label).Fill().Radius(10).Background(ui.Color{})
-		if button.Hovered() || button.FocusVisible() || dragging {
-			zone.BorderColor(t.Accent).Background(t.Surface.Mix(t.Accent, .035))
+		if (button.Hovered() || button.FocusVisible()) && !hasStatus {
+			zone.BorderColor(t.Accent)
 		}
 		if dragging {
-			zone.Border(1.5, t.Accent).BorderStyle(ui.BorderSolid).Background(t.Surface.Mix(t.Accent, .08))
+			zone.Border(1.5, t.Accent).BorderStyle(ui.BorderSolid).Background(accentSoft(t))
 		}
 		button.Children(func() {
 			content := ui.Column(c).Fill().Padding(13, 16).AlignItems(ui.Center).Justify(ui.Center).Gap(7)

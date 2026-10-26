@@ -114,13 +114,15 @@ func TestNativePasteStillEditsSettingsAndGalleryText(t *testing.T) {
 		if tab == 4 {
 			label = "搜索图片"
 		}
+		if tab == 2 {
+			// A new R2 profile starts on Cloudflare authorization.
+			if err := tt.Click("访问密钥"); err != nil {
+				t.Fatal(err)
+			}
+			tt.Frame()
+		}
 		if err := tt.Click(label); err != nil {
 			t.Fatal(err)
-		}
-		if tab == 2 {
-			// The form label sits above the editor.
-			row, _ := tt.Find(label)
-			tt.ClickAt(row.X+45, row.Y+row.H+23)
 		}
 		tt.SetClipboard("photos")
 		tt.Command("paste")
@@ -142,7 +144,7 @@ func TestUtilityNavigationMovesWithSidebar(t *testing.T) {
 		tt.Frame()
 		for _, label := range []string{"指南", "设置"} {
 			r, ok := tt.Find(label)
-			if !ok || r.Y < float32(size[1])/2 || r.X >= 188 {
+			if !ok || r.Y < float32(size[1])/2 || r.X >= sidebarExpandedWidth {
 				t.Fatalf("utility is missing from sidebar footer: %s %v", label, r)
 			}
 		}
@@ -155,8 +157,8 @@ func TestUtilityNavigationMovesWithSidebar(t *testing.T) {
 		tt.Advance(400 * time.Millisecond)
 		for _, label := range []string{"指南", "设置"} {
 			r, ok := tt.Find(label)
-			if !ok || r.Y+r.H > 48 || r.X+r.W > float32(size[0]) {
-				t.Fatalf("utility did not move to header: %s %v", label, r)
+			if !ok || r.Y < float32(size[1])/2 || r.X+r.W > sidebarRailWidth {
+				t.Fatalf("utility did not stay in the collapsed rail: %s %v", label, r)
 			}
 		}
 		if _, ok := tt.Find("关于"); ok {

@@ -223,7 +223,7 @@ func TestProfileControlsFitMinimumWindow(t *testing.T) {
 				tt := profileTester(a, 760, 620)
 				for _, label := range []string{"切换配置"} {
 					r, ok := tt.Find(tr(label))
-					if !ok || r.W < 100 || r.X < 0 || r.X+r.W > 188 || r.Y < 310 || r.Y+r.H > 620 {
+					if !ok || r.W < 100 || r.X < 0 || r.X+r.W > sidebarExpandedWidth || r.Y > 120 {
 						t.Fatal("profile control does not fit", label, r)
 					}
 				}
@@ -232,7 +232,7 @@ func TestProfileControlsFitMinimumWindow(t *testing.T) {
 					tt.Frame()
 					for _, label := range []string{"新建配置", "编辑存储", "复制", "重命名", "删除"} {
 						r, ok := tt.Find(tr(label))
-						if !ok || r.X < 188 || r.X+r.W > 760 || r.Y+r.H > 620 {
+						if !ok || r.X < sidebarExpandedWidth || r.X+r.W > 760 || r.Y+r.H > 620 {
 							t.Fatal("profile action does not fit", label, r)
 						}
 					}
@@ -294,7 +294,7 @@ func TestProfileManagerActionsTargetTheSelectedCard(t *testing.T) {
 					t.Fatal(err)
 				}
 				tt.Frame()
-				if a.config.ActiveProfile != archiveID || a.settingsTab != 0 || a.config.Bucket != "archive-bucket" || !tt.HasText("存储连接") {
+				if a.config.ActiveProfile != archiveID || a.settingsTab != 0 || a.config.Bucket != "archive-bucket" || !tt.HasText("连接方式") {
 					t.Fatal("Edit storage did not open the card's profile")
 				}
 			}

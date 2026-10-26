@@ -343,7 +343,7 @@ func (a *application) shortcutTooltip(label, id string) string {
 
 func (a *application) shortcutsSettings(c *ui.Context) {
 	ui.Row(c).FillWidth().Gap(12).AlignItems(ui.Center).Children(func() {
-		components.Text(c, tr("点击键位后按下新的快捷键，修改会自动保存。")).Grow(1).MinWidth(0).Wrap().FontSize(11).TextColor(c.Theme().TextMuted)
+		components.Text(c, tr("点击键位后按下新的快捷键。")).Grow(1).MinWidth(0).Wrap().FontSize(11).TextColor(c.Theme().TextMuted)
 		if components.Button(c, tr("恢复全部默认"), components.ButtonOutline).Shrink(0).Clicked() {
 			a.config.Shortcuts = nil
 			a.shortcutEditing, a.shortcutError = "", ""
@@ -365,7 +365,6 @@ func (a *application) shortcutsSettings(c *ui.Context) {
 			}
 		})
 	}
-	components.Text(c, tr("文本编辑快捷键由系统管理，输入框中的全选、粘贴和方向键保持原有行为。")).FillWidth().Wrap().FontSize(11).TextColor(c.Theme().TextMuted)
 }
 
 func (a *application) shortcutPreference(c *ui.Context, command shortcutCommand) {
