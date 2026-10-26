@@ -57,9 +57,15 @@ func (g *galleryState) hasViewPreferences() bool {
 
 func (a *application) resetGalleryView() {
 	g := &a.gallery
+	previousPrefix := g.prefix
 	g.applyViewPreferences(galleryPreferences{Version: 1})
 	g.prefixQuery = ""
 	g.filterOpen, g.sortOpen, g.dateOpen = false, false, false
+	if previousPrefix != "" && g.paged {
+		a.setGalleryPrefix("")
+	} else {
+		g.prefixInput, g.prefixInputInitialized = "", true
+	}
 	a.queueGalleryPreferences()
 }
 

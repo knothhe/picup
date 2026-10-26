@@ -34,32 +34,54 @@ func IsImage(key string) bool {
 	return false
 }
 
-// List reads every service page. A failed or malformed page never becomes a
-// successful partial gallery that could hide remaining objects.
+// ListPage fetches one bounded service page. The limit counts cloud objects,
+// including non-image files, so an empty image page can still have a next token.
+// Prefix and continuation tokens are opaque S3 values and are never URL joined.
+func (c *Client) ListPage(ctx context.Context, prefix, token string, limit int) ([]Object, string, error) {
+	if limit < 1 || limit > 1000 {
+		return nil, "", errors.New("list page limit must be between 1 and 1000")
+	}
+	page, err := c.api.ListObjectsV2(ctx, &s3.ListObjectsV2Input{Bucket: aws.String(c.config.Bucket), Prefix: optional(prefix), ContinuationToken: optional(token), MaxKeys: aws.Int32(int32(limit))})
+	if err != nil {
+		return nil, "", err
+	}
+	next := ""
+	if aws.ToBool(page.IsTruncated) {
+		next = aws.ToString(page.NextContinuationToken)
+		if next == "" || next == token {
+			return nil, "", errors.New("存储服务返回了无效的分页标记，请重试")
+		}
+	}
+	images := make([]Object, 0, len(page.Contents))
+	for _, item := range page.Contents {
+		key := aws.ToString(item.Key)
+		if IsImage(key) {
+			images = append(images, Object{Key: key, URL: c.URL(key), Size: aws.ToInt64(item.Size), Modified: aws.ToTime(item.LastModified), ETag: aws.ToString(item.ETag)})
+		}
+	}
+	return images, next, nil
+}
+
+// List retains the complete-enumeration API for CLI and existing callers. A
+// failed or malformed page never becomes a successful partial gallery.
 func (c *Client) List(ctx context.Context, prefix string) ([]Object, error) {
 	var images []Object
-	var token *string
+	token := ""
 	seen := map[string]bool{}
 	for {
-		page, err := c.api.ListObjectsV2(ctx, &s3.ListObjectsV2Input{Bucket: aws.String(c.config.Bucket), Prefix: optional(prefix), ContinuationToken: token})
+		page, next, err := c.ListPage(ctx, prefix, token, 1000)
 		if err != nil {
 			return nil, err
 		}
-		for _, item := range page.Contents {
-			key := aws.ToString(item.Key)
-			if IsImage(key) {
-				images = append(images, Object{Key: key, URL: c.URL(key), Size: aws.ToInt64(item.Size), Modified: aws.ToTime(item.LastModified), ETag: aws.ToString(item.ETag)})
-			}
-		}
-		if !aws.ToBool(page.IsTruncated) {
+		images = append(images, page...)
+		if next == "" {
 			return images, nil
 		}
-		next := aws.ToString(page.NextContinuationToken)
-		if next == "" || seen[next] {
+		if seen[next] {
 			return nil, errors.New("存储服务返回了无效的分页标记，请重试")
 		}
 		seen[next] = true
-		token = aws.String(next)
+		token = next
 	}
 }
 

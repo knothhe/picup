@@ -1,6 +1,7 @@
 package gui
 
 import (
+	"github.com/knothhe/picup/internal/buildidentity"
 	"path/filepath"
 	"time"
 
@@ -55,7 +56,7 @@ func (a *application) aboutContent(c *ui.Context) {
 					components.Icon(c, lucide.Image()).Size(28, 28).TextColor(c.Theme().Accent)
 				})
 				ui.Column(c).MinWidth(0).Gap(5).Children(func() {
-					components.Text(c, "Picup").FontSize(22).Bold()
+					components.Text(c, buildidentity.Name()).FontSize(22).Bold()
 					components.Text(c, tf("版本 %s", info.Version)).FontSize(12).TextColor(c.Theme().TextMuted)
 					components.Text(c, aboutSourceLabel(aboutSource())).FontSize(11).TextColor(c.Theme().TextMuted)
 				})
@@ -80,7 +81,7 @@ func (a *application) aboutContent(c *ui.Context) {
 			})
 		})
 		a.updateSettings(c)
-		settingsGroup(c, "about-build", "构建信息", func() {
+		aboutDisclosureGroup(c, "about-build", "构建信息", &a.aboutBuildOpen, func() {
 			ui.Column(c).FillWidth().MinWidth(0).Padding(16).Gap(12).Children(func() {
 				aboutInfoRow(c, "平台与架构", info.OS+" / "+info.Arch)
 				aboutInfoRow(c, "Go 运行时", info.GoVersion)
@@ -104,7 +105,7 @@ func (a *application) aboutContent(c *ui.Context) {
 				}
 			})
 		})
-		settingsGroup(c, "about-dependencies", "主要依赖", func() {
+		aboutDisclosureGroup(c, "about-dependencies", "主要依赖", &a.aboutDependenciesOpen, func() {
 			ui.Column(c).FillWidth().MinWidth(0).Padding(16).Gap(12).Children(func() {
 				components.Text(c, tr("版本来自当前程序的构建元数据。完整归属文本随应用包提供。")).FillWidth().MinWidth(0).Wrap().FontSize(11).TextColor(c.Theme().TextMuted)
 				if components.Button(c, tr("第三方许可与归属"), components.ButtonOutline).AlignSelf(ui.Start).Clicked() {
@@ -141,5 +142,15 @@ func aboutInfoRow(c *ui.Context, label, value string) {
 	ui.Column(c).Key(label).FillWidth().MinWidth(0).Gap(4).Children(func() {
 		components.Text(c, tr(label)).FontSize(11).TextColor(c.Theme().TextMuted)
 		components.Text(c, value).FillWidth().MinWidth(0).Wrap().FontSize(12)
+	})
+}
+
+// Detailed build metadata is opt-in on each application launch. Reuse the
+// runtime disclosure so pointer, keyboard and accessibility share one state.
+func aboutDisclosureGroup(c *ui.Context, key, title string, open *bool, build func()) {
+	ui.Column(c).Key(key).FillWidth().MinWidth(0).Radius(10).Border(1, c.Theme().Border).Background(c.Theme().Surface).Clip().Children(func() {
+		parts := components.Collapsible(c, tr(title), open, components.CollapsibleOptions{ArrowPosition: components.ArrowLeft}, build)
+		parts.Root.FillWidth().MinWidth(0).Padding(8, 12)
+		parts.Trigger.Label(tr(title)).FillWidth().MinWidth(0).Height(32)
 	})
 }

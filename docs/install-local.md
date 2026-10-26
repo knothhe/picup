@@ -8,18 +8,18 @@
 
 当前发布流程只生成构建机器所用的 macOS 架构，目前已验证 macOS arm64。Release 中未提供的架构或平台需要自行构建并验证。
 
-当前安装包使用 MyGo 默认的本地 ad-hoc 签名，尚未配置 Developer ID 签名与 Apple 公证。
+未显式配置签名身份时，安装包沿用 MyGo 的本地 ad-hoc 签名。已接入显式 Developer ID 签名与 Apple 公证入口；实际完成这两项需要发行者提供已有证书及公证凭据，见[macOS 分发签名](macos-distribution.md)。
 
 ## 构建与打包
 
 ```sh
-make build            # 构建 CLI 和桌面应用
-make run              # 构建并运行桌面应用
-make package          # 构建并打包当前平台
+make build            # 构建 Dev CLI 和桌面应用
+make run              # 构建并运行 Dev 桌面应用
+make package          # 构建并打包当前平台的正式应用
 make package-release  # 构建本机 macOS 发布 ZIP
 ```
 
-构建产物是 `build/bin/picup` 和 `build/bin/picup-gui`。`make build` / `make run` 默认同时带 `picup_dev` 标签，使用 `picup-dev` 配置目录与 development 凭据通道；开发运行时将两个程序放在同一目录，桌面端才能找到附带的 CLI。`BUILD_TAGS` 可覆盖开发标签。打包和安装入口会重新构建正式 CLI 与 GUI，使用正式 `picup` 数据目录；打包产物位于 `build/dist/`，应用包会包含 CLI。
+`make build` / `make run` 默认同时带 `picup_dev` 标签，输出 `build/dev/bin/picup-dev` 与 `build/dev/bin/picup-gui`，使用 `picup-dev` 配置目录、独立凭据和带右下角 Dev 标记的图标。`BUILD_TAGS` 可覆盖直接开发构建的标签；`make install` 固定安装隔离的 Dev 通道。正式打包和 `make install-release` 重新构建 `build/bin/picup` 与 `build/bin/picup-gui`，使用正式 `picup` 数据目录；正式打包产物位于 `build/dist/`，应用包包含 CLI。
 
 `make package-release` 将经过版本与内容校验的应用包输出为 `build/release/Picup-<version>-darwin-<arch>.zip`，不生成 DMG。版本来自 `mygo.json`；可传 `VERSION=0.1.0` 校验预期版本，版本不符时停止，不改写源码版本。此命令只打包，不安装或发布。
 
@@ -27,18 +27,20 @@ make package-release  # 构建本机 macOS 发布 ZIP
 
 ## macOS 本地安装
 
-安装前退出正在运行的 Picup，然后执行：
+默认从当前源码构建并安装隔离的 Dev 应用：
 
 ```sh
 make install
 ```
 
-此命令会构建两个程序、生成不含 DMG 的 macOS 应用包，再安装到：
+此命令会构建 Dev CLI 与 GUI、生成不含 DMG 的 `Picup Dev.app`，再安装到：
 
 | 产物 | 默认路径 |
 | --- | --- |
-| 桌面应用 | `~/Applications/Picup.app` |
-| CLI | `~/.local/bin/picup` |
+| Dev 桌面应用 | `~/Applications/Picup Dev.app` |
+| Dev CLI | `~/.local/bin/picup-dev` |
+
+`make install-dev` 是显式 Dev 安装入口，行为与 `make install` 相同。使用 `make uninstall` 或 `make uninstall-dev` 卸载已核验的 Dev 应用与 CLI，默认保留配置、图库缓存、数据和凭据，详细核验与恢复规则见下文。
 
 可以覆盖安装目录；当前用户需要有目标目录的写入权限：
 
@@ -52,9 +54,17 @@ make install INSTALL_FLAGS="-app-dir /Applications -cli-dir /usr/local/bin"
 make install INSTALL_FLAGS="-app-dir $HOME/Applications -cli-dir $HOME/.local/bin"
 ```
 
-应用安装器只替换识别为 Picup 的应用包，拒绝其他程序、普通文件及符号链接。CLI 安装器通过同目录下的 `.picup-cli.json` 记录管理已安装文件；已有 CLI 被手动修改时，更新会停止，需选择其他目录或自行处理冲突。
+需要正式版时，先退出正在运行的正式 Picup，再显式执行：
 
-CLI 会先于桌面应用安装。如果后续应用替换失败，错误信息会说明 CLI 是否已安装，以及应用备份的位置（如有）。
+```sh
+make install-release
+```
+
+正式入口从当前源码重新构建 `Picup.app` 与 CLI，默认安装到 `~/Applications/Picup.app` 和 `~/.local/bin/picup`，同样支持 `INSTALL_FLAGS` 指定目录。它只进行本地安装，不发布版本。
+
+正式应用安装器只替换识别为 Picup 的应用包，拒绝其他程序、普通文件及符号链接。正式 CLI 安装器通过同目录下的 `.picup-cli.json` 记录管理已安装文件；已有 CLI 被手动修改时，更新会停止，需选择其他目录或自行处理冲突。
+
+正式 CLI 会先于桌面应用安装。如果后续应用替换失败，错误信息会说明 CLI 是否已安装，以及应用备份的位置（如有）。
 
 ## 将 CLI 加入 PATH
 
@@ -64,12 +74,34 @@ CLI 会先于桌面应用安装。如果后续应用替换失败，错误信息�
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-使用自定义目录时替换相应路径。安装器会提示缺失的 `PATH` 配置，不会修改 shell 配置文件。
+使用自定义目录时替换相应路径。正式安装器会提示缺失的 `PATH` 配置；本地安装入口不会修改 shell 配置文件。
 
 ## 在桌面端安装 CLI
 
-已有桌面应用时，打开「设置 → CLI」，选择安装目录并点击「安装 / 更新 CLI」。它使用应用附带的 CLI，与 `make install` 使用相同的覆盖保护。此操作只安装 CLI，不构建或替换桌面应用。
+已有桌面应用时，打开「设置 → CLI」，可查看所选目录的实际安装状态、已安装版本、程序路径和当前应用环境中的 PATH 情况，并主动刷新。页面还会提示 PATH 是否优先匹配到其他位置；终端自己的 PATH 配置可能与桌面进程不同。
+
+选择安装目录后点击「安装 / 更新 CLI」，会核对应用附带程序的 Picup 模块、编译通道和平台，再使用与本地安装入口相同的 CLI 覆盖保护。正式应用管理 `picup`，Dev 应用管理 `picup-dev`。只有受管且未被修改的程序才执行 `--version` 读取实际版本；其他同名、归属未知或改动过的文件不会被执行。没有记录但与附带版本完全一致的文件可重新安装登记；旧记录写入失败时，也仅允许匹配附带程序的字节恢复登记。
+
+「卸载 CLI」只移除当前目录、当前通道中已验证的 CLI 与安装记录，保留桌面应用、配置、上传历史、图库缓存和凭据。符号链接、其他程序、其他通道、归属不明或内容已变动时停止。安装与卸载在后台操作，锁定本次目录，完成后重新读取实际状态；失败保留输入并允许修复后重试。若程序已移除但安装记录清理失败，页面提供继续清理的卸载入口。
 
 macOS 和 Linux 默认使用 `~/.local/bin`，Windows 默认使用 `%LOCALAPPDATA%\Picup\bin`。也可直接运行 `make build` 生成的 CLI。
 
-`make install` 当前只支持 macOS；其他平台使用 `make package` 构建当前平台的包。版本发布命令独立于本地安装，见[版本发布](release.md)。
+`make install`、`make uninstall` 及显式通道安装、卸载入口当前只支持 macOS；其他平台使用 `make package` 构建当前平台的正式包。版本发布命令独立于本地安装，见[版本发布](release.md)。
+
+## 独立 Dev 应用与卸载
+
+```sh
+make install         # ~/Applications/Picup Dev.app 和 ~/.local/bin/picup-dev
+make uninstall       # 仅移除已核验的 Dev 程序，保留配置、图库缓存、数据与凭据
+make package-dev     # 仅打包到 build/dev/dist/darwin-<arch>/Picup Dev.app
+make install-dev     # 与 make install 相同的显式 Dev 安装入口
+make uninstall-dev   # 与 make uninstall 相同的显式 Dev 卸载入口
+```
+
+Dev 固定使用 `com.knothhe.picup.dev`，与正式应用分开配置、系统凭据、单实例和登录项身份；Dev 包不携带正式更新 Feed。图标从正式原图通过 `scripts/dev_icon.py` 派生，普通构建核对已入库文件的来源、参数与哈希，不需要 Pillow；重新生成用安装了 Pillow 10.1+ 的 Python 执行 `make icons-dev PYTHON=/path/to/python3`。
+
+安装与卸载命令都支持 `INSTALL_FLAGS="-app-dir /absolute/Applications -cli-dir /absolute/bin"`；卸载自定义位置的 Dev 时使用安装时的相同目录。`make install` / `make install-dev` 安装精确的预构建 Dev 包可使用 `INSTALL_FLAGS="-source-app '/absolute/Picup Dev.app' -app-dir /absolute/Applications -cli-dir /absolute/bin"`；不按“最新”文件查找安装包。
+
+Dev 安装器在应用目录写入 `.picup-dev-install.json`，记录实际路径、通道、维护协议与关键文件哈希；CLI 有独立的 `.picup-dev-cli.json`。替换或卸载运行中的 Dev 时，仅向该精确安装实例发送正常退出请求，等待保存和任务屏障；未退出会停止，不强制结束进程。卸载在删包前通过该安装自己的无窗口维护入口核对身份并注销其登录项；权限失败保留应用及恢复记录，不能清理正式登录项。
+
+身份不明、正式包、被修改的程序、路径别名、配置目录重叠或归属记录缺失都会停止。旧 Dev 包没有维护协议时，先在同一目录重新安装当前 Dev 版本以建立可验证记录，再卸载。部分卸载失败保留记录，可使用相同参数重试；若应用已被手动删除且未完成登录项清理，也需先原位置重装。卸载不提供清数据选项。

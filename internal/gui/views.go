@@ -60,6 +60,7 @@ const (
 	toneAccent
 	toneSuccess
 	toneDanger
+	toneWarning
 )
 
 // statusPill is the shared capsule for per-item states.
@@ -73,6 +74,8 @@ func statusPill(c *ui.Context, text string, tone statusTone) {
 		background, color = successSoft(t), t.Success
 	case toneDanger:
 		background, color = dangerSoft(t), t.Danger
+	case toneWarning:
+		background, color = t.Warning.Alpha(.12), t.Warning
 	}
 	ui.Row(c).Height(22).Shrink(0).Padding(0, 8).Gap(4).Radius(11).Background(background).AlignItems(ui.Center).Children(func() {
 		switch tone {
@@ -115,6 +118,14 @@ func (a *application) uploadView(c *ui.Context) {
 	config := a.uploadDisplayConfig()
 	unconfigured := config.ValidateStorage() != nil
 	ui.Column(c).FillWidth().Grow(1).MinHeight(0).Padding(20, 24).Gap(14).Children(func() {
+		if a.uploadQueueBlocked() {
+			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+				components.Text(c, tr("上传队列记录无法读取，原记录已保留。重置后才能添加图片。")).Grow(1).MinWidth(0).Wrap().FontSize(12)
+				if components.Button(c, tr("重置上传队列记录"), components.ButtonOutline).Disabled(a.busy).Clicked() {
+					a.clearUploadQueue()
+				}
+			})
+		}
 		if unconfigured {
 			a.uploadSetup(c, counts.total > 0)
 		}
@@ -175,7 +186,7 @@ func (a *application) uploadSetup(c *ui.Context, compact bool) {
 // Files dropped anywhere in the window are accepted as well.
 func (a *application) uploadDropZone(c *ui.Context, compact bool) {
 	t := c.Theme()
-	zone := ui.Box(c).Key("drop-zone").FillWidth().Radius(12).Border(1.5, controlBorder(t)).BorderStyle(ui.BorderDashed).Background(sunkenColor(t)).Disabled(a.busy)
+	zone := ui.Box(c).Key("drop-zone").FillWidth().Radius(12).Border(1.5, controlBorder(t)).BorderStyle(ui.BorderDashed).Background(sunkenColor(t)).Disabled(a.busy || a.uploadQueueBlocked())
 	if compact {
 		zone.Shrink(0).Height(68).Radius(10)
 	} else {
@@ -290,6 +301,9 @@ func (a *application) uploadQueueToolbar(c *ui.Context, counts uploadQueueCounts
 			if counts.failed > 0 {
 				summaryDot(c, tf("%d 失败", counts.failed), t.Danger)
 			}
+			if counts.skipped > 0 {
+				summaryDot(c, tf("%d 已跳过", counts.skipped), t.TextMuted)
+			}
 		})
 		ui.Spacer(c)
 		if counts.uploaded > 0 {
@@ -307,7 +321,7 @@ func (a *application) uploadQueueToolbar(c *ui.Context, counts uploadQueueCounts
 			}
 		}
 		if components.IconButton(c, lucide.ListX(), tr("清空"), components.IconButtonPlain).Disabled(a.busy).Clicked() {
-			a.jobs = nil
+			a.clearUploadQueue()
 		}
 	})
 }
@@ -392,6 +406,10 @@ func (a *application) jobView(c *ui.Context, j *job, first bool) {
 			ui.Row(c).FillWidth().MinWidth(0).Wrap().AlignItems(ui.Center).Gap(10).Children(func() {
 				if j.result != nil {
 					sizes, change, saved := uploadSizeParts(j.result)
+					if j.result.Reused {
+						sizes = tr("已复用云端同路径图片")
+						change = ""
+					}
 					components.Text(c, sizes).FontSize(12).TextColor(t.TextMuted)
 					if change != "" {
 						color := t.TextMuted
@@ -400,6 +418,8 @@ func (a *application) jobView(c *ui.Context, j *job, first bool) {
 						}
 						components.Text(c, change).FontSize(12).FontWeight(500).TextColor(color)
 					}
+				} else if processing && j.totalBytes > 0 {
+					components.Text(c, tf("%s / %s · %d%%", bytesLabel(int(j.sentBytes)), bytesLabel(int(j.totalBytes)), min(100, int(j.sentBytes*100/j.totalBytes)))).FontSize(12).TextColor(t.TextMuted)
 				} else if j.sourceBytes > 0 {
 					components.Text(c, bytesLabel(j.sourceBytes)).FontSize(12).TextColor(t.TextMuted)
 				}
@@ -410,9 +430,15 @@ func (a *application) jobView(c *ui.Context, j *job, first bool) {
 		})
 		switch {
 		case j.result != nil:
-			statusPill(c, tr("已上传"), toneSuccess)
+			label := tr("已上传")
+			if j.result.Reused {
+				label = tr("已复用")
+			}
+			statusPill(c, label, toneSuccess)
 		case failed:
 			statusPill(c, tr("上传失败"), toneDanger)
+		case j.status == "已跳过":
+			statusPill(c, tr("已跳过"), toneNeutral)
 		case processing:
 			statusPill(c, tr("正在处理与上传"), toneAccent)
 		default:

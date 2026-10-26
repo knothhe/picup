@@ -12,25 +12,28 @@ import (
 // Profile holds the storage and upload settings for one destination. App
 // appearance, language and keyboard shortcuts remain global configuration.
 type Profile struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	R2Connection string `json:"r2_connection,omitempty"`
-	Provider     string `json:"provider"`
-	Endpoint     string `json:"endpoint"`
-	Region       string `json:"region"`
-	Bucket       string `json:"bucket"`
-	AccessKey    string `json:"access_key"`
-	SecretKey    string `json:"secret_key"`
-	SessionToken string `json:"session_token,omitempty"`
-	PublicURL    string `json:"public_url"`
-	PathTemplate string `json:"path_template"`
-	PathStyle    bool   `json:"path_style"`
-	Compress     bool   `json:"compress"`
-	Quality      int    `json:"quality"`
-	Format       string `json:"format"`
-	MaxWidth     int    `json:"max_width"`
-	Output       string `json:"output"`
-	Copy         bool   `json:"copy"`
+	ID                string `json:"id"`
+	Name              string `json:"name"`
+	R2Connection      string `json:"r2_connection,omitempty"`
+	CredentialRef     string `json:"credential_ref,omitempty"`
+	UploadConcurrency int    `json:"upload_concurrency"`
+	CollisionPolicy   string `json:"collision_policy"`
+	Provider          string `json:"provider"`
+	Endpoint          string `json:"endpoint"`
+	Region            string `json:"region"`
+	Bucket            string `json:"bucket"`
+	AccessKey         string `json:"access_key"`
+	SecretKey         string `json:"secret_key"`
+	SessionToken      string `json:"session_token,omitempty"`
+	PublicURL         string `json:"public_url"`
+	PathTemplate      string `json:"path_template"`
+	PathStyle         bool   `json:"path_style"`
+	Compress          bool   `json:"compress"`
+	Quality           int    `json:"quality"`
+	Format            string `json:"format"`
+	MaxWidth          int    `json:"max_width"`
+	Output            string `json:"output"`
+	Copy              bool   `json:"copy"`
 }
 
 // UnmarshalJSON applies defaults only to absent settings, preserving explicit
@@ -69,6 +72,7 @@ func (c *Config) EnsureProfiles() {
 		c.Profiles = []Profile{profile}
 		c.ActiveProfile = profile.ID
 		c.R2Connection = profile.R2Connection
+		c.CredentialRef, c.UploadConcurrency, c.CollisionPolicy = profile.CredentialRef, profile.UploadConcurrency, profile.CollisionPolicy
 		return
 	}
 	index := c.profileIndex(c.ActiveProfile)
@@ -215,7 +219,7 @@ func (c Config) validateAllOptions() error {
 
 func (c Config) profile() Profile {
 	return Profile{
-		R2Connection: c.R2Connection, Provider: c.Provider, Endpoint: c.Endpoint, Region: c.Region,
+		R2Connection: c.R2Connection, CredentialRef: c.CredentialRef, UploadConcurrency: c.UploadConcurrency, CollisionPolicy: c.CollisionPolicy, Provider: c.Provider, Endpoint: c.Endpoint, Region: c.Region,
 		Bucket: c.Bucket, AccessKey: c.AccessKey, SecretKey: c.SecretKey,
 		SessionToken: c.SessionToken, PublicURL: c.PublicURL,
 		PathTemplate: c.PathTemplate, PathStyle: c.PathStyle,
@@ -228,6 +232,7 @@ func (c *Config) activateProfile(index int) {
 	profile := c.Profiles[index]
 	c.ActiveProfile = profile.ID
 	c.R2Connection = profile.R2Connection
+	c.CredentialRef, c.UploadConcurrency, c.CollisionPolicy = profile.CredentialRef, profile.UploadConcurrency, profile.CollisionPolicy
 	c.Provider, c.Endpoint, c.Region = profile.Provider, profile.Endpoint, profile.Region
 	c.Bucket, c.AccessKey, c.SecretKey = profile.Bucket, profile.AccessKey, profile.SecretKey
 	c.SessionToken, c.PublicURL = profile.SessionToken, profile.PublicURL

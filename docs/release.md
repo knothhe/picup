@@ -1,6 +1,6 @@
 # 版本发布
 
-`make release-initial` 发布当前版本，`make release` 升级后发布。两者默认预览，添加 `RELEASE_FLAGS=--apply` 后完成检查、构建安装包、版本提交（仅升级）、附注 tag、原子推送及 GitHub Release 附件上传。版本统一来自 `mygo.json`；本地安装独立使用 [`make install`](install-local.md)。
+`make release-initial` 发布当前版本，`make release` 升级后发布。两者默认预览，添加 `RELEASE_FLAGS=--apply` 后完成检查、构建安装包、版本提交（仅升级）、附注 tag、原子推送及 GitHub Release 附件上传。版本统一来自 `mygo.json`；本地开发安装独立使用 `make install`，正式本地安装显式使用 `make install-release`，见[安装说明](install-local.md)。
 
 ## 发布前准备
 
@@ -69,7 +69,7 @@ make package-release VERSION=0.1.0    # 校验源码版本为 0.1.0
 
 `VERSION` 用于校验预期版本，不改写源码版本。原有 `make package` 仍使用 MyGo 向 `build/dist/` 打包；发布流程使用上述统一 ZIP。
 
-macOS 代码签名沿用 MyGo 的 ad-hoc 签名，当前未配置 Developer ID 或 Apple 公证。更新包的 Ed25519 签名是独立的来源校验，不能代替 Apple 的代码签名与公证。
+未显式选择身份时，macOS 代码签名沿用 MyGo 的 ad-hoc 签名。[Developer ID 与 Apple 公证入口](macos-distribution.md)支持发行者提供已有签名身份和 notarytool profile；选择后缺身份、签名、证书匹配或公证失败都会停止，不回退 ad-hoc。更新包的 Ed25519 签名是独立来源校验，不能代替 Apple 的代码签名与公证。
 
 Release 标题使用 tag，正文包含 Full Changelog 链接，以及上一个可达的较低 SemVer tag 以来的非 merge commit 标题和短 hash，排除版本提交；没有此前 tag 时列出全部历史。预发布会标记为 prerelease。新 Release 先创建草稿，收齐本次全部安装包、更新包和 Feed，并核对 GitHub 返回的 SHA-256 与大小后才公开。已有 Release 保留正文与同名附件；同名内容不一致时停止，不静默覆盖。补传时先完成更新包上传，再上传 Feed。
 

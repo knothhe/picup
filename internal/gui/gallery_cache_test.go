@@ -32,6 +32,31 @@ func testGalleryCache(t *testing.T, root string, cfg config.Config) *galleryDisk
 	return cache
 }
 
+func TestGalleryCacheDirectoryRespectsBuildChannelAndOverride(t *testing.T) {
+	t.Setenv("PICUP_CACHE_DIR", "")
+	systemCache, err := os.UserCacheDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaultPath, err := galleryCacheDirectory()
+	if err != nil || defaultPath != filepath.Join(systemCache, config.DirectoryName, "gallery-v1") {
+		t.Fatal("gallery cache did not follow the compiled channel", defaultPath, err)
+	}
+	if config.BuildChannel == "development" && filepath.Base(filepath.Dir(defaultPath)) != "picup-dev" {
+		t.Fatal("development cache shares the release directory")
+	}
+	override := t.TempDir()
+	t.Setenv("PICUP_CACHE_DIR", override)
+	path, err := galleryCacheDirectory()
+	if err != nil || path != filepath.Join(override, "gallery-v1") {
+		t.Fatal("isolated cache root was not honored", path, err)
+	}
+	t.Setenv("PICUP_CACHE_DIR", "relative/cache")
+	if _, err = galleryCacheDirectory(); err == nil {
+		t.Fatal("relative override could clear an unintended working directory")
+	}
+}
+
 func cachedGalleryObject() storage.Object {
 	return storage.Object{Key: "images/海边.png", URL: "https://images.example.com/images/photo.png", Size: 1234, Modified: time.Date(2026, 10, 20, 4, 30, 0, 100, time.UTC), ETag: `"version-one"`}
 }
@@ -86,6 +111,7 @@ func TestGalleryCacheSeparatesCompleteStorageIdentity(t *testing.T) {
 		"secret":     func(c *config.Config) { c.SecretKey += "-other" },
 		"token":      func(c *config.Config) { c.SessionToken = "new-session" },
 		"oauth":      func(c *config.Config) { c.R2Connection = "another-connection" },
+		"credential": func(c *config.Config) { c.CredentialRef = "another-system-credential" },
 		"public-url": func(c *config.Config) { c.PublicURL = "https://cdn.example.com" },
 		"path-style": func(c *config.Config) { c.PathStyle = !c.PathStyle },
 	}

@@ -29,6 +29,9 @@ func run() error {
 	}
 	appDir := flag.String("app-dir", filepath.Join(home, "Applications"), "desktop application directory")
 	cliDir := flag.String("cli-dir", install.DefaultDir(), "CLI installation directory")
+	development := flag.Bool("dev", false, "install the isolated Picup Dev application and picup-dev CLI")
+	uninstall := flag.Bool("uninstall", false, "remove a verified Dev installation, preserving all user data")
+	sourceApp := flag.String("source-app", "", "install this exact prebuilt Dev bundle instead of rebuilding")
 	flag.Parse()
 	if flag.NArg() != 0 {
 		return fmt.Errorf("unexpected arguments: %v", flag.Args())
@@ -38,6 +41,38 @@ func run() error {
 	}
 	if !filepath.IsAbs(*appDir) || !filepath.IsAbs(*cliDir) {
 		return fmt.Errorf("installation directories must be absolute paths")
+	}
+	if *uninstall && !*development {
+		return fmt.Errorf("uninstall is only available with -dev; formal applications are never removed")
+	}
+	if *sourceApp != "" && (!*development || *uninstall) {
+		return fmt.Errorf("-source-app is only supported for Dev installation")
+	}
+	if *development {
+		if *uninstall {
+			if err := install.UninstallDevelopment(*appDir, *cliDir); err != nil {
+				return err
+			}
+			fmt.Println("Removed verified Picup Dev application and CLI; configuration, data and credentials preserved.")
+			return nil
+		}
+		source := *sourceApp
+		if source == "" {
+			goCommand := os.Getenv("GO")
+			if goCommand == "" {
+				goCommand = "go"
+			}
+			if err := runBuildCommand("make", "package-dev", "GO="+goCommand); err != nil {
+				return err
+			}
+			source = filepath.Join("build/dev/dist", "darwin-"+runtime.GOARCH, "Picup Dev.app")
+		}
+		if err := install.InstallDevelopment(source, *appDir, *cliDir); err != nil {
+			return err
+		}
+		fmt.Println("Installed Dev desktop:", filepath.Join(*appDir, "Picup Dev.app"))
+		fmt.Println("Installed Dev CLI:", filepath.Join(*cliDir, "picup-dev"))
+		return nil
 	}
 	data, err := os.ReadFile("mygo.json")
 	if err != nil {

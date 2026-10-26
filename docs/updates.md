@@ -12,7 +12,7 @@ CI 使用仓库 secret `MYGO_UPDATER_PRIVATE_KEY`。无签名试包不会读取�
 
 每个 macOS 架构有独立的 `update-darwin-<arch>.json`。清单引用同版本的完整 `.tar.gz` 更新包，MyGo 验证包大小及其 SHA-256 摘要的 Ed25519 签名后安装。当前 `updates.deltas` 为 `0`，不使用差分包。手动安装的 ZIP 与更新包包含同一份应用、CLI 和第三方许可说明。[MyGo 更新文档](https://github.com/egoist/mygo/blob/v0.5.5/docs/updates.md)
 
-版本来自 `mygo.json`。普通 `make build` 的开发程序和 `make package-ci` 的 debug 试包使用 `picup_dev` 编译标签，默认数据目录为 `picup-dev`，系统凭据与正式通道隔离，且不具备安装式更新资格。正式 `make package`、`make install` 和 `make package-release` 统一编译无此标签的 CLI 与 GUI；正式包还需满足 MyGo 的安装位置写入要求。签名仅证明更新来源，不代表 Developer ID 或 Apple 公证已完成。
+版本来自 `mygo.json`。普通 `make build` / `make run` 的开发程序、默认 `make install` 安装的程序和 `make package-ci` 的 debug 试包使用 `picup_dev` 编译标签，名称为 Picup Dev、bundle ID 为 `com.knothhe.picup.dev`，默认数据目录为 `picup-dev`，系统凭据与正式通道隔离；Dev 的公开更新配置与 MyGo 包配置均不携带正式 Feed。正式 `make package`、`make install-release` 和 `make package-release` 统一编译无此标签的 CLI 与 GUI；正式包还需满足 MyGo 的安装位置写入要求。更新签名证明更新来源；Developer ID 与 Apple 公证须另按[分发签名配置](macos-distribution.md)启用和验收。
 
 `make package-release` 缺私钥、密钥不匹配、更新签名无效、包内版本/架构不符或 Feed 指向错误附件时都会失败，不生成可继续发布的附件集合。`make release` 保持现有本地发版入口，先验证草稿全部附件再公开；CI 不自动发版。
 
@@ -38,4 +38,16 @@ CI 使用仓库 secret `MYGO_UPDATER_PRIVATE_KEY`。无签名试包不会读取�
 
 手动运行 workflow 时，默认仍是无私钥试包；勾选 `signed_updates` 只允许 `main`，需要仓库 secret `MYGO_UPDATER_PRIVATE_KEY`，会生成 arm64 的 ZIP、签名更新包和 Feed 作为 CI artifact。它不会创建 tag、Release 或公开 Feed。生产 secret 不提供给 PR job。
 
+同时勾选 `apple_distribution` 可消费已有 Developer ID 证书与可选公证 API 凭据，使用临时钥匙串签包并清理，具体变量和失败边界见[分发签名配置](macos-distribution.md)。未配置这些材料不会自动创建证书，也不会声称完成 Apple 公证。
+
 Actions 固定为核对过的提交 SHA，版本与 Go 工具链分别来自 `mygo.json`、`go.mod`。CI 的原生构建覆盖不能替代真实窗口、安装、系统钥匙串、不同 macOS 版本或更新重启链路的验收；当前本地验证系统为 macOS arm64，远程 CI 成功状态需在工作流实际运行后核实。
+
+## 独立更新制品验收
+
+```sh
+make verify-update VERIFY_FLAGS='-feed /path/update-darwin-arm64.json -archive /path/picup-0.1.1-darwin-arm64.tar.gz -version 0.1.1 -arch arm64'
+```
+
+工具默认使用源码固定的发行公钥，先核对明确版本、架构、精确 GitHub Release URL、包名与大小，再验 Ed25519 签名、归档路径与链接范围、Info.plist 身份/版本以及 GUI/CLI 的 Mach-O 架构和执行权限。隔离 fixture 可显式传 `-public-key` 测试公钥；它不能替代真实发行公钥验收。旧的三个位置参数仍可仅验证归档签名。
+
+成功输出 `signature-and-archive-verified`，表示本地制品通过静态验证；不会解压、安装、启动应用或修改数据。它不证明公开附件可下载、旧客户端升级、真实文件替换、启动健康或回滚。发布后仍须用对应版本客户端与真实默认 Feed，在隔离安装中验证实际链路。

@@ -25,6 +25,8 @@ import zipfile
 from urllib.parse import unquote, urlsplit
 
 from build_flags import build_environment
+from build_manifest import packaging_configuration
+from macos_signing import configuration as signing_configuration, verify_application, SigningError
 
 
 class PackageError(Exception):
@@ -83,10 +85,12 @@ def validate_app(app, version, root, arch=None, formal=True):
     for key in ('CFBundleVersion', 'CFBundleShortVersionString'):
         require(info.get(key) == version,
                 f'Application {key} {info.get(key)!r} does not match requested version {version!r}.')
-    require(info.get('CFBundleExecutable') == 'Picup', 'Unexpected application executable in Info.plist.')
-    require(info.get('CFBundleIdentifier') == 'com.knothhe.picup', 'Unexpected application identity in Info.plist.')
-    gui = app / 'Contents' / 'MacOS' / 'Picup'
-    cli = app / 'Contents' / 'Resources' / 'picup'
+    name, identifier, cli_name = ('Picup', 'com.knothhe.picup', 'picup') if formal else (
+        'Picup Dev', 'com.knothhe.picup.dev', 'picup-dev')
+    require(info.get('CFBundleExecutable') == name, 'Unexpected application executable in Info.plist.')
+    require(info.get('CFBundleIdentifier') == identifier, 'Unexpected application identity in Info.plist.')
+    gui = app / 'Contents' / 'MacOS' / name
+    cli = app / 'Contents' / 'Resources' / cli_name
     for executable in (gui, cli):
         require(executable.is_file() and os.access(executable, os.X_OK),
                 f'Missing or non-executable application program: {executable}')
@@ -102,12 +106,17 @@ def validate_app(app, version, root, arch=None, formal=True):
     for executable in (gui, cli):
         metadata = run(os.environ.get('GO', 'go'), 'version', '-m', str(executable), cwd=root, capture=True)
         development = False
+        native_keychain = False
         for line in metadata.splitlines():
+            if line.strip() == 'build\tCGO_ENABLED=1':
+                native_keychain = True
             if line.strip().startswith('build\t-tags='):
                 tags = line.strip().split('=', 1)[1].replace('"', '').replace("'", '')
                 development = 'picup_dev' in re.split(r'[,\s]+', tags)
         require(development != formal, 'Formal application contains a development-tagged binary.' if formal
                 else 'Unsigned CI application is missing its development data namespace.')
+        require(native_keychain,
+                f'Application binary lacks CGO_ENABLED=1 and native R2 Keychain support: {executable.name}')
 
 
 def validate_update_config(data):
@@ -263,8 +272,11 @@ def package_release(root, version, output_dir, unsigned=False):
     compile_environment = build_environment('picup_dev' if unsigned else '', formal=not unsigned)
     environment = dict(compile_environment, MYGO_UPDATER_PRIVATE_KEY='') if unsigned else signing_environment()
     environment['GOFLAGS'] = compile_environment.get('GOFLAGS', '')
+    if 'CGO_ENABLED' in compile_environment:
+        environment['CGO_ENABLED'] = compile_environment['CGO_ENABLED']
     go = os.environ.get('GO', 'go')
     goos, goarch = host_platform(go, root)
+    signing = None if unsigned else signing_configuration()
     # Use the same build and MyGo packaging steps as make package, without a DMG.
     # MyGo atomically replaces only this platform's directory after a successful
     # build, so failed builds and old packages from other platforms cannot leak in.
@@ -272,10 +284,20 @@ def package_release(root, version, output_dir, unsigned=False):
     arguments = [go, 'tool', 'mygo', 'build', '-skip-dmg']
     if unsigned:
         arguments.append('-debug')  # MyGo disables updater eligibility in this build.
-    run(*arguments, cwd=root, env=environment)
+    if signing and signing.profile:
+        # MyGo notarizes its DMG and staples the app before creating update
+        # archives. Only ZIP/update assets are collected for publication.
+        arguments.remove('-skip-dmg')
+    with packaging_configuration(root, unsigned, signing) as config_dir:
+        if config_dir != root:
+            arguments.append(str(config_dir))
+        run(*arguments, cwd=root, env=environment)
     manifest(root, version)
-    app = root / data.get('out', 'dist') / f'{goos}-{goarch}' / 'Picup.app'
+    app = (root / 'build/dev/dist' / f'{goos}-{goarch}' / 'Picup Dev.app') if unsigned else (
+        root / data.get('out', 'dist') / f'{goos}-{goarch}' / 'Picup.app')
     validate_app(app, version, root, goarch, formal=not unsigned)
+    if signing:
+        verify_application(app, signing)
     update_assets = [] if unsigned else validate_update_files(root, data, version, f'{goos}-{goarch}', app, go)
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -285,6 +307,12 @@ def package_release(root, version, output_dir, unsigned=False):
     os.close(descriptor)
     try:
         write_zip(app, temporary)
+        if signing:
+            # Verify the distributable's extracted bytes, permissions, resource
+            # seals and stapled ticket, rather than only its build directory.
+            with tempfile.TemporaryDirectory(prefix='picup-final-zip-') as extracted:
+                run('/usr/bin/ditto', '-x', '-k', temporary, extracted, cwd=root)
+                verify_application(Path(extracted) / 'Picup.app', signing)
         os.replace(temporary, target)
     finally:
         if os.path.exists(temporary):
@@ -305,7 +333,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         artifacts = package_release(Path.cwd(), args.version, args.output_dir, unsigned=args.unsigned)
-    except (PackageError, OSError, ValueError, tarfile.TarError, plistlib.InvalidFileException) as error:
+    except (PackageError, SigningError, OSError, ValueError, tarfile.TarError, plistlib.InvalidFileException) as error:
         print(f'error: {error}', file=sys.stderr)
         return 1
     print(json.dumps(artifacts))

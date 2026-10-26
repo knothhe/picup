@@ -1,6 +1,9 @@
 package picup
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"github.com/knothhe/picup/internal/buildidentity"
+)
 
 const (
 	RepositoryURL = "https://github.com/knothhe/picup"
@@ -20,6 +23,9 @@ type UpdateSettings struct {
 // UpdateConfig shares the embedded manifest used by Version and MyGo packaging.
 // A missing updates section deliberately leaves update installation unavailable.
 func UpdateConfig() UpdateSettings {
+	if buildidentity.Development() {
+		return UpdateSettings{}
+	}
 	var config struct {
 		Updates UpdateSettings `json:"updates"`
 	}

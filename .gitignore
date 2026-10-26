@@ -1,7 +1,10 @@
 /build/bin/
+/build/dev/
+/build/.picup-package-*/
 /build/dist/
 /build/release/
 /build/ci/
+/build/verification/
 /build/THIRD_PARTY_NOTICES.txt
 mygo-update.key
 /.codex/skills/

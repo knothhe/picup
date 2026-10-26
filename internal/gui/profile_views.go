@@ -17,48 +17,34 @@ func profileName(id, name string) string {
 	return name
 }
 
-// The workspace owns one profile switcher, as a card in the sidebar or an
-// avatar in the collapsed rail.
+// The sidebar shows only the current profile name. Destination details remain
+// available in its tooltip and the switcher's menu, including in the rail.
 func (a *application) storageIndicator(c *ui.Context, compact bool) {
 	t := c.Theme()
 	cfg := a.uploadDisplayConfig().Clone()
 	cfg.EnsureProfiles()
 	name := profileName(cfg.ActiveProfile, cfg.CurrentProfileName())
 	summary := profileDestination(cfg.Provider, cfg.Bucket)
-	unconfigured := cfg.ValidateStorage() != nil
-	trigger := ui.ButtonBase(c).Key("current-storage").Label(tr("切换配置")).Radius(9).AlignItems(ui.Center).Background(ui.Color{}).Disabled(a.profileSwitchBlocked())
-	avatar := func(size float32) {
-		ui.Box(c).Size(size, size).Shrink(0).Radius(7).Background(profileColor(cfg.ActiveProfile)).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
-			components.Text(c, profileInitial(name)).FontSize(12).FontWeight(600).TextColor(ui.Hex("#ffffff"))
-		})
-	}
+	trigger := ui.ButtonBase(c).Key("current-storage").Label(tr("切换配置")).Radius(7).AlignItems(ui.Center).Background(ui.Color{}).Disabled(a.profileSwitchBlocked())
 	if compact {
-		trigger.Size(36, 36).Shrink(0).Justify(ui.Center)
-		if trigger.Hovered() || a.profiles.menuOpen {
-			trigger.Background(t.Text.Alpha(.06))
-		}
-		trigger.Children(func() { avatar(28) })
+		trigger.Size(36, 36).Padding(0, 2).Shrink(0).Justify(ui.Center)
 	} else {
-		trigger.FillWidth().MinWidth(0).Height(46).Padding(0, 8).Gap(10).Border(1, t.Border).Background(t.Surface)
-		if trigger.Hovered() || a.profiles.menuOpen {
-			trigger.Background(t.SurfaceHover)
-		}
-		trigger.Children(func() {
-			avatar(28)
-			ui.Column(c).Grow(1).Shrink(1).MinWidth(0).Gap(1).Children(func() {
-				components.Text(c, name).FillWidth().MinWidth(0).SingleLine().Ellipsis("…").FontSize(12.5).FontWeight(600)
-				color := t.TextMuted
-				if unconfigured {
-					color = t.Danger
-				}
-				components.Text(c, summary).FillWidth().MinWidth(0).SingleLine().Ellipsis("…").FontSize(11).TextColor(color)
-			})
-			components.Icon(c, lucide.ChevronsUpDown()).Size(14, 14).Shrink(0).TextColor(t.TextMuted)
-		})
+		trigger.FillWidth().MinWidth(0).Height(32).Padding(0, 8).Gap(6)
 	}
+	if trigger.Hovered() || a.profiles.menuOpen {
+		trigger.Background(t.Text.Alpha(.05))
+	}
+	trigger.Children(func() {
+		text := components.Text(c, name).Key("current-profile-name").Grow(1).Shrink(1).MinWidth(0).SingleLine().Ellipsis("…").FontSize(12.5).FontWeight(600)
+		if compact {
+			text.FontSize(11).FontWeight(500).TextAlign(ui.Center)
+		} else {
+			components.Icon(c, lucide.ChevronsUpDown()).Size(14, 14).Shrink(0).TextColor(t.TextMuted)
+		}
+	})
 	tooltip := name + "\n" + summary
 	if a.profileSwitchBlocked() {
-		tooltip = tr("当前任务完成后可切换配置。")
+		tooltip += "\n" + tr("当前任务完成后可切换配置。")
 	}
 	components.Tooltip(c, trigger, tooltip)
 	if trigger.Clicked() {
@@ -130,11 +116,16 @@ func (a *application) profileMenu(c *ui.Context, anchor ui.Element, compact bool
 }
 
 func (a *application) profileSettings(c *ui.Context) {
+	a.profileTransferControls(c)
 	cfg := a.currentSettings().Clone()
 	cfg.EnsureProfiles()
-	ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(12).Children(func() {
-		ui.Spacer(c)
-		if components.Button(c, tr("新建配置"), components.ButtonPrimary).Shrink(0).Clicked() {
+	ui.Row(c).Key("saved-profiles-heading").FillWidth().AlignItems(ui.Center).Gap(12).Children(func() {
+		components.Text(c, tr("已保存的配置")).Grow(1).MinWidth(0).FontSize(13).FontWeight(600).Wrap()
+		create := components.Button(c, tr("新建配置"), components.ButtonPrimary).Shrink(0).Disabled(a.profileSwitchBlocked())
+		if create.IsDisabled() {
+			create.TextColor(c.Theme().Text)
+		}
+		if create.Clicked() {
 			a.beginProfileEdit("new")
 		}
 	})
@@ -149,8 +140,14 @@ func (a *application) profileSettings(c *ui.Context) {
 			})
 			components.Text(c, profileDestination(profile.Provider, profile.Bucket)).FillWidth().MinWidth(0).SingleLine().Ellipsis("…").FontSize(11).TextColor(c.Theme().TextMuted)
 			ui.Row(c).FillWidth().Wrap().Gap(8).Disabled(a.profileSwitchBlocked()).Children(func() {
-				if !current && components.Button(c, tr("切换"), components.ButtonPrimary).Label(tf("切换到 %s", profileName(profile.ID, profile.Name))).Clicked() {
-					a.switchProfile(profile.ID)
+				if !current {
+					switchProfile := components.Button(c, tr("切换"), components.ButtonPrimary).Label(tf("切换到 %s", profileName(profile.ID, profile.Name)))
+					if switchProfile.IsDisabled() {
+						switchProfile.TextColor(c.Theme().Text)
+					}
+					if switchProfile.Clicked() {
+						a.switchProfile(profile.ID)
+					}
 				}
 				if components.Button(c, tr("编辑存储"), components.ButtonOutline).Label(tf("编辑 %s 的存储", profileName(profile.ID, profile.Name))).Clicked() {
 					if a.switchProfile(profile.ID) {
@@ -197,6 +194,8 @@ func (a *application) beginProfileEditFor(mode, id string) {
 }
 
 func (a *application) profileDialogs(c *ui.Context) {
+	a.profileTransferDialogs(c)
+	a.manualCredentialDialogs(c)
 	ui.Box(c).Key("profile-dialogs").Children(func() {
 		components.Dialog(c, &a.profiles.editOpen, components.DialogOptions{Label: tr("编辑配置")}, func(panel ui.Element) {
 			title, help := "新建配置", "创建空白配置，填写存储后即可上传。"

@@ -65,6 +65,11 @@ func TestAboutLinksDiagnosticsAndDependenciesInBothLanguages(t *testing.T) {
 						t.Fatal("About opened the wrong project URL")
 					}
 				}
+				findAboutAction(t, tt, tr("构建信息"), width, height)
+				if err := tt.Click(tr("构建信息")); err != nil {
+					t.Fatal(err)
+				}
+				tt.Advance(300 * time.Millisecond)
 				findAboutAction(t, tt, tr("复制诊断信息"), width, height)
 				if err := tt.Click(tr("复制诊断信息")); err != nil {
 					t.Fatal(err)
@@ -78,6 +83,11 @@ func TestAboutLinksDiagnosticsAndDependenciesInBothLanguages(t *testing.T) {
 						t.Fatal("copied diagnostics leaked user configuration")
 					}
 				}
+				findAboutAction(t, tt, tr("主要依赖"), width, height)
+				if err := tt.Click(tr("主要依赖")); err != nil {
+					t.Fatal(err)
+				}
+				tt.Advance(300 * time.Millisecond)
 				findAboutAction(t, tt, tr("第三方许可与归属"), width, height)
 				if !tt.HasText(tr("主要依赖")) {
 					t.Fatal("major dependency section is missing")
@@ -106,7 +116,17 @@ func TestAboutNarrowLargeTextAndThemeLayout(t *testing.T) {
 				tt.SetPreferences(ui.Preferences{ReduceMotion: true, TextScale: 1.4})
 				tt.Frame()
 				findAboutAction(t, tt, tr("发行记录"), 760, 620)
+				findAboutAction(t, tt, tr("构建信息"), 760, 620)
+				if err := tt.Click(tr("构建信息")); err != nil {
+					t.Fatal(err)
+				}
+				tt.Advance(300 * time.Millisecond)
 				findAboutAction(t, tt, tr("复制诊断信息"), 760, 620)
+				findAboutAction(t, tt, tr("主要依赖"), 760, 620)
+				if err := tt.Click(tr("主要依赖")); err != nil {
+					t.Fatal(err)
+				}
+				tt.Advance(300 * time.Millisecond)
 				findAboutAction(t, tt, tr("第三方许可与归属"), 760, 620)
 				if dir := os.Getenv("PICUP_SCREENSHOTS"); dir != "" {
 					if err := os.MkdirAll(dir, 0700); err != nil {
@@ -123,6 +143,43 @@ func TestAboutNarrowLargeTextAndThemeLayout(t *testing.T) {
 					}
 				}
 			})
+		}
+	}
+}
+
+func TestAboutDetailsStartCollapsedAndToggleIndependently(t *testing.T) {
+	before := readAboutBuildInfo
+	readAboutBuildInfo = aboutTestInfo
+	t.Cleanup(func() { readAboutBuildInfo = before; SetUILanguage("zh-CN") })
+	for _, language := range []string{"zh-CN", "en"} {
+		SetUILanguage(language)
+		a := &application{path: filepath.Join(t.TempDir(), "config.json"), config: config.Default(), tab: 2, settingsTab: 5}
+		tt := ui.NewTester(nativeTestView(a), 1040, 760)
+		tt.SetPreferences(ui.Preferences{ReduceMotion: true, TextScale: 1})
+		tt.Frame()
+		if a.aboutBuildOpen || a.aboutDependenciesOpen || tt.HasText(tr("复制诊断信息")) || tt.HasText(tr("第三方许可与归属")) {
+			t.Fatal("About details are expanded by default")
+		}
+		findAboutAction(t, tt, tr("构建信息"), 1040, 760)
+		if err := tt.Click(tr("构建信息")); err != nil {
+			t.Fatal(err)
+		}
+		tt.Advance(300 * time.Millisecond)
+		if !a.aboutBuildOpen || a.aboutDependenciesOpen || !tt.HasText(tr("复制诊断信息")) {
+			t.Fatal("build disclosure did not toggle independently")
+		}
+		findAboutAction(t, tt, tr("构建信息"), 1040, 760)
+		if err := tt.Click(tr("构建信息")); err != nil {
+			t.Fatal(err)
+		}
+		tt.Advance(300 * time.Millisecond)
+		findAboutAction(t, tt, tr("主要依赖"), 1040, 760)
+		if err := tt.Click(tr("主要依赖")); err != nil {
+			t.Fatal(err)
+		}
+		tt.Advance(300 * time.Millisecond)
+		if a.aboutBuildOpen || !a.aboutDependenciesOpen || !tt.HasText(tr("第三方许可与归属")) {
+			t.Fatal("dependency disclosure did not toggle independently")
 		}
 	}
 }

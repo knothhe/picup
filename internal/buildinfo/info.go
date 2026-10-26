@@ -33,6 +33,7 @@ var majorDependencies = []Dependency{
 	{Name: "Imaging", Module: "github.com/disintegration/imaging", Purpose: "图片缩放与处理", URL: "https://github.com/disintegration/imaging", LicenseURL: "https://github.com/disintegration/imaging/blob/master/LICENSE"},
 	{Name: "AVIF", Module: "github.com/gen2brain/avif", Purpose: "AVIF 编解码", URL: "https://github.com/gen2brain/avif", LicenseURL: "https://github.com/gen2brain/avif/blob/main/LICENSE"},
 	{Name: "WebP", Module: "github.com/gen2brain/webp", Purpose: "WebP 编解码", URL: "https://github.com/gen2brain/webp", LicenseURL: "https://github.com/gen2brain/webp/blob/main/LICENSE"},
+	{Name: "r2connect", Module: "github.com/knothhe/r2connect", Purpose: "R2 授权与连接管理", URL: "https://github.com/knothhe/r2connect", LicenseURL: "https://pkg.go.dev/github.com/knothhe/r2connect?tab=licenses"},
 }
 
 var readCurrent = sync.OnceValue(func() Info {

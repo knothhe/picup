@@ -10,9 +10,10 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+	"github.com/knothhe/picup/internal/buildidentity"
 	"github.com/knothhe/picup/internal/clipboard"
 	"github.com/knothhe/picup/internal/config"
-	"github.com/knothhe/picup/internal/imageproc"
+	"github.com/knothhe/picup/internal/devcontrol"
 	"github.com/knothhe/picup/internal/install"
 	"github.com/knothhe/picup/internal/service"
 	"github.com/knothhe/picup/internal/storage"
@@ -27,48 +28,54 @@ type job struct {
 	previewLoading, previewDone bool
 	sourceBytes                 int
 	sourceWidth, sourceHeight   int
+	sentBytes, totalBytes       int64
 }
 type application struct {
-	r2                                r2SettingsState
-	updates                           updatesState
-	lifecycle                         lifecycleState
-	gallery                           galleryState
-	path                              string
-	config                            config.Config
-	savedConfig                       *config.Config
-	uploadConfigGeneration            uint64
-	win                               *mygo.Window
-	tray                              *mygo.Tray
-	quickUpload                       quickUploadState
-	quitting                          bool
-	languagePreview                   bool
-	tab, settingsTab, nextID          int
-	guideTab                          int
-	guideFAQ                          [3]bool
-	sidebarCollapsed                  bool
-	sidebarWidth                      float32
-	storageTest                       storageTestState
-	previousTab                       int
-	jobs                              []*job
-	uploadPreviews                    uploadPreviewState
-	uploadPreviewCancel               context.CancelFunc
-	uploading                         bool
-	uploadBatchTotal, uploadBatchDone int
-	busy                              bool
-	fileDialogOpen                    bool
-	cancel                            context.CancelFunc
-	message                           string
-	messageError                      bool
-	installDir, installMessage        string
-	quality, maxWidth                 float64
-	settingsSave                      settingsSaveState
-	profiles                          profileUIState
-	shortcutEditing, shortcutError    string
-	nativeMenuState                   string
-	pasteImageAction                  func()
-	notifications                     []ui.Toast
-	notificationDeadlines             map[string]time.Time
-	notificationPausedAt              time.Time
+	aboutBuildOpen, aboutDependenciesOpen bool
+	cliManagement                         cliManagementState
+	nativeActions                         nativeActionsState
+	queuePersistence                      *queuePersistence
+	r2                                    r2SettingsState
+	updates                               updatesState
+	lifecycle                             lifecycleState
+	gallery                               galleryState
+	path                                  string
+	config                                config.Config
+	savedConfig                           *config.Config
+	uploadConfigGeneration                uint64
+	win                                   *mygo.Window
+	tray                                  *mygo.Tray
+	quickUpload                           quickUploadState
+	quitting                              bool
+	quitAfterUpload                       bool
+	languagePreview                       bool
+	tab, settingsTab, nextID              int
+	guideTab                              int
+	guideFAQ                              [3]bool
+	sidebarCollapsed                      bool
+	sidebarWidth                          float32
+	storageTest                           storageTestState
+	previousTab                           int
+	jobs                                  []*job
+	uploadPreviews                        uploadPreviewState
+	uploadPreviewCancel                   context.CancelFunc
+	uploading                             bool
+	uploadBatchTotal, uploadBatchDone     int
+	busy                                  bool
+	fileDialogOpen                        bool
+	cancel                                context.CancelFunc
+	message                               string
+	messageError                          bool
+	installDir, installMessage            string
+	quality, maxWidth                     float64
+	settingsSave                          settingsSaveState
+	profiles                              profileUIState
+	shortcutEditing, shortcutError        string
+	nativeMenuState                       string
+	pasteImageAction                      func()
+	notifications                         []ui.Toast
+	notificationDeadlines                 map[string]time.Time
+	notificationPausedAt                  time.Time
 }
 
 func Run() error {
@@ -80,16 +87,28 @@ func Run() error {
 	cfg.EnsureProfiles()
 	a := &application{path: path, config: cfg, installDir: install.DisplayPath(install.DefaultDir()), quality: float64(cfg.Quality), maxWidth: float64(cfg.MaxWidth)}
 	a.savedConfig = &cfg
+	queueErr := a.initUploadQueue()
+	a.bindNativeNotificationClicks()
 	a.initSettingsAutosave()
 	workspacePreferencesErr := a.restoreWorkspacePreferences()
 	galleryPreferencesErr := a.restoreGalleryPreferences()
-	mygo.App.SetName("Picup")
+	mygo.App.SetName(buildidentity.Name())
 	mygo.App.SetPath(mygo.PathUserData, filepath.Dir(path))
 	if !mygo.App.RequestSingleInstanceLock() {
 		return nil
 	}
+	control, controlErr := devcontrol.Start(mygo.RunOnMain, mygo.App.Quit)
 	mygo.Theme.SetSource(mygo.ThemeSource(cfg.Appearance))
 	mygo.App.OnBeforeQuit(func(e *mygo.QuitEvent) {
+		if a.uploading {
+			e.PreventDefault()
+			a.quitAfterUpload = true
+			if a.cancel != nil {
+				a.cancel()
+			}
+			a.feedback("正在收尾上传任务，完成后退出", nil)
+			return
+		}
 		if !a.prepareUpdateQuit(e) {
 			return
 		}
@@ -99,9 +118,25 @@ func Run() error {
 			a.cancelR2Connection()
 			return
 		}
+		if a.cliManagement.operationActive() {
+			e.PreventDefault()
+			a.feedback("请等待 CLI 操作完成后再退出", nil)
+			return
+		}
+		if a.profileOperationActive() {
+			e.PreventDefault()
+			a.feedback("请等待配置操作完成后再退出", nil)
+			return
+		}
 		if !a.flushSettingsAutosave() {
 			e.PreventDefault()
 			a.showWindow()
+			return
+		}
+		if err := a.flushUploadQueue(); err != nil {
+			e.PreventDefault()
+			a.showWindow()
+			a.feedback("保存上传队列失败，当前任务仍保留", err)
 			return
 		}
 		a.flushGalleryPreferences()
@@ -115,10 +150,10 @@ func Run() error {
 			a.cancel()
 		}
 	})
-	mygo.App.OnSecondInstance(func(args []string, _ string) {
+	mygo.App.OnSecondInstance(func(args []string, workingDir string) {
 		a.showWindow()
-		if len(args) > 1 {
-			a.addFiles(args[1:])
+		if len(args) > 0 {
+			a.addFiles(secondInstanceFiles(args, workingDir))
 		}
 	})
 	mygo.App.OnOpenFile(func(path string) { a.showWindow(); a.addFiles([]string{path}) })
@@ -129,6 +164,10 @@ func Run() error {
 		}
 	})
 	mygo.App.OnWillQuit(func(*mygo.QuitEvent) {
+		a.stopCLIManagement()
+		a.stopUploadQueue()
+		control.Close()
+		a.stopNativeActions()
 		a.stopUpdates()
 		if a.quickUpload.window != nil {
 			a.quickUpload.window.Destroy()
@@ -141,10 +180,18 @@ func Run() error {
 		}
 	})
 	mygo.App.WhenReady(func() {
+		if controlErr != nil {
+			a.feedback("开发版退出协调不可用", controlErr)
+		}
 		a.initUpdates()
 		a.initR2Settings()
 		a.loadR2ConnectionInfo()
 		a.applyLanguage(false)
+		if queueErr != nil {
+			a.feedback("读取上传队列失败，原记录已保留", queueErr)
+		} else if len(a.jobs) > 0 {
+			a.feedback(tf("已恢复 %d 个上传任务，确认配置后可继续", len(a.jobs)), nil)
+		}
 		if loadErr != nil {
 			a.feedback("读取设置失败", loadErr)
 		}
@@ -157,6 +204,7 @@ func Run() error {
 		mygo.App.OnLocaleChanged(func(string) { a.refreshSystemLanguage() })
 		a.newMainWindow()
 		a.setupMenus()
+		a.initNativeActions()
 		a.startNativeSettings()
 		if !mygo.App.WasOpenedAtLogin() || a.tray == nil || len(os.Args) > 1 {
 			a.showWindow()
@@ -191,13 +239,24 @@ func (a *application) feedbackWithAction(message string, err error, action strin
 	a.invalidateWindows()
 }
 func (a *application) addFiles(paths []string) {
-	if a.busy {
+	if a.busy || len(paths) > 0 && a.rejectBlockedUploadInput() {
 		return
 	}
 	for _, path := range paths {
+		if len(a.jobs) >= 1000 {
+			a.feedback("上传队列最多保存 1000 张图片", nil)
+			break
+		}
+		absolute, err := filepath.Abs(path)
+		if err != nil {
+			a.feedback("读取图片路径失败", err)
+			continue
+		}
+		path = absolute
 		a.nextID++
 		a.jobs = append(a.jobs, &job{id: a.nextID, path: path, name: filepath.Base(path), status: "等待上传"})
 	}
+	a.persistUploadQueue()
 	a.tab = 0
 	if a.win != nil {
 		a.win.Invalidate()
@@ -206,7 +265,7 @@ func (a *application) addFiles(paths []string) {
 func (a *application) choose() { a.chooseFiles(false) }
 
 func (a *application) chooseFiles(quick bool) {
-	if a.busy {
+	if a.busy || a.rejectBlockedUploadInput() {
 		return
 	}
 	if quick && !a.quickUploadReady() {
@@ -262,7 +321,11 @@ func (a *application) paste() {
 }
 
 func (a *application) pasteImage(quick bool) {
-	if a.busy {
+	if a.busy || a.rejectBlockedUploadInput() {
+		return
+	}
+	if len(a.jobs) >= 1000 {
+		a.feedback("上传队列最多保存 1000 张图片", nil)
 		return
 	}
 	if quick && !a.quickUploadReady() {
@@ -289,6 +352,7 @@ func (a *application) pasteImage(quick bool) {
 			}
 			a.nextID++
 			a.jobs = append(a.jobs, &job{id: a.nextID, name: "clipboard.png", data: b, status: "等待上传"})
+			a.persistUploadQueue()
 			a.tab = 0
 			a.feedback("已添加剪贴板图片", nil)
 			if quick {
@@ -324,7 +388,7 @@ func (a *application) upload() {
 	}
 	var selected []*job
 	for _, j := range a.jobs {
-		if j.result == nil {
+		if j.result == nil && j.status != "已跳过" {
 			selected = append(selected, j)
 		}
 	}
@@ -361,52 +425,70 @@ func (a *application) uploadJobs(selected []*job) {
 		a.resetRetriedQuickUpload(selected)
 	}
 	a.invalidateWindows()
+	inputs := make([]service.Input, len(selected))
+	for i, j := range selected {
+		inputs[i] = service.Input{Path: j.path, Name: j.name, Data: j.data}
+		j.sentBytes = 0
+		j.totalBytes = 0
+		j.status = "等待上传"
+		j.detail = ""
+	}
+	a.persistUploadQueue()
 	go func() {
 		defer cancel()
-		var results []service.Result
 		var warnings []string
-		failed := 0
-		var firstError error
-		for _, j := range selected {
-			if ctx.Err() != nil {
-				break
-			}
-			mygo.RunOnMain(func() { j.status = "正在处理与上传"; j.detail = ""; a.invalidateWindows() })
-			b := j.data
-			var err error
-			if b == nil {
-				b, err = imageproc.ReadFile(j.path)
-			}
-			var r service.Result
-			if err == nil {
-				oneCtx, stop := context.WithTimeout(ctx, 2*time.Minute)
-				r, err = (service.Service{Config: c, ConfigPath: a.path}).Upload(oneCtx, b, j.name)
-				stop()
-			}
-			if err == nil {
-				results = append(results, r)
-				if e := service.Record(a.path, r); e != nil {
-					warnings = append(warnings, tf("上传成功，但写入历史失败：%s", e.Error()))
-				}
-			} else {
-				failed++
-				if firstError == nil {
-					firstError = err
+		outcomes := (service.Service{Config: c, ConfigPath: a.path}).Batch(ctx, inputs, c.UploadConcurrency, func(event service.Event) {
+			j := selected[event.Index]
+			if event.Finished && event.Outcome.Err == nil {
+				if err := service.Record(a.path, event.Outcome.Result); err != nil {
+					warnings = append(warnings, tf("上传成功，但写入历史失败：%s", err.Error()))
 				}
 			}
 			mygo.RunOnMain(func() {
-				a.uploadBatchDone++
-				if err != nil {
-					j.status = "上传失败"
-					j.detail = err.Error()
-				} else {
-					j.status = "已上传"
-					j.result = &r
-					j.data = nil
-					j.detail = r.URL
+				if event.Started {
+					j.status = "正在处理与上传"
+				}
+				if event.Total > 0 {
+					j.sentBytes = event.Sent
+					j.totalBytes = event.Total
+				}
+				if event.Finished {
+					a.uploadBatchDone++
+					if event.Outcome.Skipped {
+						j.status = "已跳过"
+						j.detail = event.Outcome.Err.Error()
+					} else if errors.Is(event.Outcome.Err, context.Canceled) {
+						j.status = "等待上传"
+						j.detail = ""
+					} else if event.Outcome.Err != nil {
+						j.status = "上传失败"
+						j.detail = event.Outcome.Err.Error()
+					} else {
+						result := event.Outcome.Result
+						j.status = "已上传"
+						j.result = &result
+						j.data = nil
+						j.detail = result.URL
+					}
+					a.persistUploadQueue()
 				}
 				a.invalidateWindows()
 			})
+		})
+		var results []service.Result
+		failed, skipped := 0, 0
+		var firstError error
+		for _, outcome := range outcomes {
+			if outcome.Skipped {
+				skipped++
+			} else if outcome.Err == nil {
+				results = append(results, outcome.Result)
+			} else if !errors.Is(outcome.Err, context.Canceled) {
+				failed++
+				if firstError == nil {
+					firstError = outcome.Err
+				}
+			}
 		}
 		copied := false
 		if len(results) > 0 && c.Copy {
@@ -423,10 +505,21 @@ func (a *application) uploadJobs(selected []*job) {
 			a.uploading = false
 			a.refreshUploadConfig()
 			a.cancel = nil
+			for _, j := range selected {
+				if j.result == nil && (j.status == "正在处理与上传" || j.status == "等待上传") {
+					j.status = "等待上传"
+					j.detail = ""
+					j.sentBytes = 0
+					j.totalBytes = 0
+				}
+			}
 			if len(results) > 0 {
 				a.gallery.dirty = true
 			}
 			a.feedback(tf("已上传 %d 张图片", len(results)), nil)
+			if skipped > 0 {
+				a.feedback(tf("已上传 %d 张，已跳过 %d 张同路径图片", len(results), skipped), nil)
+			}
 			if failed > 0 {
 				a.feedback(tf("已上传 %d 张，%d 张失败，可重试", len(results), failed), firstError)
 			}
@@ -440,6 +533,13 @@ func (a *application) uploadJobs(selected []*job) {
 				a.quickUpload.copied = copied
 				a.quickUpload.active = false
 			}
+			a.persistUploadQueue()
+			if a.quitAfterUpload {
+				a.quitAfterUpload = false
+				mygo.App.Quit()
+				return
+			}
+			a.backgroundUploadFinished(len(results), failed, ctx.Err() != nil)
 			a.invalidateWindows()
 		})
 	}()
@@ -449,11 +549,18 @@ func (a *application) save() {
 	current := a.currentSettings()
 	merged, err := a.settingsForSave()
 	var finishLogin func(bool) error
+	var finishNative func(bool)
+	if err == nil {
+		finishNative, err = a.prepareNativeActions(merged)
+	}
 	if err == nil {
 		finishLogin, err = a.prepareLaunchAtLogin(merged.LaunchAtLogin)
 	}
 	if err == nil {
 		err = config.Save(a.path, merged)
+	}
+	if finishNative != nil {
+		finishNative(err == nil)
 	}
 	if finishLogin != nil {
 		err = errors.Join(err, finishLogin(err == nil))

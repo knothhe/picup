@@ -5,6 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,552 +16,338 @@ import (
 	"testing"
 	"time"
 
-	"github.com/knothhe/picup/internal/cloudflare"
-	"github.com/knothhe/picup/internal/config"
+	"github.com/knothhe/r2connect"
 )
 
-const testAccount = "0123456789abcdef0123456789abcdef"
-
-var testNow = time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
-
-type fakeStore struct {
-	data                map[string][]byte
-	gets, sets, deletes int
-	failSet, denyGet    int
-	deleteErr           error
+type integrationSecrets struct {
+	deleteOAuthFail bool
+	mu              sync.Mutex
+	values          map[string][]byte
+	loads           int
 }
 
-func (s *fakeStore) Get(k string) ([]byte, error) {
-	s.gets++
-	if s.denyGet > 0 {
-		return nil, ErrSecretDenied
-	}
-	b, ok := s.data[k]
+func (s *integrationSecrets) Load(k string) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.loads++
+	v, ok := s.values[k]
 	if !ok {
-		return nil, errSecretMissing
+		return nil, errors.New("missing fixture secret")
 	}
-	return append([]byte(nil), b...), nil
+	return append([]byte(nil), v...), nil
 }
-func (s *fakeStore) Set(k string, b []byte) error {
-	s.sets++
-	if s.failSet < 0 || s.failSet == s.sets {
-		return errors.New("fake store write failed")
-	}
-	s.data[k] = append([]byte(nil), b...)
+func (s *integrationSecrets) Save(k string, v []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.values[k] = append([]byte(nil), v...)
 	return nil
 }
-func (s *fakeStore) Delete(k string) error {
-	s.deletes++
-	if s.deleteErr != nil {
-		return s.deleteErr
+func (s *integrationSecrets) Delete(k string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.deleteOAuthFail && strings.HasPrefix(k, "oauth-") {
+		return errors.New("fixture local deletion failed")
 	}
-	delete(s.data, k)
+	delete(s.values, k)
 	return nil
 }
 
-type fakeCloud struct {
-	now                                  func() time.Time
-	created, deleted, refreshed, revoked int
-	createErr, deleteErr, refreshErr     error
-	partialCreate                        bool
-	accountsHook                         func(context.Context) error
-	createHook                           func()
+type sdkFixture struct {
+	revokeFail                                  bool
+	server                                      *httptest.Server
+	mu                                          sync.Mutex
+	accountsFail, deleteFail                    bool
+	opens, exchanges, creates, deletes, revokes int
 }
 
-func (f *fakeCloud) Authorize(context.Context, func(string) error) (cloudflare.Tokens, error) {
-	return cloudflare.Tokens{AccessToken: "oauth-access-secret", RefreshToken: "oauth-refresh-secret", Scope: "all", ExpiresAt: f.now().Add(time.Hour)}, nil
-}
-func (f *fakeCloud) Refresh(_ context.Context, t cloudflare.Tokens) (cloudflare.Tokens, error) {
-	f.refreshed++
-	if f.refreshErr != nil {
-		return t, f.refreshErr
-	}
-	return cloudflare.Tokens{AccessToken: "rotated-access-secret", RefreshToken: "rotated-refresh-secret", Scope: "all", ExpiresAt: f.now().Add(4 * time.Hour)}, nil
-}
-func (f *fakeCloud) Revoke(context.Context, string) error { f.revoked++; return nil }
-func (f *fakeCloud) Accounts(ctx context.Context, _ string) ([]cloudflare.Account, error) {
-	if f.accountsHook != nil {
-		if e := f.accountsHook(ctx); e != nil {
-			return nil, e
-		}
-	}
-	return []cloudflare.Account{{ID: testAccount, Name: "Test"}}, nil
-}
-func (f *fakeCloud) Buckets(context.Context, string, string, string) ([]cloudflare.Bucket, error) {
-	return []cloudflare.Bucket{{Name: "photos"}}, nil
-}
-func (f *fakeCloud) CreateCredentials(context.Context, string, string, string, string, string) (cloudflare.Credentials, error) {
-	f.created++
-	if f.createHook != nil {
-		f.createHook()
-	}
-	if f.createErr != nil && !f.partialCreate {
-		return cloudflare.Credentials{}, f.createErr
-	}
-	return cloudflare.Credentials{AccessKeyID: fmt.Sprintf("access-%d", f.created), SecretAccessKey: fmt.Sprintf("s3-secret-%d", f.created), TokenID: fmt.Sprintf("token-%d", f.created), ExpiresAt: f.now().Add(30 * 24 * time.Hour)}, f.createErr
-}
-func (f *fakeCloud) DeleteCredentials(context.Context, string, string, string) error {
-	f.deleted++
-	return f.deleteErr
-}
-func (f *fakeCloud) PublicURL(context.Context, string, string, string, string) (string, error) {
-	return "https://images.example.com", nil
-}
-func testManager(t *testing.T) (*Manager, *fakeStore, *fakeCloud, *time.Time) {
-	t.Helper()
-	now := testNow
-	store := &fakeStore{data: map[string][]byte{}}
-	api := &fakeCloud{now: func() time.Time { return now }}
-	m := &Manager{path: filepath.Join(t.TempDir(), "config.json"), store: secretCoordinator{store: store}, now: func() time.Time { return now }, client: func(cloudflare.PublicConfig) (cloudAPI, error) { return api, nil }, volatile: map[string]cloudflare.Tokens{}, pending: map[string]secrets{}, retryAfter: map[string]time.Time{}}
-	return m, store, api, &now
-}
-func beginTest(t *testing.T, m *Manager) {
-	t.Helper()
-	if _, e := m.Begin(context.Background(), func(string) error { return nil }); e != nil {
-		t.Fatal(e)
-	}
-}
-func connectTest(t *testing.T, m *Manager) Connection {
-	t.Helper()
-	beginTest(t, m)
-	var conn Connection
-	if e := m.Connect(context.Background(), testAccount, "default", "photos", func(c Connection) error { conn = c; return nil }); e != nil {
-		t.Fatal(e)
-	}
-	return conn
-}
-func setExpiry(t *testing.T, m *Manager, id string, expiry time.Time, oauthExpired bool) {
-	t.Helper()
-	d, e := m.load()
-	if e != nil {
-		t.Fatal(e)
-	}
-	r := d.Connections[id]
-	r.ExpiresAt = expiry
-	if oauthExpired {
-		var s secrets
-		if e = m.store.readBlob(r.SecretID, &s); e != nil {
-			t.Fatal(e)
-		}
-		s.OAuth.ExpiresAt = m.now().Add(-time.Hour)
-		if e = m.persistSecrets(&d, &r, s); e != nil {
-			t.Fatal(e)
-		}
-	}
-	d.Connections[id] = r
-	if e = m.save(d); e != nil {
-		t.Fatal(e)
-	}
-}
+const fixtureAccount = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
-func TestConnectKeepsSecretsOutOfMetadataAndSavedCancel(t *testing.T) {
-	m, _, api, _ := testManager(t)
-	conn := connectTest(t, m)
-	b, e := os.ReadFile(m.metadataPath())
-	if e != nil {
-		t.Fatal(e)
-	}
-	for _, secret := range []string{"oauth-access-secret", "oauth-refresh-secret", "s3-secret-1", "access-1"} {
-		if strings.Contains(string(b), secret) {
-			t.Fatalf("metadata leaked %q", secret)
+func newSDKFixture(t *testing.T) (*Manager, *sdkFixture, *integrationSecrets) {
+	t.Helper()
+	f := &sdkFixture{}
+	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		emit := func(v any) {
+			if err := json.NewEncoder(w).Encode(v); err != nil {
+				t.Errorf("fixture response: %v", err)
+			}
 		}
-	}
-	key, secret, e := m.Resolve(context.Background(), conn.ID, conn.Endpoint, conn.Bucket)
-	if e != nil || key != "access-1" || secret != "s3-secret-1" {
-		t.Fatalf("resolve: %q %q %v", key, secret, e)
-	}
-	if e = m.Cancel(); e != nil {
-		t.Fatal(e)
-	}
-	if api.revoked != 0 {
-		t.Fatal("Cancel revoked saved connection")
-	}
-}
-func TestBindingRejectsChangedTargetBeforeCredentialRead(t *testing.T) {
-	m, store, _, _ := testManager(t)
-	c := connectTest(t, m)
-	before := store.gets
-	_, _, e := m.Resolve(context.Background(), c.ID, c.Endpoint, "other-bucket")
-	if e == nil {
-		t.Fatal("mismatch accepted")
-	}
-	if store.gets != before {
-		t.Fatal("read system credentials before validating target")
-	}
-}
-func TestCommitFailureCompensatesAndRetainsAuthorizedSelection(t *testing.T) {
-	m, store, api, _ := testManager(t)
-	beginTest(t, m)
-	cause := errors.New("config save failed")
-	if e := m.Connect(context.Background(), testAccount, "default", "photos", func(Connection) error { return cause }); !errors.Is(e, cause) {
-		t.Fatal(e)
-	}
-	d, e := m.load()
-	if e != nil || len(d.Connections) != 0 || len(store.data) != 0 || api.deleted != 1 {
-		t.Fatalf("cleanup failed: records=%d secrets=%d delete=%d err=%v", len(d.Connections), len(store.data), api.deleted, e)
-	}
-	if _, e = m.currentAuth(); e != nil {
-		t.Fatal("selection cannot retry after rollback", e)
-	}
-}
-func TestFailedRemoteCompensationRetainsCleanupAuthorizationAcrossCancel(t *testing.T) {
-	m, _, api, _ := testManager(t)
-	beginTest(t, m)
-	api.deleteErr = errors.New("network failure")
-	if e := m.Connect(context.Background(), testAccount, "default", "photos", func(Connection) error { return errors.New("save failed") }); e == nil {
-		t.Fatal("expected failed save")
-	}
-	all, e := m.Connections()
-	if e != nil || len(all) != 1 || !all[0].PendingCleanup {
-		t.Fatal("missing cleanup record", e)
-	}
-	_ = m.Cancel()
-	if api.revoked != 0 {
-		t.Fatal("Cancel revoked authorization needed to delete independent S3 token")
-	}
-	api.deleteErr = nil
-	if e = m.Disconnect(context.Background(), all[0].ID); e != nil {
-		t.Fatal(e)
-	}
-	if api.revoked != 1 {
-		t.Fatal("OAuth not revoked after S3 token deletion")
-	}
-}
-func TestCompensationFinalMetadataFailureCanRetryLocalCleanup(t *testing.T) {
-	m, store, api, _ := testManager(t)
-	beginTest(t, m)
-	writes := 0
-	m.writeMetadata = func(b []byte) error {
-		writes++
-		if writes == 3 {
-			return errors.New("final metadata failure")
+		success := func(v any) { emit(map[string]any{"success": true, "result": v}) }
+		switch {
+		case r.URL.Path == "/oauth2/token":
+			f.exchanges++
+			emit(map[string]any{"access_token": fmt.Sprintf("private-access-%d", f.exchanges), "refresh_token": "private-refresh", "expires_in": 3600, "scope": r2connect.OAuthScopes})
+		case r.URL.Path == "/oauth2/revoke":
+			f.revokes++
+			if f.revokeFail {
+				w.WriteHeader(503)
+				emit(map[string]any{})
+				return
+			}
+			emit(map[string]any{})
+		case r.URL.Path == "/api/accounts":
+			if f.accountsFail {
+				w.WriteHeader(429)
+				emit(map[string]any{"success": false, "errors": []any{map[string]any{"code": 10058, "message": "private-server-message"}}})
+				return
+			}
+			success([]any{map[string]string{"id": fixtureAccount, "name": "Fixture account"}})
+		case strings.HasSuffix(r.URL.Path, "/r2/buckets"):
+			success(map[string]any{"buckets": []any{map[string]string{"name": "images", "jurisdiction": "default"}}})
+		case strings.HasSuffix(r.URL.Path, "/tokens/permission_groups"):
+			success([]any{map[string]any{"id": strings.Repeat("b", 32), "name": "Workers R2 Storage Bucket Item Write", "scopes": []string{"com.cloudflare.edge.r2.bucket"}}})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/tokens"):
+			f.creates++
+			success(map[string]any{"id": fmt.Sprintf("%032x", f.creates), "value": "private-created-token", "expires_on": time.Now().Add(30 * 24 * time.Hour)})
+		case r.Method == http.MethodDelete:
+			f.deletes++
+			if f.deleteFail {
+				w.WriteHeader(503)
+				emit(map[string]any{})
+				return
+			}
+			success(map[string]string{"id": strings.Repeat("c", 32)})
+		default:
+			t.Errorf("unexpected SDK fixture request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(404)
 		}
-		return config.AtomicWrite(m.metadataPath(), b, 0600)
+	}))
+	t.Cleanup(f.server.Close)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if e := m.Connect(context.Background(), testAccount, "default", "photos", func(Connection) error { return errors.New("config save failed") }); e == nil {
-		t.Fatal("expected failure")
-	}
-	d, e := m.load()
-	if e != nil || len(d.Connections) != 1 {
-		t.Fatal("missing cleanup progress", e)
-	}
-	for id, r := range d.Connections {
-		if !r.TokenDeleted || !r.KeepAuthorization {
-			t.Fatal("cleanup progress not persisted")
+	redirect := "http://" + listener.Addr().String() + "/oauth/cloudflare/callback"
+	_ = listener.Close()
+	t.Setenv("PICUP_CLOUDFLARE_CLIENT_ID", "fixture-public-client")
+	t.Setenv("PICUP_CLOUDFLARE_REDIRECT_URL", redirect)
+	secrets := &integrationSecrets{values: make(map[string][]byte)}
+	m := &Manager{path: filepath.Join(t.TempDir(), "config.json"), secrets: secrets, sessions: make(map[string]*sdkSession), client: func(cfg PublicConfig) (*r2connect.Client, error) {
+		c, err := NewSDKClient(cfg)
+		if err != nil {
+			return nil, err
 		}
-		if e = m.Disconnect(context.Background(), id); e != nil {
-			t.Fatal(e)
-		}
-	}
-	if len(store.data) != 0 {
-		t.Fatal("orphaned secrets")
-	}
-	if api.revoked != 0 {
-		t.Fatal("cleanup-only record revoked still-authorized selector")
-	}
+		c.APIBaseURL = f.server.URL + "/api"
+		c.OAuthBaseURL = f.server.URL + "/oauth2"
+		return c, nil
+	}}
+	t.Cleanup(func() { _ = m.Cancel() })
+	return m, f, secrets
 }
-func TestDisconnectRetriesAfterLocalSecretAlreadyDeleted(t *testing.T) {
-	m, _, api, _ := testManager(t)
-	c := connectTest(t, m)
-	writes := 0
-	m.writeMetadata = func(b []byte) error {
-		writes++
-		if writes == 3 {
-			return errors.New("final metadata failure")
-		}
-		return config.AtomicWrite(m.metadataPath(), b, 0600)
+func (f *sdkFixture) open(raw string) error {
+	f.mu.Lock()
+	f.opens++
+	f.mu.Unlock()
+	u, err := url.Parse(raw)
+	if err != nil {
+		return err
 	}
-	if e := m.Disconnect(context.Background(), c.ID); e == nil {
-		t.Fatal("expected metadata failure")
+	callback, err := url.Parse(u.Query().Get("redirect_uri"))
+	if err != nil {
+		return err
 	}
-	if e := m.Disconnect(context.Background(), c.ID); e != nil {
-		t.Fatal("retry needs removed credential", e)
-	}
-	if api.deleted != 1 || api.revoked != 1 {
-		t.Fatalf("repeated remote cleanup: delete=%d revoke=%d", api.deleted, api.revoked)
-	}
-}
-func TestValidS3CredentialsSurviveEarlyRenewalFailure(t *testing.T) {
-	m, _, api, now := testManager(t)
-	c := connectTest(t, m)
-	setExpiry(t, m, c.ID, now.Add(24*time.Hour), false)
-	api.createErr = errors.New("permission changed")
-	key, _, e := m.Resolve(context.Background(), c.ID, c.Endpoint, c.Bucket)
-	if e != nil || key != "access-1" {
-		t.Fatalf("valid key lost: %s %v", key, e)
-	}
-	calls := api.created
-	_, _, _ = m.Resolve(context.Background(), c.ID, c.Endpoint, c.Bucket)
-	if api.created != calls {
-		t.Fatal("renewal ignored backoff")
-	}
-	*now = now.Add(24 * time.Hour)
-	_, _, e = m.Resolve(context.Background(), c.ID, c.Endpoint, c.Bucket)
-	if e == nil {
-		t.Fatal("expired credential accepted after renewal failure")
-	}
-}
-func TestRotatedRefreshTokenStorageFailureRetriesNewestToken(t *testing.T) {
-	m, store, api, now := testManager(t)
-	c := connectTest(t, m)
-	setExpiry(t, m, c.ID, now.Add(24*time.Hour), true)
-	store.failSet = store.sets + 1
-	key, _, e := m.Resolve(context.Background(), c.ID, c.Endpoint, c.Bucket)
-	if e != nil || key != "access-1" {
-		t.Fatal("valid S3 unavailable during refresh save failure", e)
-	}
-	if api.refreshed != 1 || m.volatile[c.ID].RefreshToken != "rotated-refresh-secret" {
-		t.Fatal("new rotating refresh token was lost")
-	}
-	*now = now.Add(time.Hour + time.Second)
-	store.failSet = 0
-	key, _, e = m.Resolve(context.Background(), c.ID, c.Endpoint, c.Bucket)
-	if e != nil || key == "access-1" {
-		t.Fatal("renewal did not recover", e)
-	}
-	if api.refreshed != 1 {
-		t.Fatal("reused already-rotated old refresh token")
-	}
-	if _, dirty := m.volatile[c.ID]; dirty {
-		t.Fatal("new OAuth token not persisted")
-	}
-}
-func TestCanceledRotationNeverActivatesCandidate(t *testing.T) {
-	m, _, api, now := testManager(t)
-	c := connectTest(t, m)
-	setExpiry(t, m, c.ID, now.Add(24*time.Hour), false)
-	ctx, cancel := context.WithCancel(context.Background())
-	api.createHook = cancel
-	if _, _, e := m.Resolve(ctx, c.ID, c.Endpoint, c.Bucket); !errors.Is(e, context.Canceled) {
-		t.Fatal(e)
-	}
-	d, _ := m.load()
-	if d.Connections[c.ID].TokenID != "token-1" {
-		t.Fatal("canceled renewal replaced saved key")
-	}
-	if api.deleted != 1 {
-		t.Fatal("canceled token not compensated")
-	}
-}
-func TestPartialCreateErrorCompensatesTokenID(t *testing.T) {
-	m, _, api, _ := testManager(t)
-	beginTest(t, m)
-	api.partialCreate = true
-	api.createErr = errors.New("malformed token response")
-	if e := m.Connect(context.Background(), testAccount, "default", "photos", func(Connection) error { t.Fatal("invalid credential committed"); return nil }); e == nil {
-		t.Fatal("expected response failure")
-	}
-	if api.deleted != 1 {
-		t.Fatal("partial token ID was discarded without remote cleanup")
-	}
-}
-func TestCancelWaitsForBeginTokenCleanup(t *testing.T) {
-	m, _, api, _ := testManager(t)
-	entered := make(chan struct{})
-	release := make(chan struct{})
-	var once sync.Once
-	api.accountsHook = func(ctx context.Context) error { once.Do(func() { close(entered) }); <-release; return ctx.Err() }
-	done := make(chan error, 1)
-	go func() { _, e := m.Begin(context.Background(), func(string) error { return nil }); done <- e }()
-	<-entered
-	canceled := make(chan error, 1)
-	go func() { canceled <- m.Cancel() }()
-	select {
-	case <-canceled:
-		t.Fatal("Cancel returned before authorization cleanup")
-	case <-time.After(20 * time.Millisecond):
-	}
-	close(release)
-	if e := <-canceled; e != nil {
-		t.Fatal(e)
-	}
-	if e := <-done; !errors.Is(e, context.Canceled) {
-		t.Fatal(e)
-	}
-	if api.revoked != 1 {
-		t.Fatal("uncommitted OAuth token not revoked before Cancel returned")
-	}
-}
-func TestCredentialDenialStopsAutomaticOperationsUntilNewBegin(t *testing.T) {
-	m, store, _, _ := testManager(t)
-	c := connectTest(t, m)
-	store.denyGet = 1
-	_, _, e := m.Resolve(context.Background(), c.ID, c.Endpoint, c.Bucket)
-	if !errors.Is(e, ErrSecretDenied) {
-		t.Fatal(e)
-	}
-	calls := store.gets + store.sets + store.deletes
-	_, _, _ = m.Resolve(context.Background(), c.ID, c.Endpoint, c.Bucket)
-	_ = m.Disconnect(context.Background(), c.ID)
-	if store.gets+store.sets+store.deletes != calls {
-		t.Fatal("denied credential store was contacted again")
-	}
-	store.denyGet = 0
-	beginTest(t, m)
-	if m.store.denied {
-		t.Fatal("new explicit connection did not allow credential retry")
-	}
-}
-func TestChunkFailureKeepsOldGenerationReadable(t *testing.T) {
-	store := &fakeStore{data: map[string][]byte{}}
-	s := secretCoordinator{store: store}
-	old, e := s.writeBlob(map[string]string{"secret": "old"})
-	if e != nil {
-		t.Fatal(e)
-	}
-	store.failSet = store.sets + 2
-	_, e = s.writeBlob(map[string]string{"secret": strings.Repeat("x", 6000)})
-	if e == nil {
-		t.Fatal("expected interrupted write")
-	}
-	var value map[string]string
-	if e = s.readBlob(old, &value); e != nil || value["secret"] != "old" {
-		t.Fatal("old generation corrupted", e)
-	}
-}
-func TestNamespaceStableForNewDirectoryBelowSymlink(t *testing.T) {
-	root := t.TempDir()
-	real := filepath.Join(root, "real")
-	if e := os.Mkdir(real, 0700); e != nil {
-		t.Fatal(e)
-	}
-	link := filepath.Join(root, "link")
-	if e := os.Symlink(real, link); e != nil {
-		t.Fatal(e)
-	}
-	path := filepath.Join(link, "new", "config.json")
-	before := namespace(path)
-	if e := os.Mkdir(filepath.Join(real, "new"), 0700); e != nil {
-		t.Fatal(e)
-	}
-	if after := namespace(path); after != before {
-		t.Fatal("first-run credential namespace changed")
-	}
-}
-func TestMetadataHasOnlyPublicConnectionFields(t *testing.T) {
-	m, _, _, _ := testManager(t)
-	c := connectTest(t, m)
-	snapshot, e := json.Marshal(c)
-	if e != nil {
-		t.Fatal(e)
-	}
-	for _, key := range []string{"secret_id", "token_id", "access_key", "refresh_token"} {
-		if strings.Contains(string(snapshot), key) {
-			t.Fatalf("public snapshot contains %s", key)
-		}
-	}
-}
-
-func TestPendingCleanupWithoutStoredSecretsUsesNewExplicitAuthorization(t *testing.T) {
-	m, store, api, _ := testManager(t)
-	beginTest(t, m)
-	api.createHook = func() { store.failSet = -1 }
-	api.deleteErr = errors.New("remote cleanup unavailable")
-	if e := m.Connect(context.Background(), testAccount, "default", "photos", func(Connection) error { return nil }); e == nil {
-		t.Fatal("expected secret save failure")
-	}
-	all, _ := m.Connections()
-	if len(all) != 1 {
-		t.Fatal("missing pending remote token")
-	}
-	if m.pending[all[0].ID].OAuth.AccessToken == "" {
-		t.Fatal("no in-process cleanup credential")
-	}
-	// Emulate a process restart where the denied system write left only public
-	// token ownership metadata. A new explicit login can finish its cleanup.
-	m.pending = map[string]secrets{}
-	store.failSet = 0
-	api.createHook = nil
-	api.deleteErr = nil
-	beginTest(t, m)
-	if e := m.Disconnect(context.Background(), all[0].ID); e != nil {
-		t.Fatal(e)
-	}
-	if api.revoked != 0 {
-		t.Fatal("recovery revoked new selector authorization")
-	}
-	if _, e := m.currentAuth(); e != nil {
-		t.Fatal("recovery consumed new selector", e)
-	}
-}
-func TestRenewalMetadataFailurePreservesOriginalGeneration(t *testing.T) {
-	m, _, api, now := testManager(t)
-	c := connectTest(t, m)
-	setExpiry(t, m, c.ID, now.Add(24*time.Hour), false)
-	before, _ := m.load()
-	old := before.Connections[c.ID]
-	failed := false
-	m.writeMetadata = func(b []byte) error {
-		if !failed {
-			failed = true
-			return errors.New("metadata write unavailable")
-		}
-		return config.AtomicWrite(m.metadataPath(), b, 0600)
-	}
-	key, secret, e := m.Resolve(context.Background(), c.ID, c.Endpoint, c.Bucket)
-	if e != nil || key != "access-1" || secret != "s3-secret-1" {
-		t.Fatal("failed rotation lost current credentials", e)
-	}
-	after, _ := m.load()
-	r := after.Connections[c.ID]
-	if r.TokenID != old.TokenID || r.SecretID != old.SecretID || !r.ExpiresAt.Equal(old.ExpiresAt) {
-		t.Fatal("failed metadata save changed active generation")
-	}
-	if api.deleted != 1 {
-		t.Fatal("uncommitted remote token not cleaned")
-	}
-}
-
-func TestConnectCanceledDuringCreateCleansTokenWithoutCommitting(t *testing.T) {
-	m, _, api, _ := testManager(t)
-	beginTest(t, m)
-	created := make(chan struct{})
-	release := make(chan struct{})
-	api.createHook = func() { close(created); <-release }
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	committed := false
+	q := callback.Query()
+	q.Set("state", u.Query().Get("state"))
+	q.Set("code", "private-code")
+	callback.RawQuery = q.Encode()
 	go func() {
-		done <- m.Connect(ctx, testAccount, "default", "photos", func(Connection) error { committed = true; return nil })
+		client := http.Client{Timeout: 10 * time.Second}
+		response, err := client.Get(callback.String())
+		if err == nil {
+			_ = response.Body.Close()
+		}
 	}()
-	<-created
-	cancel()
-	canceled := make(chan error, 1)
-	go func() { canceled <- m.Cancel() }()
-	close(release)
-	if e := <-done; !errors.Is(e, context.Canceled) {
-		t.Fatal(e)
+	return nil
+}
+func beginSDK(t *testing.T, m *Manager, f *sdkFixture) context.CancelFunc {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	accounts, err := m.Begin(ctx, f.open)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if e := <-canceled; e != nil {
-		t.Fatal(e)
+	if len(accounts) != 1 {
+		t.Fatalf("accounts=%v", accounts)
 	}
-	if committed {
-		t.Fatal("canceled provision committed profile")
+	return cancel
+}
+func connectSDK(t *testing.T, m *Manager) Connection {
+	t.Helper()
+	var saved Connection
+	if err := m.Connect(context.Background(), fixtureAccount, "default", "images", func(c Connection) error { saved = c; return nil }); err != nil {
+		t.Fatal(err)
 	}
-	if api.deleted != 1 || api.revoked != 1 {
-		t.Fatalf("cleanup incomplete delete=%d revoke=%d", api.deleted, api.revoked)
+	return saved
+}
+func TestSDKDiscoveryRetryRetainsGrantAndWritesSafeDiagnostics(t *testing.T) {
+	m, f, _ := newSDKFixture(t)
+	f.accountsFail = true
+	_, err := m.Begin(context.Background(), f.open)
+	var discovery *DiscoveryError
+	var api *r2connect.APIError
+	if !errors.As(err, &discovery) || !errors.As(err, &api) || api.StatusCode != 429 {
+		t.Fatalf("discovery=%v", err)
 	}
-	all, e := m.Connections()
-	if e != nil || len(all) != 0 {
-		t.Fatal("canceled candidate remained active", e)
+	f.mu.Lock()
+	f.accountsFail = false
+	f.mu.Unlock()
+	if accounts, err := m.ResumeAccounts(context.Background()); err != nil || len(accounts) != 1 {
+		t.Fatalf("resume=%v %v", accounts, err)
+	}
+	f.mu.Lock()
+	if f.opens != 1 || f.exchanges != 1 {
+		t.Fatal("retry reopened OAuth")
+	}
+	f.mu.Unlock()
+	if err := m.Cancel(); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	if f.revokes != 1 {
+		t.Fatalf("revokes=%d", f.revokes)
+	}
+	f.mu.Unlock()
+	log, err := os.ReadFile(filepath.Join(filepath.Dir(m.path), "logs/cloudflare.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"private-access", "private-refresh", "private-code", "private-server-message"} {
+		if strings.Contains(string(log), secret) {
+			t.Fatalf("secret leaked: %s", secret)
+		}
+	}
+	if !strings.Contains(string(log), "accounts.response") || !strings.Contains(string(log), "10058") {
+		t.Fatalf("missing SDK diagnostic: %s", log)
 	}
 }
-func TestCommittedProfileWinsLateContextCancellation(t *testing.T) {
-	m, _, api, _ := testManager(t)
-	beginTest(t, m)
-	ctx, cancel := context.WithCancel(context.Background())
-	var conn Connection
-	if e := m.Connect(ctx, testAccount, "default", "photos", func(c Connection) error { conn = c; cancel(); return nil }); e != nil {
-		t.Fatal("saved connection lost to late cancellation", e)
+func TestSDKProfileCommitDiscardAndLateCancel(t *testing.T) {
+	m, f, secrets := newSDKFixture(t)
+	cancel := beginSDK(t, m, f)
+	expected := errors.New("settings write failed")
+	if err := m.Connect(context.Background(), fixtureAccount, "default", "images", func(Connection) error { return expected }); !errors.Is(err, expected) {
+		t.Fatalf("commit=%v", err)
 	}
-	if e := m.Cancel(); e != nil {
-		t.Fatal(e)
+	f.mu.Lock()
+	if f.deletes != 1 || f.revokes != 0 {
+		t.Fatal("failed commit did not discard only candidate")
 	}
-	if api.deleted != 0 || api.revoked != 0 {
-		t.Fatal("cancellation revoked already committed connection")
+	f.mu.Unlock()
+	var saved Connection
+	if err := m.Connect(context.Background(), fixtureAccount, "default", "images", func(c Connection) error { saved = c; cancel(); return nil }); err != nil {
+		t.Fatal(err)
 	}
-	key, _, e := m.Resolve(context.Background(), conn.ID, conn.Endpoint, conn.Bucket)
-	if e != nil || key == "" {
-		t.Fatal("saved connection unusable", e)
+	if err := m.Cancel(); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	if f.revokes != 0 {
+		t.Fatal("late cancellation revoked committed profile")
+	}
+	f.mu.Unlock()
+	secrets.mu.Lock()
+	before := secrets.loads
+	secrets.mu.Unlock()
+	if _, _, err := m.Resolve(context.Background(), saved.ID, saved.Endpoint+"/wrong", saved.Bucket); err == nil {
+		t.Fatal("accepted changed endpoint")
+	}
+	secrets.mu.Lock()
+	if secrets.loads != before {
+		t.Fatal("changed binding read credentials")
+	}
+	secrets.mu.Unlock()
+	key, secret, err := m.Resolve(context.Background(), saved.ID, saved.Endpoint, saved.Bucket)
+	if err != nil || key == "" || secret == "" {
+		t.Fatalf("resolve=%s %v", key, err)
+	}
+	ids, _ := m.sessionIDs()
+	data, err := os.ReadFile(m.sessionPath(ids[0]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"private-", "accessToken", "secretAccessKey"} {
+		if strings.Contains(string(data), forbidden) {
+			t.Fatalf("secret persisted in state: %s", forbidden)
+		}
+	}
+	if err := m.Disconnect(context.Background(), saved.ID); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	if f.revokes != 1 {
+		t.Fatal("disconnect did not revoke grant")
+	}
+	f.mu.Unlock()
+}
+func TestSDKIndependentProfilesAndRestart(t *testing.T) {
+	m, f, secrets := newSDKFixture(t)
+	beginSDK(t, m, f)
+	first := connectSDK(t, m)
+	beginSDK(t, m, f)
+	second := connectSDK(t, m)
+	restarted := &Manager{path: m.path, secrets: secrets, sessions: make(map[string]*sdkSession), client: m.client}
+	if err := restarted.Disconnect(context.Background(), first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := restarted.Resolve(context.Background(), second.ID, second.Endpoint, second.Bucket); err != nil {
+		t.Fatal(err)
+	}
+	all, err := restarted.Connections()
+	if err != nil || len(all) != 1 || all[0].ID != second.ID {
+		t.Fatalf("connections=%v %v", all, err)
+	}
+	if err := restarted.Disconnect(context.Background(), second.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+func TestSDKUnreadableStateBlocksNewAuthorizationWithoutOverwrite(t *testing.T) {
+	m, f, _ := newSDKFixture(t)
+	if err := m.ensureDirectory(); err != nil {
+		t.Fatal(err)
+	}
+	path := m.sessionPath(strings.Repeat("a", 32))
+	original := []byte("{broken state")
+	if err := os.WriteFile(path, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Configured(); err == nil {
+		t.Fatal("ignored state load error")
+	}
+	if _, err := m.Begin(context.Background(), f.open); err == nil {
+		t.Fatal("authorized over unreadable state")
+	}
+	data, _ := os.ReadFile(path)
+	if string(data) != string(original) {
+		t.Fatal("unreadable state overwritten")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.opens != 0 {
+		t.Fatal("opened browser despite unreadable state")
+	}
+}
+func TestSDKDisconnectFailureRetainsRetryableConnection(t *testing.T) {
+	m, f, _ := newSDKFixture(t)
+	beginSDK(t, m, f)
+	saved := connectSDK(t, m)
+	f.mu.Lock()
+	f.deleteFail = true
+	f.mu.Unlock()
+	if err := m.Disconnect(context.Background(), saved.ID); err == nil {
+		t.Fatal("expected remote deletion failure")
+	}
+	if connection, ok := m.Get(saved.ID); !ok || !connection.PendingCleanup {
+		t.Fatal("failed disconnect lost connection")
+	}
+	f.mu.Lock()
+	if f.revokes != 0 {
+		t.Fatal("revoked grant before token cleanup")
+	}
+	f.deleteFail = false
+	f.mu.Unlock()
+	if err := m.Disconnect(context.Background(), saved.ID); err != nil {
+		t.Fatal(err)
 	}
 }

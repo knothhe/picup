@@ -10,6 +10,8 @@ import (
 )
 
 type profileUIState struct {
+	transfer                profileTransferState
+	credentials             manualCredentialState
 	editOpen, deleteOpen    bool
 	menuOpen                bool
 	mode, name, target, err string
@@ -81,8 +83,14 @@ func (a *application) switchProfile(id string) bool {
 func (a *application) applyProfileConfig(c config.Config) {
 	changed := a.config.ActiveProfile != c.ActiveProfile
 	storageChanged := !sameGalleryStorage(a.config, c)
+	if changed || a.config.R2Connection != c.R2Connection {
+		// A destructive confirmation belongs to the connection that opened it.
+		a.r2.disconnectOpen = false
+	}
 	if changed {
 		a.flushGalleryPreferences()
+		// Replacement drafts belong to the profile that opened the dialog.
+		a.profiles.credentials = manualCredentialState{}
 	}
 	a.config = c.Clone()
 	if a.r2.initialized {
@@ -104,6 +112,7 @@ func (a *application) applyProfileConfig(c config.Config) {
 	}
 	a.applyLanguage(false)
 	a.applyNativeSettings()
+	a.syncNativeActions()
 	if a.win != nil {
 		mygo.Theme.SetSource(mygo.ThemeSource(c.Appearance))
 		a.win.Invalidate()

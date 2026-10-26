@@ -271,6 +271,9 @@ func (a *application) overlayShortcut(layer ui.Element, id string) bool {
 }
 
 func (a *application) onShortcut(c *ui.Context, id string, run func()) {
+	if a.globalQuickShortcutActive(id) {
+		return // The OS owns this event, including while a Picup window is focused.
+	}
 	b := a.shortcutBinding(id)
 	if a.shortcutEditing == "" && b.key != ui.KeyUnknown && c.Shortcut(b.mods, b.key) {
 		run()
@@ -325,6 +328,9 @@ func (a *application) nativeMenuStateKey() string {
 // Only global commands get native menu accelerators. Scoped gallery commands
 // stay in the UI so editors retain Select All and caret movement.
 func (a *application) nativeShortcut(id string) string {
+	if a.globalQuickShortcutActive(id) {
+		return ""
+	}
 	command, ok := shortcutDefinition(id)
 	if a.shortcutEditing != "" || !ok || !globalShortcut(command) {
 		return ""

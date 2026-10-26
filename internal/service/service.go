@@ -26,6 +26,7 @@ type Result struct {
 	Width         int       `json:"width"`
 	Height        int       `json:"height"`
 	CreatedAt     time.Time `json:"created_at"`
+	Reused        bool      `json:"reused,omitempty"`
 }
 
 func (r Result) Markdown() string {
@@ -55,6 +56,10 @@ type Service struct {
 }
 
 func (s Service) Upload(ctx context.Context, data []byte, name string) (Result, error) {
+	return s.UploadWithProgress(ctx, data, name, nil)
+}
+
+func (s Service) UploadWithProgress(ctx context.Context, data []byte, name string, progress storage.Progress) (Result, error) {
 	client, err := storage.NewWithConfigPath(ctx, s.Config, s.ConfigPath)
 	if err != nil {
 		return Result{}, err
@@ -68,10 +73,16 @@ func (s Service) Upload(ctx context.Context, data []byte, name string) (Result, 
 	if err != nil {
 		return Result{}, err
 	}
-	if err = client.Put(ctx, key, im.Data, im.ContentType); err != nil {
+	key, reused, err := client.PutWithPolicy(ctx, key, im.Data, im.ContentType, s.Config.CollisionPolicy, progress)
+	if err != nil {
 		return Result{}, fmt.Errorf("upload %s: %w", name, err)
 	}
-	return Result{Name: filepath.Base(name), URL: client.URL(key), Key: key, OriginalBytes: im.OriginalBytes, Bytes: len(im.Data), Width: im.Width, Height: im.Height, CreatedAt: createdAt.UTC()}, nil
+	if reused {
+		im.Data = nil
+		im.Width = 0
+		im.Height = 0
+	}
+	return Result{Name: filepath.Base(name), URL: client.URL(key), Key: key, OriginalBytes: im.OriginalBytes, Bytes: len(im.Data), Width: im.Width, Height: im.Height, CreatedAt: createdAt.UTC(), Reused: reused}, nil
 }
 
 // Each upload has its own atomic record so simultaneous CLI/GUI uploads do not

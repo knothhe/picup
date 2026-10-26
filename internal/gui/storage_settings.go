@@ -25,7 +25,7 @@ type storageTestState struct {
 }
 
 func storageSignature(c config.Config) string {
-	return strings.Join([]string{c.ActiveProfile, c.Provider, c.Endpoint, c.Bucket, c.Region, c.AccessKey, c.SecretKey, c.SessionToken, c.R2Connection}, "\x00")
+	return strings.Join([]string{c.ActiveProfile, c.Provider, c.Endpoint, c.Bucket, c.Region, c.AccessKey, c.SecretKey, c.SessionToken, c.R2Connection, c.CredentialRef}, "\x00")
 }
 
 // storageFormSection is a titled, bordered block of free-form content.
@@ -88,7 +88,7 @@ func (a *application) r2Mode() string {
 		return a.r2.mode
 	case a.config.R2Connection != "":
 		return r2ModeOAuth
-	case a.config.AccessKey != "" || a.config.SecretKey != "" || a.config.Provider != "r2" || a.r2.configurationError != nil:
+	case a.config.CredentialRef != "" || a.config.AccessKey != "" || a.config.SecretKey != "" || a.config.Provider != "r2" || a.r2.configurationError != nil:
 		return r2ModeKeys
 	}
 	return r2ModeOAuth
@@ -145,9 +145,7 @@ func (a *application) storageSettings(c *ui.Context) {
 		a.r2ManagedKeysNotice(c)
 	default:
 		settingsGroup(c, "storage-auth", "访问密钥", func() {
-			storageFormField(c, "access", "Access key", "", "输入访问密钥 ID", &a.config.AccessKey, true, true)
-			storageFormField(c, "secret", "Secret key", "", "输入访问密钥", &a.config.SecretKey, true, false)
-			storageFormField(c, "session", "Session token", "", "可选，仅 AWS 临时凭据需要", &a.config.SessionToken, true, false)
+			a.manualCredentialSettings(c)
 			storageRow(c, "path-style", "Path-style", false, func() {
 				ui.Row(c).FillWidth().MinWidth(0).Gap(12).AlignItems(ui.Center).Children(func() {
 					components.Text(c, tr("开启时 Bucket 位于请求路径，关闭时位于域名前。")).Grow(1).MinWidth(0).Wrap().FontSize(11.5).TextColor(c.Theme().TextMuted).OnClick(func() { a.config.PathStyle = !a.config.PathStyle })
@@ -160,7 +158,7 @@ func (a *application) storageSettings(c *ui.Context) {
 		settingsGroup(c, "storage-links", "公开访问与路径", func() {
 			description := ""
 			if a.config.R2Connection != "" && a.config.PublicURL == "" {
-				description = "未检测到此桶的公开域名。可在 Cloudflare 检查公开读取设置，并填写对应地址。"
+				description = "请填写此桶已配置的公开域名；连接不会自动开启公开访问。"
 			}
 			storageFormField(c, "public", "公开访问地址", description, "https://img.example.com", &a.config.PublicURL, false, true)
 			storageRow(c, "path-template", "路径模板", false, func() {

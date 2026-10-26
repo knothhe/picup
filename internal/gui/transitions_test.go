@@ -152,7 +152,7 @@ func TestNativeSettingsTabTransitions(t *testing.T) {
 				{name: "storage", label: "连接方式", tab: 0},
 				{name: "image-output", label: "图片处理", tab: 1},
 				{name: "general", label: "界面", tab: 2},
-				{name: "cli", label: "命令行工具", tab: 3},
+				{name: "cli", label: "安装位置", tab: 3},
 				{name: "shortcuts", label: "点击键位后按下新的快捷键。", tab: 4},
 				{name: "about", label: "本机信息", tab: 5},
 				{name: "profiles", label: "新建配置", tab: settingsProfilesTab},

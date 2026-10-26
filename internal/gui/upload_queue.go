@@ -9,7 +9,7 @@ import (
 )
 
 type uploadQueueCounts struct {
-	total, pending, uploaded, failed int
+	total, pending, uploaded, failed, skipped int
 }
 
 // The upload page names the settings that the next upload will actually use.
@@ -56,6 +56,10 @@ func (a *application) uploadCounts() uploadQueueCounts {
 			counts.uploaded++
 			continue
 		}
+		if j.status == "已跳过" {
+			counts.skipped++
+			continue
+		}
 		counts.pending++
 		if j.status == "上传失败" {
 			counts.failed++
@@ -79,6 +83,7 @@ func (a *application) clearUploadedJobs() {
 		return
 	}
 	a.jobs = slices.DeleteFunc(a.jobs, func(j *job) bool { return j.result != nil })
+	a.persistUploadQueue()
 }
 
 func (a *application) removeUploadJob(j *job) {
@@ -87,6 +92,7 @@ func (a *application) removeUploadJob(j *job) {
 	}
 	if index := slices.Index(a.jobs, j); index >= 0 {
 		a.jobs = slices.Delete(a.jobs, index, index+1)
+		a.persistUploadQueue()
 	}
 }
 

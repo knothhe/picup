@@ -8,6 +8,7 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/knothhe/picup/assets"
+	"github.com/knothhe/picup/internal/buildidentity"
 	"github.com/knothhe/picup/internal/config"
 	"github.com/oneo-me/onevra/source/shells/plain"
 )
@@ -28,7 +29,7 @@ type lifecycleState struct {
 }
 
 func (a *application) newMainWindow() {
-	shell := plain.NewShell(plain.ShellOptions{Hidden: true, Title: "Picup", Width: 1040, Height: 760, MinWidth: 760, MinHeight: 620, StateKey: "main", Theme: palette, Content: a.view, ContentBehindHeader: true, HeaderLeading: a.header, HeaderActions: a.headerActions})
+	shell := plain.NewShell(plain.ShellOptions{Hidden: true, Title: buildidentity.Name(), Width: 1040, Height: 760, MinWidth: 760, MinHeight: 620, StateKey: "main", Theme: palette, Content: a.view, ContentBehindHeader: true, HeaderLeading: a.header, HeaderActions: a.headerActions})
 	w := shell.Window()
 	a.win = w
 	if runtime.GOOS != "darwin" {

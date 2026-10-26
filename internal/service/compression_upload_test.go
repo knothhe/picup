@@ -50,6 +50,10 @@ func TestUploadSendsCompressedBytesAndAccurateResults(t *testing.T) {
 			}
 			requests := make(chan request, 1)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodHead {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
 				body, _ := io.ReadAll(r.Body)
 				requests <- request{r.Header.Get("Content-Type"), body}
 				w.WriteHeader(http.StatusOK)

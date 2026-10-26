@@ -43,7 +43,11 @@ func (a *application) galleryHeaderContext(c *ui.Context) {
 	t := c.Theme()
 	label := storageDestination(a.uploadDisplayConfig())
 	if g.loaded {
-		label += tf(" · %d 张图片", len(g.objects))
+		if g.paged && !g.listComplete {
+			label += tf(" · 已加载 %d 张", len(g.objects))
+		} else {
+			label += tf(" · %d 张图片", len(g.objects))
+		}
 	}
 	headerChip(c, nil, label)
 	status, color := "", t.TextMuted
@@ -74,7 +78,11 @@ func (a *application) galleryHeaderActions(c *ui.Context) {
 		}
 	} else if g.loaded && g.err != "" {
 		if components.Button(c, tr("重试刷新"), components.ButtonGhost).TextColor(t.Accent).Clicked() {
-			a.loadGallery()
+			if g.failedMore {
+				a.loadMoreGallery()
+			} else {
+				a.loadGallery()
+			}
 		}
 	}
 	refresh := components.IconButton(c, galleryIcons.refresh, tr("刷新图库"), components.IconButtonPlain).Disabled(g.busy).TextColor(t.TextMuted)
@@ -104,7 +112,16 @@ func (a *application) galleryView(c *ui.Context) {
 	}
 	a.galleryThumbs(page)
 	page, presentedPage := g.presentedThumbnailPage(page)
+	a.galleryDirectoryBar(c)
 	a.galleryToolbar(c)
+	if g.paged && !g.listComplete {
+		ui.Row(c).FillWidth().Shrink(0).Padding(0, 24, 8, 24).Gap(10).AlignItems(ui.Center).Children(func() {
+			components.Text(c, tr("列表尚未加载完；搜索、排序和日期筛选只作用于已加载图片。")).Grow(1).MinWidth(0).Wrap().FontSize(11).TextColor(c.Theme().TextMuted)
+			if components.Button(c, tr("加载更多图片"), components.ButtonOutline).Shrink(0).Disabled(g.busy || a.busy || g.nextToken == "").Clicked() {
+				a.loadMoreGallery()
+			}
+		})
+	}
 	if filterErr != nil {
 		components.Text(c, filterErr.Error()).FontSize(12).Wrap().Padding(0, 24, 8, 24).TextColor(c.Theme().Danger)
 	}
@@ -138,6 +155,23 @@ func (a *application) galleryView(c *ui.Context) {
 			g.selectPage(page)
 		}
 	}
+}
+
+func (a *application) galleryDirectoryBar(c *ui.Context) {
+	g := &a.gallery
+	if !g.prefixInputInitialized {
+		g.prefixInput, g.prefixInputInitialized = g.prefix, true
+	}
+	ui.Row(c).Key("gallery-directory").FillWidth().Shrink(0).Padding(10, 24, 0, 24).Gap(8).AlignItems(ui.Center).Disabled(g.operation || a.busy).Children(func() {
+		components.Text(c, tr("当前目录")).FontSize(12).Shrink(0)
+		components.TextBox(c, &g.prefixInput, components.TextBoxOptions{}).Label(tr("目录前缀")).Placeholder(tr("全部目录，或输入 images/2026/")).Grow(1).MinWidth(100).Height(32)
+		if components.Button(c, tr("加载目录"), components.ButtonOutline).Shrink(0).Clicked() {
+			a.setGalleryPrefix(g.prefixInput)
+		}
+		if components.Button(c, tr("全部目录"), components.ButtonGhost).Shrink(0).Disabled(g.prefix == "" && g.prefixInput == "").Clicked() {
+			a.setGalleryPrefix("")
+		}
+	})
 }
 
 // galleryChip is a toolbar control that shows its current value.
@@ -218,7 +252,7 @@ func (a *application) galleryToolbar(c *ui.Context) {
 				label = tr("仅根目录")
 			}
 			if galleryFilterTag(c, lucide.Folder(), label, tr("清除前缀")) {
-				g.prefix = ""
+				a.setGalleryPrefix("")
 			}
 		}
 		if g.period != "" && (g.period != "custom" || g.from != "" || g.to != "") {
@@ -328,7 +362,11 @@ func (a *application) galleryPagination(c *ui.Context, total, pages, presentedPa
 	t := c.Theme()
 	ui.Row(c).FillWidth().Height(52).Shrink(0).Padding(0, 16, 0, 24).AlignItems(ui.Center).Gap(5).BorderWidth(1, 0, 0, 0).BorderColor(t.Border).Children(func() {
 		start := presentedPage * galleryPageSize
-		components.Text(c, tf("第 %d–%d 张，共 %d 张", start+1, min(total, start+galleryPageSize), total)).FontSize(12).TextColor(t.TextMuted).SingleLine()
+		caption := tf("第 %d–%d 张，共 %d 张", start+1, min(total, start+galleryPageSize), total)
+		if g.paged && !g.listComplete {
+			caption = tf("第 %d–%d 张，已加载结果 %d 张", start+1, min(total, start+galleryPageSize), total)
+		}
+		components.Text(c, caption).FontSize(12).TextColor(t.TextMuted).SingleLine()
 		ui.Spacer(c)
 		ui.Row(c).AlignItems(ui.Center).Gap(5).Disabled(g.busy || g.thumbLoading).Children(func() {
 			if galleryIconButton(c, lucide.ChevronLeft(), tr("上一页")).Disabled(presentedPage == 0).Clicked() {

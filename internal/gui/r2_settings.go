@@ -9,9 +9,9 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
-	"github.com/knothhe/picup/internal/cloudflare"
 	"github.com/knothhe/picup/internal/config"
 	"github.com/knothhe/picup/internal/r2oauth"
+	"github.com/knothhe/r2connect"
 	"github.com/oneo-me/onevra/source/components"
 	"github.com/oneo-me/onevra/source/icons/lucide"
 )
@@ -22,23 +22,38 @@ type r2SettingsState struct {
 	manager                       *r2oauth.Manager
 	initialized                   bool
 	configurationError            error
+	connectionReadError           error
+	configurationChecking         bool
+	configurationIndicatorAt      time.Time
 	active, working, saving       bool
+	discoveryPending              bool
 	canceling                     bool
 	disconnectOpen                bool
 	quitAfterWork                 bool
 	generation, listGeneration    uint64
 	ctx                           context.Context
 	cancel, listCancel            context.CancelFunc
-	accounts                      []cloudflare.Account
-	buckets                       []cloudflare.Bucket
+	accounts                      []r2connect.Account
+	buckets                       []r2connect.Bucket
 	account, jurisdiction, bucket string
 	err                           error
 	connection                    *r2oauth.Connection
 	pending                       []r2oauth.Connection
 	infoGeneration                uint64
 	infoID                        string
+	infoLoading                   bool
 	// mode is the viewer's connection choice for modeProfile; see r2Mode.
 	mode, modeProfile string
+}
+
+// Configuration and connection-list errors describe the same readonly metadata
+// boundary. Prefer the configuration result until both readers recover; keep
+// them separate from operation and cleanup errors, which a reload cannot clear.
+func (s *r2SettingsState) metadataError() error {
+	if s.configurationError != nil {
+		return s.configurationError
+	}
+	return s.connectionReadError
 }
 
 func (s *r2SettingsState) recordError(err error) {
@@ -58,7 +73,52 @@ func (a *application) initR2Settings() {
 	}
 	a.r2.initialized = true
 	a.r2.manager = r2oauth.New(a.path)
-	a.r2.configurationError = a.r2.manager.Configured()
+	a.checkR2Configuration()
+}
+
+func (a *application) checkR2Configuration() {
+	if a.r2.configurationChecking || a.r2.working || a.r2.active || a.quitting {
+		return
+	}
+	a.r2.configurationChecking = true
+	a.r2.configurationIndicatorAt = time.Now().Add(r2ConfigurationIndicatorDelay)
+	manager := a.r2.manager
+	a.invalidateWindows()
+	go func() {
+		err := manager.Configured()
+		mygo.RunOnMain(func() {
+			a.applyR2Configuration(err)
+			if err == nil && !a.quitting {
+				a.loadR2ConnectionInfo()
+			}
+		})
+	}()
+}
+
+const r2ConfigurationIndicatorDelay = 150 * time.Millisecond
+
+func (a *application) applyR2Configuration(err error) {
+	if a.quitting {
+		return
+	}
+	a.r2.configurationChecking, a.r2.configurationError = false, err
+	a.invalidateWindows()
+}
+
+func (a *application) r2ConfigurationStatus(c *ui.Context) {
+	// Keep this slot's dimensions stable while the worker reads metadata.
+	// Quick reads leave it empty rather than flashing a spinner for one frame.
+	ui.Row(c).Key("r2-configuration-status").Role(ui.RoleStatus).FillWidth().MinWidth(0).Height(18).Gap(6).AlignItems(ui.Center).Children(func() {
+		if !a.r2.configurationChecking {
+			return
+		}
+		if delay := a.r2.configurationIndicatorAt.Sub(c.Now()); delay > 0 {
+			c.After(delay)
+			return
+		}
+		components.Spinner(c, components.SpinnerRing).Size(12, 12).Shrink(0)
+		components.Text(c, tr("正在读取 Cloudflare 连接状态…")).MinWidth(0).SingleLine().Ellipsis("…").FontSize(11.5).TextColor(c.Theme().TextMuted)
+	})
 }
 
 func (a *application) loadR2ConnectionInfo() {
@@ -66,72 +126,85 @@ func (a *application) loadR2ConnectionInfo() {
 	id := a.config.R2Connection
 	a.r2.infoGeneration++
 	generation := a.r2.infoGeneration
-	a.r2.infoID, a.r2.connection = id, nil
+	a.r2.infoID, a.r2.connection, a.r2.infoLoading = id, nil, true
 	profiles := a.config.Clone()
 	profiles.EnsureProfiles()
 	manager := a.r2.manager
 	go func() {
 		connections, err := manager.Connections()
+		warning := manager.TakeWarning()
 		mygo.RunOnMain(func() {
-			if a.r2.infoGeneration != generation || a.quitting {
-				return
-			}
-			if err != nil {
-				a.r2.err = err
-			} else {
-				a.r2.pending = nil
-				for _, connection := range connections {
-					if connection.ID == id {
-						copy := connection
-						a.r2.connection = &copy
-					}
-					referenced := false
-					for _, profile := range profiles.Profiles {
-						referenced = referenced || profile.R2Connection == connection.ID
-					}
-					if !referenced || connection.PendingCleanup && connection.ID != id {
-						a.r2.pending = append(a.r2.pending, connection)
-					}
-				}
-			}
-			a.invalidateWindows()
+			a.applyR2ConnectionInfo(generation, id, profiles, connections, err, warning)
 		})
 	}()
 }
 
+func (a *application) applyR2ConnectionInfo(generation uint64, id string, profiles config.Config, connections []r2oauth.Connection, readError, warning error) bool {
+	if a.quitting {
+		return false
+	}
+	// Cleanup warnings belong to the manager, not one profile's read request.
+	// A stale response must not silently consume the warning from TakeWarning.
+	a.r2.recordError(warning)
+	if a.r2.infoGeneration != generation {
+		if warning != nil {
+			a.invalidateWindows()
+		}
+		return false
+	}
+	a.r2.infoLoading = false
+	a.r2.connectionReadError = readError
+	if readError == nil {
+		a.r2.pending = nil
+		for _, connection := range connections {
+			if connection.ID == id {
+				copy := connection
+				a.r2.connection = &copy
+			}
+			referenced := false
+			for _, profile := range profiles.Profiles {
+				referenced = referenced || profile.R2Connection == connection.ID
+			}
+			if !referenced || connection.PendingCleanup && connection.ID != id {
+				a.r2.pending = append(a.r2.pending, connection)
+			}
+		}
+	}
+	a.invalidateWindows()
+	return true
+}
+
 func (a *application) beginR2Connection() {
-	if a.r2.active || a.r2.working || a.profileSwitchBlocked() || !a.flushSettingsAutosave() {
+	if a.r2.active || a.r2.working || a.r2.configurationChecking || a.profileSwitchBlocked() {
 		return
 	}
 	a.initR2Settings()
-	if a.r2.configurationError != nil {
-		a.r2.err = a.r2.configurationError
+	if a.r2.configurationChecking {
+		return
+	}
+	if a.r2.metadataError() != nil {
+		return
+	}
+	if !a.flushSettingsAutosave() {
 		return
 	}
 	a.r2.generation++
-	generation, manager := a.r2.generation, a.r2.manager
+	generation, manager, currentConnectionID := a.r2.generation, a.r2.manager, a.config.R2Connection
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	a.r2.ctx, a.r2.cancel = ctx, cancel
 	a.r2.active, a.r2.working, a.r2.err = true, true, nil
+	a.r2.discoveryPending = false
 	a.r2.accounts, a.r2.buckets = nil, nil
 	a.r2.account, a.r2.bucket, a.r2.jurisdiction = "", "", "default"
 	a.invalidateWindows()
 	go func() {
-		accounts, err := manager.Begin(ctx, mygo.Shell.OpenExternal)
+		accounts, err := manager.BeginForConnection(ctx, currentConnectionID, mygo.Shell.OpenExternal)
 		mygo.RunOnMain(func() {
-			if a.r2.generation != generation || a.quitting {
+			if !a.applyR2Accounts(generation, accounts, err) {
 				return
 			}
-			a.r2.working, a.r2.err = false, err
-			if err != nil {
-				a.r2.active = false
-				cancel()
-			} else {
-				a.r2.accounts = accounts
-				if len(accounts) > 0 {
-					a.r2.account = accounts[0].ID
-					a.loadR2Buckets()
-				}
+			if err == nil && len(accounts) > 0 {
+				a.loadR2Buckets()
 			}
 			a.invalidateWindows()
 		})
@@ -150,6 +223,7 @@ func (a *application) cancelR2Connection() {
 		a.r2.listCancel()
 	}
 	a.r2.active, a.r2.working, a.r2.canceling, a.r2.err = false, true, true, nil
+	a.r2.discoveryPending = false
 	a.r2.accounts, a.r2.buckets = nil, nil
 	generation, manager := a.r2.generation, a.r2.manager
 	go func() {
@@ -192,7 +266,7 @@ func (a *application) loadR2Buckets() {
 	}()
 }
 
-func (a *application) applyR2Buckets(generation, listGeneration uint64, buckets []cloudflare.Bucket, err error) bool {
+func (a *application) applyR2Buckets(generation, listGeneration uint64, buckets []r2connect.Bucket, err error) bool {
 	if !a.r2.active || a.r2.generation != generation || a.r2.listGeneration != listGeneration || a.quitting {
 		return false
 	}
@@ -227,7 +301,7 @@ func addR2Profile(c *config.Config, connection r2oauth.Connection) error {
 	}
 	c.Provider, c.Region, c.PathStyle = "r2", "auto", true
 	c.Endpoint, c.Bucket = connection.Endpoint, connection.Bucket
-	c.AccessKey, c.SecretKey, c.SessionToken = "", "", ""
+	c.AccessKey, c.SecretKey, c.SessionToken, c.CredentialRef = "", "", "", ""
 	c.R2Connection, c.PublicURL = connection.ID, publicURL
 	c.EnsureProfiles()
 	return nil
@@ -310,7 +384,7 @@ func (a *application) disconnectR2ID(id string) {
 	if a.r2.active {
 		parent = a.r2.ctx
 	}
-	a.r2.working, a.r2.saving, a.r2.disconnectOpen, a.r2.err = true, true, false, nil
+	a.r2.working, a.r2.saving, a.r2.err = true, true, nil
 	go func() {
 		ctx, cancel := context.WithTimeout(parent, time.Minute)
 		defer cancel()
@@ -324,7 +398,7 @@ func (a *application) disconnectR2ID(id string) {
 			}
 		}
 		mygo.RunOnMain(func() {
-			a.r2.working, a.r2.saving = a.r2.canceling, false
+			a.r2.working, a.r2.saving, a.r2.disconnectOpen = a.r2.canceling, false, false
 			a.r2.recordError(err)
 			if err == nil {
 				a.applyProfileConfig(saved)
@@ -361,46 +435,45 @@ func (a *application) finishR2RequestedQuit() {
 func (a *application) r2ConnectionSettings(c *ui.Context) {
 	t := c.Theme()
 	storageFormSection(c, "cloudflare-oauth", "Cloudflare 授权", func() {
-		if a.config.R2Connection != "" {
-			ui.Row(c).FillWidth().MinWidth(0).Gap(12).AlignItems(ui.Center).Children(func() {
-				iconTile(c, lucide.ShieldCheck(), 36)
-				ui.Column(c).Grow(1).Shrink(1).MinWidth(0).Gap(2).Children(func() {
-					components.Text(c, a.config.Bucket).FontSize(13).FontWeight(600).SingleLine().Ellipsis("…").MinWidth(0)
-					components.Text(c, a.config.Endpoint).FillWidth().MinWidth(0).SingleLine().Ellipsis("…").Tooltip(a.config.Endpoint).FontSize(11.5).TextColor(t.TextMuted)
-				})
-				statusPill(c, tr("已连接"), toneSuccess)
-			})
-			ui.Column(c).FillWidth().MinWidth(0).Gap(4).Children(func() {
-				if connection := a.r2.connection; connection != nil {
-					components.Text(c, tf("凭据到期：%s", connection.ExpiresAt.Local().Format("2006-01-02"))).FontSize(12).TextColor(t.TextMuted)
-					if !connection.Renewable {
-						components.Text(c, tr("此授权无法静默续期，到期前请重新连接。")).FontSize(12).Wrap().TextColor(t.Danger)
-					}
-				}
-			})
-			a.r2DisconnectControls(c)
+		connected := a.config.R2Connection != ""
+		if connected {
+			a.r2ConnectedSummary(c)
 		}
+
 		if !a.r2.active {
 			if a.config.R2Connection == "" {
 				components.Text(c, tr("授权后会新建一个配置，当前配置保持不变。")).FillWidth().MinWidth(0).Wrap().FontSize(12).TextColor(t.TextMuted)
 			}
-			ui.Column(c).AlignSelf(ui.Start).Disabled(a.r2.working || a.r2.configurationError != nil).Children(func() {
-				variant := components.ButtonPrimary
-				if a.config.R2Connection != "" {
-					variant = components.ButtonOutline
+			if connected {
+				a.r2ConnectedActions(c)
+			} else {
+				ui.Column(c).AlignSelf(ui.Start).Disabled(a.r2.working || a.r2.configurationChecking || a.r2.metadataError() != nil).Children(func() {
+					connect := components.Button(c, tr("连接 Cloudflare R2"), components.ButtonPrimary)
+					if connect.IsDisabled() {
+						connect.TextColor(t.Text)
+					}
+					if connect.Clicked() {
+						a.beginR2Connection()
+					}
+				})
+				a.r2ConfigurationStatus(c)
+			}
+			if metadataError := a.r2.metadataError(); a.r2.initialized && metadataError != nil {
+				components.Text(c, r2ErrorText(metadataError)).FillWidth().Wrap().FontSize(12).TextColor(t.Danger)
+				if !errors.Is(metadataError, r2oauth.ErrNotConfigured) && components.Button(c, tr("重新读取连接状态"), components.ButtonOutline).AlignSelf(ui.Start).Disabled(a.r2.configurationChecking || a.r2.working).Clicked() {
+					a.checkR2Configuration()
 				}
-				if components.Button(c, tr("连接 Cloudflare R2"), variant).Clicked() {
-					a.beginR2Connection()
-				}
-			})
-			if a.r2.initialized && a.r2.configurationError != nil {
-				components.Text(c, tr("当前构建尚未启用 Cloudflare 授权，请联系应用发行者。")).FillWidth().Wrap().FontSize(12).TextColor(t.TextMuted)
 			}
 		} else {
 			components.Text(c, tr("授权页如有 Sensitive scopes，请在 Edit Permissions 中开启 Account API Tokens Write。")).FillWidth().Wrap().FontSize(12).TextColor(t.TextMuted)
 			if len(a.r2.accounts) == 0 {
 				text := "等待浏览器授权…"
-				if !a.r2.working {
+				if a.r2.discoveryPending {
+					text = "浏览器授权已完成，账号列表暂时无法读取。"
+					if a.r2.working {
+						text = "正在重新读取账号列表…"
+					}
+				} else if !a.r2.working {
 					text = "没有可访问的 Cloudflare 账号，请检查授权权限。"
 				}
 				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
@@ -409,6 +482,12 @@ func (a *application) r2ConnectionSettings(c *ui.Context) {
 					}
 					components.Text(c, tr(text)).FontSize(12.5).Wrap()
 				})
+				if a.r2.discoveryPending {
+					components.Text(c, tr("已保留本次授权，可稍后重试，无需重新打开浏览器。")).FillWidth().Wrap().FontSize(12).TextColor(t.TextMuted)
+					if components.Button(c, tr("重试账号列表"), components.ButtonOutline).Disabled(a.r2.working).AlignSelf(ui.Start).Clicked() {
+						a.retryR2Accounts()
+					}
+				}
 				if components.Button(c, tr("取消连接"), components.ButtonGhost).AlignSelf(ui.Start).Clicked() {
 					a.cancelR2Connection()
 				}
@@ -416,12 +495,12 @@ func (a *application) r2ConnectionSettings(c *ui.Context) {
 				a.r2BucketChoices(c)
 			}
 		}
-		if a.r2.working && !a.r2.active {
+		if a.r2.working && !a.r2.active && !connected {
 			components.Text(c, tr("正在处理 Cloudflare 连接…")).FontSize(12).TextColor(t.TextMuted)
 		}
 		a.r2PendingCleanup(c)
 		if a.r2.err != nil && a.r2.err != context.Canceled {
-			components.Text(c, a.r2.err.Error()).FillWidth().MinWidth(0).Wrap().FontSize(12).TextColor(t.Danger)
+			components.Text(c, r2ErrorText(a.r2.err)).FillWidth().MinWidth(0).Wrap().FontSize(12).TextColor(t.Danger)
 		}
 	})
 }
@@ -437,7 +516,7 @@ func (a *application) r2ManagedKeysNotice(c *ui.Context) {
 		})
 		a.r2DisconnectControls(c)
 		if a.r2.err != nil && a.r2.err != context.Canceled {
-			components.Text(c, a.r2.err.Error()).FillWidth().MinWidth(0).Wrap().FontSize(12).TextColor(t.Danger)
+			components.Text(c, r2ErrorText(a.r2.err)).FillWidth().MinWidth(0).Wrap().FontSize(12).TextColor(t.Danger)
 		}
 	})
 }
@@ -489,14 +568,15 @@ func (a *application) r2BucketSelects(c *ui.Context) {
 	components.Text(c, tr("Cloudflare 账号")).FontSize(12.5)
 	selectControl(c, "Cloudflare 账号", &a.r2.account, ids, labels)
 	components.Text(c, tr("数据辖区")).FontSize(12.5)
-	jurisdictionLabels := make([]string, len(cloudflare.Jurisdictions))
-	for i, jurisdiction := range cloudflare.Jurisdictions {
+	jurisdictions := r2SupportedJurisdictions()
+	jurisdictionLabels := make([]string, len(jurisdictions))
+	for i, jurisdiction := range jurisdictions {
 		jurisdictionLabels[i] = map[string]string{"default": "默认", "eu": "欧盟", "us": "美国", "fedramp": "FedRAMP", "fedramp-high": "FedRAMP High"}[jurisdiction]
 		if jurisdictionLabels[i] == "" {
 			jurisdictionLabels[i] = jurisdiction
 		}
 	}
-	selectControl(c, "数据辖区", &a.r2.jurisdiction, cloudflare.Jurisdictions, jurisdictionLabels)
+	selectControl(c, "数据辖区", &a.r2.jurisdiction, jurisdictions, jurisdictionLabels)
 	if beforeAccount != a.r2.account || beforeJurisdiction != a.r2.jurisdiction {
 		a.loadR2Buckets()
 	}

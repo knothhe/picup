@@ -1,20 +1,25 @@
-// Package r2oauth owns Cloudflare connection transactions and credentials. Its
-// public snapshots contain no access tokens or S3 key pairs.
+// Package r2oauth adapts r2connect to Picup profiles. OAuth, Cloudflare requests,
+// credential derivation, secret storage and renewal belong to the SDK.
 package r2oauth
 
 import (
 	"context"
-	"encoding/json"
+	"crypto/sha256"
 	"errors"
-	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/knothhe/picup/internal/cloudflare"
-	"github.com/knothhe/picup/internal/config"
+	"github.com/knothhe/r2connect"
+	"github.com/knothhe/r2connect/keyring"
+	"github.com/knothhe/r2connect/loopback"
 )
 
+// Connection is a public snapshot, never a token or S3 key pair.
 type Connection struct {
 	ID             string    `json:"id"`
 	AccountID      string    `json:"account_id"`
@@ -27,713 +32,806 @@ type Connection struct {
 	Renewable      bool      `json:"renewable"`
 	PendingCleanup bool      `json:"pending_cleanup,omitempty"`
 }
-type retired struct {
-	TokenID  string `json:"token_id,omitempty"`
-	SecretID string `json:"secret_id,omitempty"`
-}
-type record struct {
-	Connection
-	ClientID          string    `json:"client_id"`
-	RedirectURL       string    `json:"redirect_url"`
-	SecretID          string    `json:"secret_id"`
-	TokenID           string    `json:"token_id"`
-	TokenDeleted      bool      `json:"token_deleted,omitempty"`
-	OAuthRevoked      bool      `json:"oauth_revoked,omitempty"`
-	KeepAuthorization bool      `json:"keep_authorization,omitempty"`
-	Retired           []retired `json:"retired,omitempty"`
-}
-type metadata struct {
-	Version     int               `json:"version"`
-	Connections map[string]record `json:"connections"`
-}
-type secrets struct {
-	OAuth     cloudflare.Tokens `json:"oauth"`
-	AccessKey string            `json:"access_key"`
-	SecretKey string            `json:"secret_key"`
-}
-type cloudAPI interface {
-	Authorize(context.Context, func(string) error) (cloudflare.Tokens, error)
-	Refresh(context.Context, cloudflare.Tokens) (cloudflare.Tokens, error)
-	Revoke(context.Context, string) error
-	Accounts(context.Context, string) ([]cloudflare.Account, error)
-	Buckets(context.Context, string, string, string) ([]cloudflare.Bucket, error)
-	CreateCredentials(context.Context, string, string, string, string, string) (cloudflare.Credentials, error)
-	DeleteCredentials(context.Context, string, string, string) error
-	PublicURL(context.Context, string, string, string, string) (string, error)
+type sdkSession struct {
+	id          string
+	client      *r2connect.Client
+	manager     *r2connect.Manager
+	fingerprint [32]byte
 }
 type authorization struct {
-	ctx        context.Context
-	cancel     context.CancelFunc
-	tokens     cloudflare.Tokens
-	accounts   []cloudflare.Account
-	committed  bool
-	ready      bool
-	done       chan struct{}
-	cleanupErr error
+	id                           string
+	ctx                          context.Context
+	cancel                       context.CancelFunc
+	done                         chan struct{}
+	cleanupOnce                  sync.Once
+	cleanupErr                   error
+	authorized, ready, committed bool
+	accounts                     []r2connect.Account
+	existing                     map[string]bool
+	preserve                     bool
 }
 type Manager struct {
-	path          string
-	mu            sync.Mutex
-	stateMu       sync.Mutex
-	auth          *authorization
-	store         secretCoordinator
-	client        func(cloudflare.PublicConfig) (cloudAPI, error)
-	now           func() time.Time
-	volatile      map[string]cloudflare.Tokens
-	pending       map[string]secrets
-	retryAfter    map[string]time.Time
-	writeMetadata func([]byte) error
+	path           string
+	mu             sync.Mutex
+	authMu         sync.Mutex
+	auth           *authorization
+	lastCleanupErr error
+	lastCleanupID  string
+	secrets        r2connect.SecretStore
+	sessions       map[string]*sdkSession
+	client         func(PublicConfig) (*r2connect.Client, error)
+	warnings       []r2connect.Warning
+	accessDenied   atomic.Bool
 }
 
 var managers sync.Map
 
 func New(path string) *Manager {
 	path = canonicalConfigPath(path)
-	created := &Manager{path: path, store: secretCoordinator{store: newSystemStore(namespace(path))}, client: func(p cloudflare.PublicConfig) (cloudAPI, error) { return cloudflare.New(p) }, now: time.Now, volatile: make(map[string]cloudflare.Tokens), pending: make(map[string]secrets), retryAfter: make(map[string]time.Time)}
+	created := &Manager{path: path, secrets: newSDKSecrets(path), sessions: make(map[string]*sdkSession), client: NewSDKClient}
+	created.observeSecretDenial()
 	actual, _ := managers.LoadOrStore(path, created)
 	return actual.(*Manager)
 }
-func (m *Manager) Configured() error {
+
+func (m *Manager) observeSecretDenial() {
+	if store, ok := m.secrets.(*keyring.Store); ok {
+		store.OnAccessDenied = func() { m.accessDenied.Store(true) }
+	}
+}
+
+func (m *Manager) accessError(err error) error {
+	if errors.Is(err, keyring.ErrAccessDenied) {
+		m.accessDenied.Store(true)
+	}
+	if m.accessDenied.Load() {
+		return keyring.ErrAccessDenied
+	}
+	return err
+}
+func (m *Manager) sessionDirectory() string { return m.path + ".r2connect" }
+func (m *Manager) sessionPath(id string) string {
+	return filepath.Join(m.sessionDirectory(), id+".json")
+}
+func sessionID(id string) bool {
+	return len(id) == 32 && strings.IndexFunc(id, func(r rune) bool { return !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') }) < 0
+}
+func (m *Manager) lock(ctx context.Context) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	for !m.mu.TryLock() {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		m.mu.Unlock()
+		return nil, err
+	}
+	unlock, err := lockMetadata(ctx, m.path)
+	if err != nil {
+		m.mu.Unlock()
+		return nil, err
+	}
+	return func() { unlock(); m.mu.Unlock() }, nil
+}
+func (m *Manager) ensureDirectory() error {
+	if err := os.MkdirAll(m.sessionDirectory(), 0700); err != nil {
+		return err
+	}
+	info, err := os.Lstat(m.sessionDirectory())
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0700 {
+		return r2connect.ErrInvalidState
+	}
+	return nil
+}
+func (m *Manager) sessionIDs() ([]string, error) {
+	info, err := os.Lstat(m.sessionDirectory())
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return nil, r2connect.ErrInvalidState
+	}
+	entries, err := os.ReadDir(m.sessionDirectory())
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, entry := range entries {
+		id := strings.TrimSuffix(entry.Name(), ".json")
+		if entry.Name() != id+".json" || !sessionID(id) {
+			continue
+		}
+		if !entry.Type().IsRegular() {
+			return nil, r2connect.ErrInvalidState
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+// A changed public state file invalidates the cache. Keeping an unchanged SDK
+// instance preserves its pending rotating refresh token after a failed write.
+func (m *Manager) session(id string) (*sdkSession, error) {
+	if !sessionID(id) {
+		return nil, r2connect.ErrInvalidState
+	}
+	path := m.sessionPath(id)
+	state, err := r2connect.LoadState(r2connect.FileStateStore{Path: path})
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	fingerprint := sha256.Sum256(data)
+	if cached := m.sessions[id]; cached != nil && cached.fingerprint == fingerprint {
+		return cached, nil
+	}
+	configuration := DefaultConfig()
+	if state.ClientID != "" {
+		configuration.ClientID = state.ClientID
+	}
+	client, err := m.client(configuration)
+	if err != nil {
+		return nil, err
+	}
+	client.Diagnostic = cloudflareDiagnosticsSink(m.path)
+	sdk := r2connect.NewManager(client, r2connect.ManagerOptions{Secrets: m.secrets, State: r2connect.FileStateStore{Path: path}, TokenNamePrefix: "Picup-", OnWarning: func(w r2connect.Warning) { m.warnings = append(m.warnings, w) }})
+	if err = sdk.LoadError(); err != nil {
+		return nil, err
+	}
+	s := &sdkSession{id: id, client: client, manager: sdk, fingerprint: fingerprint}
+	m.sessions[id] = s
+	return s, nil
+}
+func (m *Manager) remember(s *sdkSession) {
+	if data, err := os.ReadFile(m.sessionPath(s.id)); err == nil {
+		s.fingerprint = sha256.Sum256(data)
+	}
+}
+func (m *Manager) configured() error {
 	if !systemStoreAvailable() {
 		return ErrSecretUnavailable
 	}
-	_, e := m.client(cloudflare.DefaultConfig())
-	return e
+	if _, err := m.client(DefaultConfig()); err != nil {
+		return err
+	}
+	ids, err := m.sessionIDs()
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		s, loadErr := m.session(id)
+		if loadErr != nil {
+			return loadErr
+		}
+		if _, err := loadSessionRoutes(m.path, id); err != nil {
+			return err
+		}
+		if state := s.manager.State(); state.ClientID != "" && state.ClientID != DefaultConfig().ClientID && (state.Authorized || len(state.Connections) > 0 || len(state.RetiredTokens) > 0) {
+			return r2connect.ErrClientChanged
+		}
+		if err = s.manager.LoadError(); err != nil {
+			return err
+		}
+	}
+	_, err = ListLegacy(m.path)
+	return err
 }
-func (m *Manager) metadataPath() string { return m.path + ".r2-oauth.json" }
-func (m *Manager) load() (metadata, error) {
-	data := metadata{Version: 1, Connections: make(map[string]record)}
-	b, e := os.ReadFile(m.metadataPath())
-	if errors.Is(e, os.ErrNotExist) {
-		return data, nil
-	}
-	if e != nil {
-		return data, e
-	}
-	if len(b) > 1024*1024 {
-		return data, errors.New("Cloudflare connection metadata is too large")
-	}
-	if e = json.Unmarshal(b, &data); e != nil {
-		return data, errors.New("could not read Cloudflare connection metadata")
-	}
-	if data.Version != 1 || data.Connections == nil {
-		return data, errors.New("unsupported Cloudflare connection metadata")
-	}
-	return data, nil
-}
-func (m *Manager) save(d metadata) error {
-	b, e := json.MarshalIndent(d, "", "  ")
-	if e != nil {
-		return e
-	}
-	b = append(b, '\n')
-	if m.writeMetadata != nil {
-		return m.writeMetadata(b)
-	}
-	return config.AtomicWrite(m.metadataPath(), b, 0600)
-}
-func (m *Manager) Get(id string) (Connection, bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	d, e := m.load()
-	if e != nil {
-		return Connection{}, false
-	}
-	r, ok := d.Connections[id]
-	return r.Connection, ok
+func (m *Manager) Configured() error { m.mu.Lock(); defer m.mu.Unlock(); return m.configured() }
+func snapshot(c r2connect.Connection, renewable bool) (Connection, error) {
+	endpoint, err := r2connect.Endpoint(c.AccountID, c.Jurisdiction)
+	return Connection{ID: c.ID, AccountID: c.AccountID, AccountName: c.AccountID, Jurisdiction: c.Jurisdiction, Bucket: c.Bucket, Endpoint: endpoint, ExpiresAt: c.ExpiresAt, Renewable: renewable}, err
 }
 func (m *Manager) Connections() ([]Connection, error) {
+	unlock, err := m.lock(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	legacy, err := ListLegacy(m.path)
+	if err != nil {
+		return nil, err
+	}
+	all := make(map[string]Connection)
+	for _, c := range legacy {
+		all[c.ID] = c
+	}
+	ids, err := m.sessionIDs()
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range ids {
+		s, err := m.session(id)
+		if err != nil {
+			return nil, err
+		}
+		state := s.manager.State()
+		old, isLegacy, err := LegacyConnection(m.path, id)
+		if err != nil {
+			return nil, err
+		}
+		routes, err := loadSessionRoutes(m.path, id)
+		if err != nil {
+			return nil, err
+		}
+		for routeID, route := range routes {
+			present := false
+			for _, c := range state.Connections {
+				present = present || c.ID == routeID
+			}
+			if !present {
+				route.PendingCleanup = true
+				all[routeID] = route
+			}
+		}
+		for _, c := range state.Connections {
+			view, err := snapshot(c, state.Renewable)
+			if err != nil {
+				return nil, err
+			}
+			if route, ok := routes[c.ID]; ok && route.AccountID == c.AccountID && route.Bucket == c.Bucket && route.Jurisdiction == c.Jurisdiction {
+				view.AccountName, view.PublicURL = route.AccountName, route.PublicURL
+				view.PendingCleanup = route.PendingCleanup
+			}
+			if isLegacy && view.ID == id {
+				view.AccountName = old.AccountName
+				view.PublicURL = old.PublicURL
+				view.PendingCleanup = old.PendingCleanup
+			}
+			all[view.ID] = view
+		}
+		if len(state.Connections) == 0 && len(routes) == 0 {
+			if !isLegacy {
+				old = Connection{ID: id, AccountName: "Cloudflare"}
+			}
+			old.PendingCleanup = true
+			all[old.ID] = old
+		}
+	}
+	result := make([]Connection, 0, len(all))
+	for _, c := range all {
+		result = append(result, c)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
+	return result, nil
+}
+func (m *Manager) Get(id string) (Connection, bool) {
+	all, err := m.Connections()
+	if err != nil {
+		return Connection{}, false
+	}
+	for _, c := range all {
+		if c.ID == id {
+			return c, true
+		}
+	}
+	return Connection{}, false
+}
+func (m *Manager) TakeWarning() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	d, e := m.load()
-	if e != nil {
-		return nil, e
+	if len(m.warnings) == 0 {
+		return nil
 	}
-	all := make([]Connection, 0, len(d.Connections))
-	for _, r := range d.Connections {
-		all = append(all, r.Connection)
+	m.warnings = nil
+	return errors.New("Cloudflare cleanup is incomplete; retry disconnecting the pending connection")
+}
+func (m *Manager) currentAuth() (*authorization, error) {
+	m.authMu.Lock()
+	defer m.authMu.Unlock()
+	if m.auth == nil || !m.auth.ready || m.auth.committed {
+		return nil, r2connect.ErrNotAuthorized
 	}
-	return all, nil
+	if err := m.auth.ctx.Err(); err != nil {
+		return nil, err
+	}
+	return m.auth, nil
+}
+func (m *Manager) Begin(ctx context.Context, open func(string) error) ([]r2connect.Account, error) {
+	return m.BeginForConnection(ctx, "", open)
+}
+
+// Reauthorization reuses a saved SDK session, so the SDK retains the old token
+// identifiers and validates the new grant's account coverage. It reads no secret
+// from an unrelated or still-unmigrated legacy connection before authorization.
+func (m *Manager) BeginForConnection(ctx context.Context, connectionID string, open func(string) error) ([]r2connect.Account, error) {
+	unlock, err := m.lock(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err = m.configured(); err != nil {
+		unlock()
+		return nil, err
+	}
+	ids, err := m.sessionIDs()
+	if err != nil {
+		unlock()
+		return nil, err
+	}
+	m.authMu.Lock()
+	if m.auth != nil {
+		m.authMu.Unlock()
+		unlock()
+		return nil, errors.New("Cloudflare authorization is already in progress")
+	}
+	var s *sdkSession
+	if connectionID != "" {
+		s, _, err = m.find(connectionID)
+		if err != nil && !errors.Is(err, r2connect.ErrUnknownConnection) {
+			m.authMu.Unlock()
+			unlock()
+			return nil, err
+		}
+	}
+	id := ""
+	if s == nil && len(ids) >= 16 {
+		m.authMu.Unlock()
+		unlock()
+		return nil, r2connect.ErrTooManyConnections
+	}
+	if s != nil {
+		id = s.id
+	} else {
+		id, err = randomID()
+	}
+	if err != nil {
+		m.authMu.Unlock()
+		unlock()
+		return nil, err
+	}
+	if err = m.ensureDirectory(); err != nil {
+		m.authMu.Unlock()
+		unlock()
+		return nil, err
+	}
+	s, err = m.session(id)
+	if err != nil {
+		m.authMu.Unlock()
+		unlock()
+		return nil, err
+	}
+	routes, err := loadSessionRoutes(m.path, id)
+	if err != nil {
+		m.authMu.Unlock()
+		unlock()
+		return nil, err
+	}
+	_, legacyPending, err := LegacyConnection(m.path, id)
+	if err != nil {
+		m.authMu.Unlock()
+		unlock()
+		return nil, err
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	existing := make(map[string]bool)
+	state := s.manager.State()
+	for _, connection := range state.Connections {
+		existing[connection.ID] = true
+	}
+	a := &authorization{id: id, ctx: ctx, cancel: cancel, done: make(chan struct{}), existing: existing, preserve: len(existing) > 0 || len(state.RetiredTokens) > 0 || len(routes) > 0 || legacyPending}
+	m.auth = a
+	m.lastCleanupErr = nil
+	m.lastCleanupID = ""
+	m.authMu.Unlock()
+	m.accessDenied.Store(false)
+	if retry, ok := m.secrets.(interface{ RetryAccess() }); ok {
+		retry.RetryAccess()
+	}
+	unlock()
+	defer close(a.done)
+	go func() { <-a.ctx.Done(); <-a.done; _ = m.cleanupAuthorization(a) }()
+	_, err = loopback.Authorize(ctx, s.client, loopback.Options{RedirectURI: DefaultConfig().RedirectURL, Diagnostic: loopbackDiagnosticsSink(m.path), Accept: func(ctx context.Context, tokens r2connect.TokenSet) error {
+		unlock, err := m.lock(ctx)
+		if err != nil {
+			return err
+		}
+		defer unlock()
+		m.authMu.Lock()
+		current := m.auth == a && !a.committed
+		m.authMu.Unlock()
+		if !current {
+			return context.Canceled
+		}
+		err = m.accessError(s.manager.Authorize(ctx, tokens))
+		m.remember(s)
+		if err == nil {
+			m.authMu.Lock()
+			a.authorized = true
+			m.authMu.Unlock()
+		}
+		return err
+	}}, open)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	m.authMu.Lock()
+	a.ready = true
+	m.authMu.Unlock()
+	accounts, err := m.ResumeAccounts(ctx)
+	if err != nil && ctx.Err() != nil {
+		cancel()
+	}
+	return accounts, err
+}
+func (m *Manager) Cancel() error {
+	m.authMu.Lock()
+	a := m.auth
+	if a != nil {
+		a.cancel()
+	}
+	m.authMu.Unlock()
+	if a == nil {
+		m.authMu.Lock()
+		err := m.lastCleanupErr
+		m.authMu.Unlock()
+		return err
+	}
+	select {
+	case <-a.done:
+	case <-time.After(25 * time.Second):
+		return errors.New("Cloudflare authorization cleanup timed out")
+	}
+	return m.cleanupAuthorization(a)
+}
+func (m *Manager) cleanupAuthorization(a *authorization) error {
+	a.cleanupOnce.Do(func() {
+		m.authMu.Lock()
+		committed := a.committed
+		m.authMu.Unlock()
+		if committed {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		unlock, err := m.lock(ctx)
+		if err == nil {
+			defer unlock()
+			m.authMu.Lock()
+			committed, authorized := a.committed, a.authorized
+			m.authMu.Unlock()
+			if !committed && authorized {
+				var s *sdkSession
+				if m.accessDenied.Load() {
+					err = keyring.ErrAccessDenied
+				} else {
+					s, err = m.session(a.id)
+				}
+				if err == nil {
+					if a.preserve {
+						for _, candidate := range s.manager.State().Connections {
+							if !a.existing[candidate.ID] {
+								if err = s.manager.Discard(ctx, candidate.ID); err != nil {
+									break
+								}
+								if err = removeSessionRoute(m.path, a.id, candidate.ID); err != nil {
+									break
+								}
+							}
+						}
+					} else {
+						err = m.accessError(s.manager.Disconnect(ctx))
+					}
+					m.remember(s)
+				}
+				if err == nil && !a.preserve {
+					err = removeSessionRoutes(m.path, a.id)
+				}
+				if err == nil && !a.preserve {
+					err = os.Remove(m.sessionPath(a.id))
+					if errors.Is(err, os.ErrNotExist) {
+						err = nil
+					}
+					delete(m.sessions, a.id)
+				}
+			}
+			if !committed && !authorized && !a.preserve {
+				delete(m.sessions, a.id)
+			}
+		}
+		a.cleanupErr = err
+		m.authMu.Lock()
+		if err != nil {
+			m.lastCleanupErr = err
+			m.lastCleanupID = a.id
+		}
+		if m.auth == a {
+			m.auth = nil
+		}
+		m.authMu.Unlock()
+	})
+	return a.cleanupErr
+}
+func authorizationContext(parent context.Context, a *authorization) (context.Context, func()) {
+	ctx, cancel := context.WithCancel(parent)
+	stop := context.AfterFunc(a.ctx, cancel)
+	return ctx, func() { stop(); cancel() }
+}
+func (m *Manager) Buckets(ctx context.Context, account, jurisdiction string) ([]r2connect.Bucket, error) {
+	unlock, err := m.lock(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	if m.accessDenied.Load() {
+		return nil, keyring.ErrAccessDenied
+	}
+	a, err := m.currentAuth()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := authorizationContext(ctx, a)
+	defer cancel()
+	s, err := m.session(a.id)
+	if err != nil {
+		return nil, err
+	}
+	buckets, err := s.manager.Buckets(ctx, account, jurisdiction)
+	m.remember(s)
+	return buckets, m.accessError(err)
+}
+func (m *Manager) Connect(ctx context.Context, account, jurisdiction, bucket string, commit func(Connection) error) error {
+	if commit == nil {
+		return errors.New("configuration commit is required")
+	}
+	unlock, err := m.lock(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if m.accessDenied.Load() {
+		return keyring.ErrAccessDenied
+	}
+	a, err := m.currentAuth()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := authorizationContext(ctx, a)
+	defer cancel()
+	s, err := m.session(a.id)
+	if err != nil {
+		return err
+	}
+	// Discard an earlier unsaved candidate before retrying a settings commit.
+	for _, old := range s.manager.State().Connections {
+		if a.existing[old.ID] {
+			continue
+		}
+		if err = m.accessError(s.manager.Discard(ctx, old.ID)); err != nil {
+			m.remember(s)
+			return err
+		}
+		m.remember(s)
+		if err = removeSessionRoute(m.path, s.id, old.ID); err != nil {
+			return err
+		}
+	}
+	candidate, err := s.manager.Connect(ctx, account, bucket, jurisdiction)
+	err = m.accessError(err)
+	m.remember(s)
+	if err != nil {
+		return err
+	}
+	view, err := snapshot(candidate, s.manager.Status().Renewable)
+	for _, choice := range a.accounts {
+		if choice.ID == account {
+			view.AccountName = choice.Name
+		}
+	}
+	if err == nil {
+		err = saveSessionRoute(m.path, s.id, view)
+	}
+	if err == nil {
+		err = ctx.Err()
+	}
+	if err == nil {
+		err = commit(view)
+	}
+	if err != nil {
+		cleanup, stop := context.WithTimeout(context.Background(), 15*time.Second)
+		defer stop()
+		cleanupErr := s.manager.Discard(cleanup, candidate.ID)
+		if cleanupErr == nil {
+			cleanupErr = removeSessionRoute(m.path, s.id, candidate.ID)
+		}
+		m.remember(s)
+		return errors.Join(err, cleanupErr)
+	}
+	// A successful profile commit wins over cancellation during its write.
+	m.authMu.Lock()
+	a.committed = true
+	if m.auth == a {
+		m.auth = nil
+	}
+	a.cancel()
+	m.authMu.Unlock()
+	return nil
+}
+func (m *Manager) find(id string) (*sdkSession, r2connect.Connection, error) {
+	ids, err := m.sessionIDs()
+	if err != nil {
+		return nil, r2connect.Connection{}, err
+	}
+	for _, sid := range ids {
+		s, err := m.session(sid)
+		if err != nil {
+			return nil, r2connect.Connection{}, err
+		}
+		for _, c := range s.manager.State().Connections {
+			if c.ID == id {
+				return s, c, nil
+			}
+		}
+		routes, err := loadSessionRoutes(m.path, sid)
+		if err != nil {
+			return nil, r2connect.Connection{}, err
+		}
+		if _, ok := routes[id]; ok {
+			return s, r2connect.Connection{}, nil
+		}
+		if sid == id {
+			return s, r2connect.Connection{}, nil
+		}
+	}
+	return nil, r2connect.Connection{}, r2connect.ErrUnknownConnection
 }
 func (m *Manager) CheckBinding(id, endpoint, bucket string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	d, e := m.load()
-	if e != nil {
-		return e
-	}
-	r, ok := d.Connections[id]
+	c, ok := m.Get(id)
 	if !ok {
-		return errors.New("Cloudflare connection was not found; reconnect in storage settings")
+		return r2connect.ErrUnknownConnection
 	}
-	return checkBinding(r, endpoint, bucket)
-}
-func checkBinding(r record, endpoint, bucket string) error {
-	expected, e := cloudflare.Endpoint(r.AccountID, r.Jurisdiction)
-	if e != nil {
-		return e
+	if c.PendingCleanup {
+		return r2connect.ErrCleanupPending
 	}
-	if r.PendingCleanup || r.TokenDeleted || r.OAuthRevoked {
-		return errors.New("Cloudflare connection is being disconnected; reconnect in storage settings")
-	}
-	if endpoint != r.Endpoint || r.Endpoint != expected || bucket != r.Bucket {
+	if c.Endpoint != endpoint || c.Bucket != bucket {
 		return errors.New("Cloudflare connection does not match the selected bucket or endpoint; reconnect in storage settings")
 	}
 	return nil
 }
-func (m *Manager) Begin(ctx context.Context, open func(string) error) ([]cloudflare.Account, error) {
-	api, e := m.client(cloudflare.DefaultConfig())
-	if e != nil {
-		return nil, e
-	}
-	m.stateMu.Lock()
-	if m.auth != nil {
-		m.stateMu.Unlock()
-		return nil, errors.New("Cloudflare authorization is already in progress")
-	}
-	ctx, cancel := context.WithCancel(ctx)
-	a := &authorization{ctx: ctx, cancel: cancel, done: make(chan struct{})}
-	defer close(a.done)
-	m.auth = a
-	m.stateMu.Unlock()
-	// Only a user initiated new connection resets a previous Keychain denial.
-	m.mu.Lock()
-	m.store.denied = false
-	m.mu.Unlock()
-	tokens, e := api.Authorize(ctx, open)
-	var accounts []cloudflare.Account
-	if e == nil {
-		accounts, e = api.Accounts(ctx, tokens.AccessToken)
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.stateMu.Lock()
-	current := m.auth == a && ctx.Err() == nil
-	if e != nil || !current {
-		if m.auth == a {
-			m.auth = nil
-		}
-		m.stateMu.Unlock()
-		cancel()
-		if tokens.AccessToken != "" {
-			a.cleanupErr = revokeBounded(api, tokens)
-		}
-		if e == nil {
-			e = context.Canceled
-		}
-		return nil, errors.Join(e, a.cleanupErr)
-	}
-	a.tokens = tokens
-	a.accounts = accounts
-	a.ready = true
-	m.stateMu.Unlock()
-	return append([]cloudflare.Account(nil), accounts...), nil
-}
-func revokeBounded(api cloudAPI, t cloudflare.Tokens) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	token := t.RefreshToken
-	if token == "" {
-		token = t.AccessToken
-	}
-	if token == "" {
-		return nil
-	}
-	return api.Revoke(ctx, token)
-}
-func (m *Manager) currentAuth() (*authorization, error) {
-	m.stateMu.Lock()
-	defer m.stateMu.Unlock()
-	if m.auth == nil || !m.auth.ready || m.auth.ctx.Err() != nil {
-		return nil, errors.New("authorize Cloudflare before selecting a bucket")
-	}
-	return m.auth, nil
-}
-func (m *Manager) Cancel() error {
-	m.stateMu.Lock()
-	a := m.auth
-	ready := a != nil && a.ready
-	m.auth = nil
-	if a != nil {
-		a.cancel()
-	}
-	m.stateMu.Unlock()
-	if a == nil {
-		return nil
-	}
-	if !ready {
-		select {
-		case <-a.done:
-			return a.cleanupErr
-		case <-time.After(20 * time.Second):
-			return errors.New("Cloudflare authorization cleanup timed out")
-		}
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if a.committed || a.tokens.AccessToken == "" {
-		return nil
-	}
-	api, e := m.client(cloudflare.DefaultConfig())
-	if e != nil {
-		return e
-	}
-	return revokeBounded(api, a.tokens)
-}
-func (m *Manager) Buckets(ctx context.Context, account, jurisdiction string) ([]cloudflare.Bucket, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	a, e := m.currentAuth()
-	if e != nil {
-		return nil, e
-	}
-	if !hasAccount(a.accounts, account) {
-		return nil, errors.New("select an authorized Cloudflare account")
-	}
-	api, e := m.client(cloudflare.DefaultConfig())
-	if e != nil {
-		return nil, e
-	}
-	return api.Buckets(ctx, a.tokens.AccessToken, account, jurisdiction)
-}
-func hasAccount(accounts []cloudflare.Account, id string) bool {
-	for _, a := range accounts {
-		if a.ID == id {
-			return true
-		}
-	}
-	return false
-}
-func (m *Manager) Connect(ctx context.Context, account, jurisdiction, bucket string, commit func(Connection) error) error {
-	if commit == nil {
-		return errors.New("connection commit is required")
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	unlock, e := lockMetadata(ctx, m.path)
-	if e != nil {
-		return e
-	}
-	defer unlock()
-	a, e := m.currentAuth()
-	if e != nil {
-		return e
-	}
-	if e = a.ctx.Err(); e != nil {
-		return e
-	}
-	if !hasAccount(a.accounts, account) {
-		return errors.New("select an authorized Cloudflare account")
-	}
-	if m.store.denied {
-		return ErrSecretDenied
-	}
-	api, e := m.client(cloudflare.DefaultConfig())
-	if e != nil {
-		return e
-	}
-	accounts, e := api.Accounts(ctx, a.tokens.AccessToken)
-	if e != nil {
-		return e
-	}
-	if !hasAccount(accounts, account) {
-		return errors.New("the selected Cloudflare account is no longer accessible")
-	}
-	buckets, e := api.Buckets(ctx, a.tokens.AccessToken, account, jurisdiction)
-	if e != nil {
-		return e
-	}
-	found := false
-	for _, b := range buckets {
-		if b.Name == bucket {
-			found = true
-		}
-	}
-	if !found {
-		return errors.New("the selected R2 bucket is no longer accessible")
-	}
-	endpoint, e := cloudflare.Endpoint(account, jurisdiction)
-	if e != nil {
-		return e
-	}
-	id, e := randomID()
-	if e != nil {
-		return e
-	}
-	d, e := m.load()
-	if e != nil {
-		return e
-	}
-	// Verify system storage before provisioning a remote token, without reading an
-	// old connection or writing any token to a plain file.
-	probe, e := m.store.writeBlob(struct {
-		Probe bool `json:"probe"`
-	}{true})
-	if e != nil {
-		return e
-	}
-	if e = m.store.deleteBlob(probe); e != nil {
-		return e
-	}
-	publicURL, _ := api.PublicURL(ctx, a.tokens.AccessToken, account, jurisdiction, bucket)
-	creds, e := api.CreateCredentials(ctx, a.tokens.AccessToken, account, jurisdiction, bucket, "Picup-"+id)
-	if e != nil && creds.TokenID == "" {
-		return e
-	}
-	createErr := e
-	conn := Connection{ID: id, AccountID: account, Jurisdiction: jurisdiction, Bucket: bucket, Endpoint: endpoint, PublicURL: publicURL, ExpiresAt: creds.ExpiresAt, Renewable: a.tokens.RefreshToken != ""}
-	for _, acc := range accounts {
-		if acc.ID == account {
-			conn.AccountName = acc.Name
-		}
-	}
-	cfg := cloudflare.DefaultConfig()
-	r := record{Connection: conn, ClientID: cfg.ClientID, RedirectURL: cfg.RedirectURL, TokenID: creds.TokenID}
-	sec := secrets{OAuth: a.tokens, AccessKey: creds.AccessKeyID, SecretKey: creds.SecretAccessKey}
-	if createErr != nil {
-		return m.compensate(api, d, r, sec, createErr)
-	}
-	r.SecretID, e = m.store.writeBlob(sec)
-	if e != nil {
-		return m.compensate(api, d, r, sec, e)
-	}
-	d.Connections[id] = r
-	if e = m.save(d); e != nil {
-		return m.compensate(api, d, r, sec, e)
-	}
-	if e = ctx.Err(); e == nil {
-		e = a.ctx.Err()
-	}
-	if e == nil {
-		e = commit(conn)
-	}
-	if e != nil {
-		return m.compensate(api, d, r, sec, e)
-	}
-	// Success is the commit boundary. Cancellation after this point must never
-	// revoke the saved token, even if the view has already closed.
-	a.committed = true
-	a.cancel()
-	m.stateMu.Lock()
-	if m.auth == a {
-		m.auth = nil
-	}
-	m.stateMu.Unlock()
-	return nil
-}
-func (m *Manager) compensate(api cloudAPI, d metadata, r record, s secrets, cause error) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	cleanupErr := api.DeleteCredentials(ctx, s.OAuth.AccessToken, r.AccountID, r.TokenID)
-	r.PendingCleanup = true
-	if r.SecretID == "" {
-		m.pending[r.ID] = s
-	}
-	if cleanupErr == nil {
-		r.TokenDeleted = true
-		r.KeepAuthorization = true
-		// Publish local-cleanup progress before removing secret material. If the
-		// final metadata write fails, retry does not need already-deleted secrets.
-		d.Connections[r.ID] = r
-		if e := m.save(d); e != nil {
-			return errors.Join(cause, e)
-		}
-		if r.SecretID != "" {
-			cleanupErr = m.store.deleteBlob(r.SecretID)
-		}
-		if cleanupErr == nil {
-			delete(d.Connections, r.ID)
-			delete(m.pending, r.ID)
-			cleanupErr = m.save(d)
-		}
-	} else {
-		m.stateMu.Lock()
-		if a := m.auth; a != nil {
-			a.committed = true
-			a.cancel()
-			m.auth = nil
-		}
-		m.stateMu.Unlock()
-		if r.SecretID == "" && !m.store.denied {
-			r.SecretID, _ = m.store.writeBlob(s)
-		}
-		d.Connections[r.ID] = r
-		if e := m.save(d); e != nil {
-			cleanupErr = errors.Join(cleanupErr, e)
-		}
-	}
-	if cleanupErr != nil {
-		return errors.Join(cause, errors.New("temporary Cloudflare token cleanup failed; retry disconnecting this connection"))
-	}
-	return cause
-}
-func (m *Manager) readSecrets(r record) (secrets, error) {
-	if cached, ok := m.pending[r.ID]; ok {
-		return cached, nil
-	}
-	var s secrets
-	e := m.store.readBlob(r.SecretID, &s)
-	if e != nil {
-		return s, e
-	}
-	if t, ok := m.volatile[r.ID]; ok {
-		s.OAuth = t
-	}
-	return s, nil
-}
-func (m *Manager) apiFor(r record) (cloudAPI, error) {
-	return m.client(cloudflare.PublicConfig{ClientID: r.ClientID, RedirectURL: r.RedirectURL})
-}
-func (m *Manager) persistSecrets(d *metadata, r *record, s secrets) error {
-	before := *r
-	before.Retired = append([]retired(nil), r.Retired...)
-	key, e := m.store.writeBlob(s)
-	if e != nil {
-		return e
-	}
-	old := r.SecretID
-	r.SecretID = key
-	r.Retired = append(r.Retired, retired{SecretID: old})
-	d.Connections[r.ID] = *r
-	if e = m.save(*d); e != nil {
-		*r = before
-		d.Connections[r.ID] = before
-		_ = m.store.deleteBlob(key)
-		return e
-	}
-	delete(m.volatile, r.ID)
-	return nil
-}
-func (m *Manager) access(ctx context.Context, d *metadata, r *record, s *secrets, api cloudAPI) error {
-	if _, dirty := m.volatile[r.ID]; dirty {
-		if e := m.persistSecrets(d, r, *s); e != nil {
-			return e
-		}
-	}
-	if s.OAuth.ExpiresAt.After(m.now().Add(time.Minute)) {
-		return nil
-	}
-	if s.OAuth.RefreshToken == "" {
-		return errors.New("Cloudflare authorization expired; reconnect to renew access")
-	}
-	t, e := api.Refresh(ctx, s.OAuth)
-	if e != nil {
-		return e
-	}
-	s.OAuth = t
-	m.volatile[r.ID] = t
-	return m.persistSecrets(d, r, *s)
-}
 func (m *Manager) Resolve(ctx context.Context, id, endpoint, bucket string) (string, string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	unlock, e := lockMetadata(ctx, m.path)
-	if e != nil {
-		return "", "", e
+	unlock, err := m.lock(ctx)
+	if err != nil {
+		return "", "", err
 	}
 	defer unlock()
-	d, e := m.load()
-	if e != nil {
+	if m.accessDenied.Load() {
+		return "", "", keyring.ErrAccessDenied
+	}
+	// Validate the old public binding before migration can access Keychain.
+	if old, ok, e := LegacyConnection(m.path, id); e != nil {
 		return "", "", e
+	} else if ok {
+		if old.PendingCleanup {
+			return "", "", r2connect.ErrCleanupPending
+		}
+		expected, bindingErr := r2connect.Endpoint(old.AccountID, old.Jurisdiction)
+		if bindingErr != nil || endpoint != old.Endpoint || endpoint != expected || bucket != old.Bucket {
+			return "", "", errors.New("Cloudflare connection does not match the selected bucket or endpoint; reconnect in storage settings")
+		}
 	}
-	r, ok := d.Connections[id]
-	if !ok {
-		return "", "", errors.New("Cloudflare connection was not found; reconnect in storage settings")
+	if err = MigrateLegacy(ctx, m.path, id, m.secrets); err != nil {
+		return "", "", m.accessError(err)
 	}
-	if e = checkBinding(r, endpoint, bucket); e != nil {
+	s, c, err := m.find(id)
+	if err != nil {
+		return "", "", err
+	}
+	if c.ID == "" {
+		return "", "", r2connect.ErrCleanupPending
+	}
+	routes, err := loadSessionRoutes(m.path, s.id)
+	if err != nil {
+		return "", "", err
+	}
+	if routes[id].PendingCleanup {
+		return "", "", r2connect.ErrCleanupPending
+	}
+	expected, err := r2connect.Endpoint(c.AccountID, c.Jurisdiction)
+	if err != nil {
+		return "", "", err
+	}
+	if expected != endpoint || c.Bucket != bucket {
+		return "", "", errors.New("Cloudflare connection does not match the selected bucket or endpoint; reconnect in storage settings")
+	}
+	if old, ok, e := LegacyConnection(m.path, s.id); e != nil {
 		return "", "", e
+	} else if ok && old.PendingCleanup && c.ID == s.id {
+		return "", "", r2connect.ErrCleanupPending
 	}
-	s, e := m.readSecrets(r)
-	if e != nil {
-		return "", "", e
+	credentials, err := s.manager.Credentials(ctx, c)
+	err = m.accessError(err)
+	m.remember(s)
+	if err != nil {
+		return "", "", err
 	}
-	if r.ExpiresAt.After(m.now().Add(7 * 24 * time.Hour)) {
-		return s.AccessKey, s.SecretKey, nil
-	}
-	if until := m.retryAfter[id]; until.After(m.now()) && r.ExpiresAt.After(m.now().Add(5*time.Minute)) {
-		return s.AccessKey, s.SecretKey, nil
-	}
-	api, e := m.apiFor(r)
-	if e == nil {
-		e = m.access(ctx, &d, &r, &s, api)
-	}
-	if e == nil {
-		var creds cloudflare.Credentials
-		creds, e = api.CreateCredentials(ctx, s.OAuth.AccessToken, r.AccountID, r.Jurisdiction, r.Bucket, "Picup-"+r.ID)
-		if e != nil && creds.TokenID != "" {
-			m.cleanupCreated(api, &d, &r, s, creds.TokenID)
-		}
-		if e == nil {
-			if cancelErr := ctx.Err(); cancelErr != nil {
-				cleanupCtx, stop := context.WithTimeout(context.Background(), 15*time.Second)
-				cleanupErr := api.DeleteCredentials(cleanupCtx, s.OAuth.AccessToken, r.AccountID, creds.TokenID)
-				stop()
-				if cleanupErr != nil {
-					r.Retired = append(r.Retired, retired{TokenID: creds.TokenID})
-					d.Connections[id] = r
-					_ = m.save(d)
-				}
-				return "", "", cancelErr
-			}
-			next := s
-			next.AccessKey, next.SecretKey = creds.AccessKeyID, creds.SecretAccessKey
-			key, storeErr := m.store.writeBlob(next)
-			if storeErr == nil {
-				before := r
-				before.Retired = append([]retired(nil), r.Retired...)
-				oldToken, oldSecret := r.TokenID, r.SecretID
-				r.TokenID, r.SecretID, r.ExpiresAt = creds.TokenID, key, creds.ExpiresAt
-				r.Retired = append(r.Retired, retired{TokenID: oldToken, SecretID: oldSecret})
-				d.Connections[id] = r
-				storeErr = m.save(d)
-				if storeErr == nil {
-					s = next
-					delete(m.retryAfter, id)
-					_ = m.cleanupRetired(ctx, &d, &r, s, api)
-				} else {
-					r = before
-					d.Connections[id] = before
-					_ = m.store.deleteBlob(key)
-				}
-			}
-			if storeErr != nil {
-				cleanupCtx, stop := context.WithTimeout(context.Background(), 15*time.Second)
-				cleanupErr := api.DeleteCredentials(cleanupCtx, s.OAuth.AccessToken, r.AccountID, creds.TokenID)
-				stop()
-				if cleanupErr != nil {
-					r.Retired = append(r.Retired, retired{TokenID: creds.TokenID})
-					d.Connections[id] = r
-					_ = m.save(d)
-				}
-				e = storeErr
-			}
-		}
-	}
-	if e != nil {
-		m.retryAfter[id] = m.now().Add(time.Hour)
-		if !r.ExpiresAt.After(m.now().Add(5 * time.Minute)) {
-			return "", "", fmt.Errorf("renew Cloudflare credentials: %w", e)
-		}
-	}
-	return s.AccessKey, s.SecretKey, nil
-}
-func (m *Manager) cleanupRetired(ctx context.Context, d *metadata, r *record, s secrets, api cloudAPI) error {
-	for len(r.Retired) > 0 {
-		old := r.Retired[0]
-		if old.TokenID != "" {
-			if e := api.DeleteCredentials(ctx, s.OAuth.AccessToken, r.AccountID, old.TokenID); e != nil {
-				return e
-			}
-		}
-		if old.SecretID != "" {
-			if e := m.store.deleteBlob(old.SecretID); e != nil {
-				return e
-			}
-		}
-		r.Retired = r.Retired[1:]
-		d.Connections[r.ID] = *r
-		if e := m.save(*d); e != nil {
-			return e
-		}
-	}
-	return nil
+	return credentials.AccessKeyID, credentials.SecretAccessKey, nil
 }
 func (m *Manager) Disconnect(ctx context.Context, id string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	unlock, e := lockMetadata(ctx, m.path)
-	if e != nil {
-		return e
+	unlock, err := m.lock(ctx)
+	if err != nil {
+		return err
 	}
 	defer unlock()
-	d, e := m.load()
-	if e != nil {
-		return e
+	m.accessDenied.Store(false)
+	if retry, ok := m.secrets.(interface{ RetryAccess() }); ok {
+		retry.RetryAccess()
 	}
-	r, ok := d.Connections[id]
-	if !ok {
-		return nil
+	RetryLegacyAccess(m.path)
+	if err = MigrateLegacy(ctx, m.path, id, m.secrets); errors.Is(err, ErrLegacyLocalOnly) {
+		return m.accessError(FinishLegacy(ctx, m.path, id))
+	} else if err != nil {
+		return m.accessError(err)
 	}
-	if r.OAuthRevoked || (r.KeepAuthorization && r.TokenDeleted) {
-		if r.SecretID != "" {
-			if e = m.store.deleteBlob(r.SecretID); e != nil {
-				return e
+	s, _, err := m.find(id)
+	if errors.Is(err, r2connect.ErrUnknownConnection) {
+		return m.accessError(FinishLegacy(ctx, m.path, id))
+	}
+	if err != nil {
+		return err
+	}
+	state := s.manager.State()
+	selectedPresent := false
+	for _, c := range state.Connections {
+		selectedPresent = selectedPresent || c.ID == id
+		if c.ID == id {
+			view, err := snapshot(c, state.Renewable)
+			if err != nil {
+				return err
+			}
+			routes, err := loadSessionRoutes(m.path, s.id)
+			if err != nil {
+				return err
+			}
+			if saved, ok := routes[id]; ok {
+				view = saved
+			}
+			view.PendingCleanup = true
+			if err := saveSessionRoute(m.path, s.id, view); err != nil {
+				return err
 			}
 		}
-		delete(d.Connections, id)
-		delete(m.volatile, id)
-		delete(m.pending, id)
-		delete(m.retryAfter, id)
-		return m.save(d)
 	}
-	s, e := m.readSecrets(r)
-	if e != nil {
-		if errors.Is(e, ErrSecretDenied) || !r.PendingCleanup {
-			return e
+	if len(state.Connections) > 1 || len(state.Connections) > 0 && !selectedPresent {
+		err := m.accessError(s.manager.Discard(ctx, id))
+		m.remember(s)
+		if err == nil {
+			err = removeSessionRoute(m.path, s.id, id)
 		}
-		// A previous OS-store denial may have prevented saving the cleanup
-		// authorization. A new explicit login can recover the recorded token.
-		a, authErr := m.currentAuth()
-		cfg := cloudflare.DefaultConfig()
-		if authErr != nil || cfg.ClientID != r.ClientID || !hasAccount(a.accounts, r.AccountID) || !a.tokens.ExpiresAt.After(m.now().Add(time.Minute)) {
-			return errors.New("authorize Cloudflare again to finish cleaning up this connection")
-		}
-		s.OAuth = a.tokens
-		r.KeepAuthorization = true
+		return err
 	}
-	api, e := m.apiFor(r)
-	if e != nil {
-		return e
+	if err = m.accessError(s.manager.Disconnect(ctx)); err != nil {
+		m.remember(s)
+		return err
 	}
-	if !r.TokenDeleted {
-		if e = m.access(ctx, &d, &r, &s, api); e != nil {
-			return e
-		}
-		if e = m.cleanupRetired(ctx, &d, &r, s, api); e != nil {
-			return e
-		}
-		if e = api.DeleteCredentials(ctx, s.OAuth.AccessToken, r.AccountID, r.TokenID); e != nil {
-			return e
-		}
-		r.TokenDeleted = true
-		r.PendingCleanup = true
-		d.Connections[id] = r
-		if e = m.save(d); e != nil {
-			return e
-		}
+	m.remember(s)
+	if err = m.accessError(FinishLegacy(ctx, m.path, s.id)); err != nil {
+		return err
 	}
-	if !r.OAuthRevoked && !r.KeepAuthorization {
-		token := s.OAuth.RefreshToken
-		if token == "" {
-			token = s.OAuth.AccessToken
-		}
-		if e = api.Revoke(ctx, token); e != nil {
-			return e
-		}
-		r.OAuthRevoked = true
-		d.Connections[id] = r
-		if e = m.save(d); e != nil {
-			return e
-		}
+	if err = removeSessionRoutes(m.path, s.id); err != nil {
+		return err
 	}
-	if r.SecretID != "" {
-		if e = m.store.deleteBlob(r.SecretID); e != nil {
-			return e
-		}
+	if err = os.Remove(m.sessionPath(s.id)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
-	delete(d.Connections, id)
-	delete(m.volatile, id)
-	delete(m.pending, id)
-	delete(m.retryAfter, id)
-	return m.save(d)
-}
-
-func (m *Manager) cleanupCreated(api cloudAPI, d *metadata, r *record, s secrets, tokenID string) {
-	ctx, stop := context.WithTimeout(context.Background(), 15*time.Second)
-	defer stop()
-	if e := api.DeleteCredentials(ctx, s.OAuth.AccessToken, r.AccountID, tokenID); e != nil {
-		r.Retired = append(r.Retired, retired{TokenID: tokenID})
-		d.Connections[r.ID] = *r
-		_ = m.save(*d)
+	delete(m.sessions, s.id)
+	m.authMu.Lock()
+	if m.lastCleanupID == s.id {
+		m.lastCleanupErr = nil
+		m.lastCleanupID = ""
 	}
+	m.authMu.Unlock()
+	return nil
 }

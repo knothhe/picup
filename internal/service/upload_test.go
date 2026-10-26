@@ -28,6 +28,10 @@ func TestUploadUsesFullPathTemplate(t *testing.T) {
 			}
 			requests := make(chan request, 1)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodHead {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
 				body, _ := io.ReadAll(r.Body)
 				requests <- request{r.URL.Path, r.Header.Get("Content-Type"), body}
 				w.WriteHeader(http.StatusOK)
@@ -81,6 +85,10 @@ func TestUploadUsesFullPathTemplate(t *testing.T) {
 func TestDefaultUploadPathRemainsSHA256(t *testing.T) {
 	requests := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		body, _ := io.ReadAll(r.Body)
 		want := fmt.Sprintf("/photos/images/%x.png", sha256.Sum256(body))
 		if r.URL.Path != want {

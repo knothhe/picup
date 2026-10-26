@@ -68,6 +68,7 @@ func (a *application) galleryFilterPopover(c *ui.Context, anchor ui.Element) {
 }
 func (a *application) galleryPrefixPicker(c *ui.Context) {
 	g := &a.gallery
+	before := g.prefix
 	ui.Row(c).FillWidth().Gap(8).Children(func() {
 		ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 			s := components.Select(c, &g.prefix)
@@ -113,6 +114,9 @@ func (a *application) galleryPrefixPicker(c *ui.Context) {
 			g.prefix = ""
 		}
 	})
+	if before != g.prefix {
+		a.setGalleryPrefix(g.prefix)
+	}
 }
 func (a *application) gallerySortPopover(c *ui.Context, anchor ui.Element) {
 	g := &a.gallery

@@ -56,3 +56,17 @@ func TestCurrentDoesNotExposeMutableSharedDependencySlice(t *testing.T) {
 		t.Fatal("callers can mutate cached metadata")
 	}
 }
+
+func TestR2SDKAboutDependencyUsesResolvedBuildVersionAndLicenseMetadataLink(t *testing.T) {
+	info := fromBuildInfo(&debug.BuildInfo{Deps: []*debug.Module{{Path: "github.com/knothhe/r2connect", Version: "v0.1.0"}}})
+	for _, dependency := range info.Dependencies {
+		if dependency.Module != "github.com/knothhe/r2connect" {
+			continue
+		}
+		if dependency.Name != "r2connect" || dependency.Version != "v0.1.0" || dependency.Purpose != "R2 授权与连接管理" || dependency.URL != "https://github.com/knothhe/r2connect" || dependency.LicenseURL != "https://pkg.go.dev/github.com/knothhe/r2connect?tab=licenses" {
+			t.Fatal("SDK attribution was guessed or lost", dependency)
+		}
+		return
+	}
+	t.Fatal("R2 SDK missing from About dependencies")
+}

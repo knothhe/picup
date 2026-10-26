@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
@@ -23,6 +24,7 @@ import (
 
 const (
 	galleryPageSize       = 20
+	galleryCloudPageSize  = 200
 	galleryThumbnailLimit = 3*galleryPageSize + 1
 )
 
@@ -37,6 +39,11 @@ type galleryState struct {
 	client                                  *storage.Client
 	cache                                   *galleryDiskCache
 	loaded, busy, dirty                     bool
+	paged, listComplete, failedMore         bool
+	listPrefix, nextToken, prefixInput      string
+	prefixInputInitialized                  bool
+	listSerial                              uint64
+	seenTokens                              map[string]bool
 	operation                               bool
 	err                                     string
 	generation                              int
@@ -72,7 +79,7 @@ type galleryState struct {
 }
 
 func sameGalleryStorage(a, b config.Config) bool {
-	return a.Provider == b.Provider && a.R2Connection == b.R2Connection && a.Endpoint == b.Endpoint && a.Region == b.Region && a.Bucket == b.Bucket && a.AccessKey == b.AccessKey && a.SecretKey == b.SecretKey && a.SessionToken == b.SessionToken && a.PublicURL == b.PublicURL && a.PathStyle == b.PathStyle
+	return a.Provider == b.Provider && a.R2Connection == b.R2Connection && a.CredentialRef == b.CredentialRef && a.Endpoint == b.Endpoint && a.Region == b.Region && a.Bucket == b.Bucket && a.AccessKey == b.AccessKey && a.SecretKey == b.SecretKey && a.SessionToken == b.SessionToken && a.PublicURL == b.PublicURL && a.PathStyle == b.PathStyle
 }
 func (g *galleryState) stop() {
 	if g.fullCancel != nil {
@@ -109,6 +116,7 @@ func (a *application) galleryClient() (*storage.Client, error) {
 	if g.cache == nil {
 		g.cache = newGalleryDiskCache(c)
 	}
+	g.cache = g.cache.scoped(g.prefix)
 	return client, nil
 }
 func (a *application) enterGallery() {
@@ -122,6 +130,76 @@ func (a *application) enterGallery() {
 	}
 }
 func (a *application) loadGallery() {
+	a.loadGalleryPage(false)
+}
+
+func (a *application) loadMoreGallery() {
+	if !a.gallery.paged || a.gallery.listComplete || a.gallery.nextToken == "" {
+		return
+	}
+	a.loadGalleryPage(true)
+}
+
+func galleryPrefixMatches(key, prefix string) bool {
+	if prefix == "/" {
+		return !strings.Contains(key, "/")
+	}
+	return strings.HasPrefix(key, prefix)
+}
+
+func mergeGalleryObjects(existing, incoming []storage.Object) []storage.Object {
+	merged := append([]storage.Object(nil), existing...)
+	positions := make(map[string]int, len(merged))
+	for i, object := range merged {
+		positions[object.Key] = i
+	}
+	for _, object := range incoming {
+		if index, exists := positions[object.Key]; exists {
+			merged[index] = object
+		} else {
+			positions[object.Key] = len(merged)
+			merged = append(merged, object)
+		}
+	}
+	return merged
+}
+
+func (g *galleryState) acceptsListing(generation int, serial uint64, prefix string) bool {
+	return g.generation == generation && g.listSerial == serial && g.prefix == prefix
+}
+
+func (a *application) setGalleryPrefix(prefix string) {
+	g := &a.gallery
+	if g.operation || a.busy {
+		return
+	}
+	prefix = strings.TrimSpace(prefix)
+	if len(prefix) > 1024 || strings.ContainsAny(prefix, "\x00\r\n") {
+		a.feedback("目录前缀无效", errors.New(tr("目录前缀最长 1024 字节，不能包含换行或空字符。")))
+		return
+	}
+	g.prefix, g.prefixInput, g.prefixInputInitialized = prefix, prefix, true
+	if g.paged && g.listPrefix == prefix {
+		return
+	}
+	if g.cancel != nil {
+		g.cancel()
+		g.cancel = nil
+	}
+	g.generation++
+	g.listSerial++
+	g.clearThumbnailPage()
+	g.clearFullPreview()
+	g.objects, g.thumbs = nil, nil
+	g.selected, g.selectionOrder, g.selectionAnchor = nil, nil, ""
+	g.preview, g.previewOpen, g.renameOpen, g.deleteOpen = nil, false, false, false
+	g.loaded, g.busy, g.dirty, g.failedMore = false, false, false, false
+	g.paged, g.listComplete, g.nextToken, g.listPrefix = true, false, "", prefix
+	g.page, g.err, g.seenTokens = 0, "", nil
+	a.loadGallery()
+}
+
+func (a *application) loadGalleryPage(more bool) {
 	if a.busy || a.gallery.busy {
 		return
 	}
@@ -134,20 +212,29 @@ func (a *application) loadGallery() {
 	g := &a.gallery
 	g.busy = true
 	g.err = ""
+	g.failedMore = false
+	g.paged = true
+	g.listSerial++
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	g.cancel = cancel
-	generation := g.generation
-	cache, showCache := g.cache, !g.loaded
+	generation, serial, prefix := g.generation, g.listSerial, g.prefix
+	token, objectsBefore, seen := "", []storage.Object(nil), map[string]bool{}
+	if more {
+		token, objectsBefore, seen = g.nextToken, append([]storage.Object(nil), g.objects...), maps.Clone(g.seenTokens)
+	}
+	cache, showCache := g.cache, !g.loaded && !more
 	go func() {
 		defer cancel()
 		if showCache {
-			if objects, cacheErr := cache.readList(); cacheErr == nil && ctx.Err() == nil {
+			if objects, cachedNext, cacheErr := cache.readPage(prefix); cacheErr == nil && ctx.Err() == nil {
 				for i := range objects {
 					objects[i].URL = client.URL(objects[i].Key)
 				}
 				mygo.RunOnMain(func() {
-					if a.gallery.generation == generation && a.gallery.busy && !a.gallery.loaded {
+					if a.gallery.acceptsListing(generation, serial, prefix) && a.gallery.busy && !a.gallery.loaded {
 						a.gallery.replace(objects)
+						a.gallery.listPrefix, a.gallery.nextToken = prefix, cachedNext
+						a.gallery.listComplete = cachedNext == ""
 						a.gallery.dirty = true
 						if a.win != nil {
 							a.win.Invalidate()
@@ -156,23 +243,45 @@ func (a *application) loadGallery() {
 				})
 			}
 		}
-		objects, err := client.List(ctx, "")
-		if err == nil {
-			_ = cache.writeList(objects)
+		serverPrefix := prefix
+		if serverPrefix == "/" {
+			serverPrefix = ""
+		}
+		page, next, err := client.ListPage(ctx, serverPrefix, token, galleryCloudPageSize)
+		if err == nil && next != "" && seen[next] {
+			err = errors.New(tr("存储服务返回了重复分页标记，请刷新目录后重试。"))
+		}
+		objects := mergeGalleryObjects(objectsBefore, page)
+		if err == nil && ctx.Err() == nil {
+			_ = cache.writePage(prefix, objects, next)
+			if prefix == "" && next == "" {
+				_ = cache.writeList(objects)
+			}
+		} else if err == nil {
+			err = ctx.Err()
 		}
 		mygo.RunOnMain(func() {
-			if a.gallery.generation != generation {
+			if !a.gallery.acceptsListing(generation, serial, prefix) {
 				return
 			}
 			g := &a.gallery
 			g.busy = false
 			g.cancel = nil
 			if err != nil {
+				g.failedMore = more
 				g.err = tf("图库加载失败：%s", err.Error())
 				a.feedback(tr("图库加载失败，可重试"), err)
 				return
 			}
 			g.replace(objects)
+			g.listPrefix, g.nextToken, g.listComplete = prefix, next, next == ""
+			if seen == nil {
+				seen = map[string]bool{}
+			}
+			if next != "" {
+				seen[next] = true
+			}
+			g.seenTokens = seen
 			a.feedback(tf("已加载 %d 张云端图片", len(objects)), nil)
 		})
 	}()
@@ -703,7 +812,7 @@ func (a *application) galleryOperation(run func(context.Context, *storage.Client
 }
 func (a *application) deleteGallery() {
 	targets := append([]storage.Object(nil), a.gallery.deleteTargets...)
-	objects, cache := append([]storage.Object(nil), a.gallery.objects...), a.gallery.cache
+	cache := a.gallery.cache
 	a.galleryOperation(func(ctx context.Context, client *storage.Client) func() {
 		removed := map[string]bool{}
 		var first error
@@ -717,13 +826,7 @@ func (a *application) deleteGallery() {
 			}
 		}
 		if len(removed) > 0 {
-			var kept []storage.Object
-			for _, object := range objects {
-				if !removed[object.Key] {
-					kept = append(kept, object)
-				}
-			}
-			_ = cache.writeList(kept)
+			_ = cache.mutateLists(removed, nil)
 		}
 		return func() {
 			a.gallery.remove(removed)
@@ -742,7 +845,7 @@ func (a *application) renameGallery() {
 		return
 	}
 	old, newKey := *g.preview, g.renameKey
-	objects, cache := append([]storage.Object(nil), g.objects...), g.cache
+	cache := g.cache
 	if err := storage.ValidateImageKey(newKey); err != nil {
 		g.renameError = err.Error()
 		return
@@ -751,12 +854,7 @@ func (a *application) renameGallery() {
 	a.galleryOperation(func(ctx context.Context, client *storage.Client) func() {
 		renamed, err := client.Rename(ctx, old, newKey)
 		if err == nil {
-			for i, object := range objects {
-				if object.Key == old.Key {
-					objects[i] = renamed
-				}
-			}
-			_ = cache.writeList(objects)
+			_ = cache.mutateLists(map[string]bool{old.Key: true}, &renamed)
 		} else {
 			var partial *storage.RenamePartialError
 			if errors.As(err, &partial) {

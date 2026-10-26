@@ -1,0 +1,28 @@
+{
+  "files": {
+    "icon-dev-1024.png": "5b40feb8d283cc8d3cca779d32eeed28ff3d5f819d3d17cd6866a98fd03b7b56",
+    "icon-dev-128.png": "60f8d15485ecab03cf4d2fc60fce2cbd6c7ba4449eb1a9f24041a6f71fd1ef2f",
+    "icon-dev-256.png": "856b441e16855855260f5df3b0e5f1345389a99d7dfb5bc2d02ce7408f7c6bc2",
+    "icon-dev-32.png": "fdea23bf9bb4c762a3f54d7c4ebe18b16342add2eab25e5d5058af7888877502",
+    "icon-dev-512.png": "0bd38ae9a94cf9ffa2b7c88a03397177cdc7bc703479159a2db99a871c30ce0e",
+    "icon-dev-64.png": "813357526674c7c306d7c862b6bf4be3db019c40020d951951d1d4485bc7b05a",
+    "icon-dev.png": "5b40feb8d283cc8d3cca779d32eeed28ff3d5f819d3d17cd6866a98fd03b7b56"
+  },
+  "formats": [
+    "png"
+  ],
+  "generator_sha256": "4b76029eb943405c5694dcc0275909d752ec7531fcb3f3316777fb0b4593393c",
+  "name": "icon-dev",
+  "png_sizes": [
+    32,
+    64,
+    128,
+    256,
+    512,
+    1024
+  ],
+  "schema": 1,
+  "source": "icon.png",
+  "source_sha256": "0d894af31bde7a7f31b5e2e69d44d761fdc9063254059a374fb90caab99e188f",
+  "tool": "h2-desktop-client/dev-icon"
+}

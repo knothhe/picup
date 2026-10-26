@@ -27,7 +27,7 @@ type Client struct {
 
 func New(c config.Config) (*Client, error) {
 	path := ""
-	if c.R2Connection != "" {
+	if c.R2Connection != "" || c.CredentialRef != "" {
 		var err error
 		path, err = config.Path()
 		if err != nil {
@@ -57,8 +57,20 @@ func NewWithConfigPath(_ context.Context, c config.Config, path string) (*Client
 			}
 			return aws.Credentials{AccessKeyID: key, SecretAccessKey: secret, Source: "Picup Cloudflare OAuth"}, nil
 		})
+	} else if c.CredentialRef != "" {
+		if path == "" {
+			return nil, fmt.Errorf("configuration path is required for saved credentials")
+		}
+		manager := r2oauth.NewManual(path)
+		provider = aws.CredentialsProviderFunc(func(ctx context.Context) (aws.Credentials, error) {
+			stored, err := manager.Resolve(ctx, c.CredentialRef, c.Endpoint, c.Bucket)
+			if err != nil {
+				return aws.Credentials{}, err
+			}
+			return aws.Credentials{AccessKeyID: stored.AccessKey, SecretAccessKey: stored.SecretKey, SessionToken: stored.SessionToken, Source: "Picup Keychain"}, nil
+		})
 	}
-	api := s3.New(s3.Options{Region: c.Region, Credentials: provider, UsePathStyle: c.PathStyle, HTTPClient: &http.Client{Timeout: 90 * time.Second}, BaseEndpoint: optional(c.Endpoint), RequestChecksumCalculation: aws.RequestChecksumCalculationWhenRequired, ResponseChecksumValidation: aws.ResponseChecksumValidationWhenRequired})
+	api := s3.New(s3.Options{Region: c.Region, Credentials: provider, UsePathStyle: c.PathStyle, HTTPClient: &http.Client{Timeout: 90 * time.Second, Transport: progressTransport{base: http.DefaultTransport}}, BaseEndpoint: optional(c.Endpoint), RequestChecksumCalculation: aws.RequestChecksumCalculationWhenRequired, ResponseChecksumValidation: aws.ResponseChecksumValidationWhenRequired})
 	return &Client{api, c}, nil
 }
 

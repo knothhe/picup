@@ -22,6 +22,10 @@ import (
 func TestBatchPartialFailureJSONAndOverrides(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		calls.Add(1)
 		if r.Header.Get("Content-Type") != "image/webp" {
 			t.Error("format flag not applied")
@@ -103,6 +107,10 @@ func TestSetupEOFDoesNotSave(t *testing.T) {
 func TestAVIFOutputFlagAndHelp(t *testing.T) {
 	requests := make(chan []byte, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		if r.Header.Get("Content-Type") != "image/avif" || !strings.HasSuffix(r.URL.Path, ".avif") {
 			t.Error("AVIF command flag did not reach the upload", r.Header.Get("Content-Type"), r.URL.Path)
 		}

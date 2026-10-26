@@ -12,37 +12,41 @@ import (
 )
 
 type Config struct {
-	Profiles        []Profile         `json:"profiles,omitempty"`
-	ActiveProfile   string            `json:"active_profile,omitempty"`
-	R2Connection    string            `json:"r2_connection,omitempty"`
-	Provider        string            `json:"provider"`
-	Endpoint        string            `json:"endpoint"`
-	Region          string            `json:"region"`
-	Bucket          string            `json:"bucket"`
-	AccessKey       string            `json:"access_key"`
-	SecretKey       string            `json:"secret_key"`
-	SessionToken    string            `json:"session_token,omitempty"`
-	PublicURL       string            `json:"public_url"`
-	PathTemplate    string            `json:"path_template"`
-	PathStyle       bool              `json:"path_style"`
-	Compress        bool              `json:"compress"`
-	Quality         int               `json:"quality"`
-	Format          string            `json:"format"`
-	MaxWidth        int               `json:"max_width"`
-	Output          string            `json:"output"`
-	Copy            bool              `json:"copy"`
-	Appearance      string            `json:"appearance"`
-	Language        string            `json:"language"`
-	Shortcuts       map[string]string `json:"shortcuts,omitempty"`
-	CloseToTray     bool              `json:"close_to_tray"`
-	DockIcon        string            `json:"dock_icon"`
-	TrayClickAction string            `json:"tray_click_action"`
-	LightweightMode bool              `json:"lightweight_mode"`
-	LaunchAtLogin   bool              `json:"launch_at_login"`
+	Profiles          []Profile         `json:"profiles,omitempty"`
+	ActiveProfile     string            `json:"active_profile,omitempty"`
+	R2Connection      string            `json:"r2_connection,omitempty"`
+	CredentialRef     string            `json:"credential_ref,omitempty"`
+	UploadConcurrency int               `json:"upload_concurrency"`
+	CollisionPolicy   string            `json:"collision_policy"`
+	NotifyOnComplete  bool              `json:"notify_on_complete"`
+	Provider          string            `json:"provider"`
+	Endpoint          string            `json:"endpoint"`
+	Region            string            `json:"region"`
+	Bucket            string            `json:"bucket"`
+	AccessKey         string            `json:"access_key"`
+	SecretKey         string            `json:"secret_key"`
+	SessionToken      string            `json:"session_token,omitempty"`
+	PublicURL         string            `json:"public_url"`
+	PathTemplate      string            `json:"path_template"`
+	PathStyle         bool              `json:"path_style"`
+	Compress          bool              `json:"compress"`
+	Quality           int               `json:"quality"`
+	Format            string            `json:"format"`
+	MaxWidth          int               `json:"max_width"`
+	Output            string            `json:"output"`
+	Copy              bool              `json:"copy"`
+	Appearance        string            `json:"appearance"`
+	Language          string            `json:"language"`
+	Shortcuts         map[string]string `json:"shortcuts,omitempty"`
+	CloseToTray       bool              `json:"close_to_tray"`
+	DockIcon          string            `json:"dock_icon"`
+	TrayClickAction   string            `json:"tray_click_action"`
+	LightweightMode   bool              `json:"lightweight_mode"`
+	LaunchAtLogin     bool              `json:"launch_at_login"`
 }
 
 func Default() Config {
-	return Config{Provider: "r2", Region: "auto", PathTemplate: "images/{sha256}.{extName}", PathStyle: true, Compress: true, Quality: 85, Format: "original", Output: "url", Copy: true, Appearance: "system", Language: "system", CloseToTray: true, DockIcon: DockIconShow, TrayClickAction: TrayClickQuickPanel}
+	return Config{UploadConcurrency: 3, CollisionPolicy: "reuse", NotifyOnComplete: true, Provider: "r2", Region: "auto", PathTemplate: "images/{sha256}.{extName}", PathStyle: true, Compress: true, Quality: 85, Format: "original", Output: "url", Copy: true, Appearance: "system", Language: "system", CloseToTray: true, DockIcon: DockIconShow, TrayClickAction: TrayClickQuickPanel}
 }
 
 func Path() (string, error) {
@@ -134,17 +138,18 @@ func Save(path string, c Config) error {
 	// Persist profile settings once. The flat fields remain the active working
 	// configuration for upload, storage and existing callers.
 	b, err := json.MarshalIndent(struct {
-		Profiles        []Profile         `json:"profiles"`
-		ActiveProfile   string            `json:"active_profile"`
-		Appearance      string            `json:"appearance"`
-		Language        string            `json:"language"`
-		Shortcuts       map[string]string `json:"shortcuts,omitempty"`
-		CloseToTray     bool              `json:"close_to_tray"`
-		DockIcon        string            `json:"dock_icon"`
-		TrayClickAction string            `json:"tray_click_action"`
-		LightweightMode bool              `json:"lightweight_mode"`
-		LaunchAtLogin   bool              `json:"launch_at_login"`
-	}{c.Profiles, c.ActiveProfile, c.Appearance, c.Language, c.Shortcuts, c.CloseToTray, c.DockIcon, c.TrayClickAction, c.LightweightMode, c.LaunchAtLogin}, "", "  ")
+		Profiles         []Profile         `json:"profiles"`
+		ActiveProfile    string            `json:"active_profile"`
+		NotifyOnComplete bool              `json:"notify_on_complete"`
+		Appearance       string            `json:"appearance"`
+		Language         string            `json:"language"`
+		Shortcuts        map[string]string `json:"shortcuts,omitempty"`
+		CloseToTray      bool              `json:"close_to_tray"`
+		DockIcon         string            `json:"dock_icon"`
+		TrayClickAction  string            `json:"tray_click_action"`
+		LightweightMode  bool              `json:"lightweight_mode"`
+		LaunchAtLogin    bool              `json:"launch_at_login"`
+	}{c.Profiles, c.ActiveProfile, c.NotifyOnComplete, c.Appearance, c.Language, c.Shortcuts, c.CloseToTray, c.DockIcon, c.TrayClickAction, c.LightweightMode, c.LaunchAtLogin}, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -185,10 +190,10 @@ func (c *Config) ApplyEnv() error {
 		key string
 		dst *string
 	}{
-		{"PROVIDER", &c.Provider}, {"ENDPOINT", &c.Endpoint}, {"REGION", &c.Region}, {"BUCKET", &c.Bucket}, {"ACCESS_KEY", &c.AccessKey}, {"SECRET_KEY", &c.SecretKey}, {"SESSION_TOKEN", &c.SessionToken}, {"PUBLIC_URL", &c.PublicURL}, {"PATH_TEMPLATE", &c.PathTemplate}, {"FORMAT", &c.Format}, {"OUTPUT", &c.Output},
+		{"PROVIDER", &c.Provider}, {"ENDPOINT", &c.Endpoint}, {"REGION", &c.Region}, {"BUCKET", &c.Bucket}, {"ACCESS_KEY", &c.AccessKey}, {"SECRET_KEY", &c.SecretKey}, {"SESSION_TOKEN", &c.SessionToken}, {"PUBLIC_URL", &c.PublicURL}, {"PATH_TEMPLATE", &c.PathTemplate}, {"COLLISION_POLICY", &c.CollisionPolicy}, {"FORMAT", &c.Format}, {"OUTPUT", &c.Output},
 	} {
 		if v, ok := os.LookupEnv("PICUP_" + item.key); ok {
-			if c.R2Connection != "" && (item.key == "ACCESS_KEY" || item.key == "SECRET_KEY" || item.key == "SESSION_TOKEN") {
+			if (c.R2Connection != "" || c.CredentialRef != "") && (item.key == "ACCESS_KEY" || item.key == "SECRET_KEY" || item.key == "SESSION_TOKEN") {
 				continue
 			}
 			*item.dst = v
@@ -198,11 +203,11 @@ func (c *Config) ApplyEnv() error {
 		key string
 		dst *string
 	}{{"AWS_ACCESS_KEY_ID", &c.AccessKey}, {"AWS_SECRET_ACCESS_KEY", &c.SecretKey}, {"AWS_SESSION_TOKEN", &c.SessionToken}} {
-		if c.R2Connection == "" && *item.dst == "" {
+		if c.R2Connection == "" && c.CredentialRef == "" && *item.dst == "" {
 			*item.dst = os.Getenv(item.key)
 		}
 	}
-	for _, key := range []string{"quality", "max_width", "compress", "copy", "path_style", "language"} {
+	for _, key := range []string{"quality", "max_width", "compress", "copy", "path_style", "language", "upload_concurrency", "notify_on_complete"} {
 		if v, ok := os.LookupEnv("PICUP_" + strings.ToUpper(key)); ok {
 			if err := c.Set(key, v); err != nil {
 				return err
@@ -215,6 +220,8 @@ func (c *Config) ApplyEnv() error {
 func (c *Config) Set(key, value string) error {
 	key = strings.ReplaceAll(key, "-", "_")
 	switch key {
+	case "collision_policy":
+		c.CollisionPolicy = value
 	case "provider":
 		c.Provider = value
 	case "endpoint":
@@ -258,22 +265,26 @@ func (c *Config) Set(key, value string) error {
 		c.Language = value
 	case "launch_at_login":
 		return errors.New("launch_at_login must be changed in the desktop app")
-	case "quality", "max_width":
+	case "quality", "max_width", "upload_concurrency":
 		n, err := strconv.Atoi(value)
 		if err != nil {
 			return fmt.Errorf("%s must be an integer", key)
 		}
 		if key == "quality" {
 			c.Quality = n
+		} else if key == "upload_concurrency" {
+			c.UploadConcurrency = n
 		} else {
 			c.MaxWidth = n
 		}
-	case "compress", "copy", "path_style", "close_to_tray", "lightweight_mode":
+	case "compress", "copy", "path_style", "close_to_tray", "lightweight_mode", "notify_on_complete":
 		b, err := strconv.ParseBool(value)
 		if err != nil {
 			return fmt.Errorf("%s must be true or false", key)
 		}
 		switch key {
+		case "notify_on_complete":
+			c.NotifyOnComplete = b
 		case "compress":
 			c.Compress = b
 		case "copy":
@@ -292,6 +303,23 @@ func (c *Config) Set(key, value string) error {
 }
 
 func (c Config) ValidateOptions() error {
+	if c.UploadConcurrency < 1 || c.UploadConcurrency > 6 {
+		return errors.New("upload_concurrency must be between 1 and 6")
+	}
+	switch c.CollisionPolicy {
+	case "reuse", "overwrite", "rename", "skip":
+	default:
+		return errors.New("collision_policy must be reuse, overwrite, rename or skip")
+	}
+	if c.CredentialRef != "" {
+		reference := strings.TrimPrefix(c.CredentialRef, "keyring:")
+		if len(reference) != 32 || strings.IndexFunc(reference, func(r rune) bool { return !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') }) >= 0 {
+			return errors.New("invalid system credential reference")
+		}
+		if c.R2Connection != "" || c.AccessKey != "" || c.SecretKey != "" || c.SessionToken != "" {
+			return errors.New("system credential reference cannot be combined with Cloudflare OAuth or explicit credentials")
+		}
+	}
 	if c.R2Connection != "" {
 		if c.Provider != "r2" || c.Region != "auto" || !c.PathStyle {
 			return errors.New("Cloudflare OAuth connection requires R2, region auto and path-style addressing")
@@ -355,7 +383,7 @@ func (c Config) ValidateStorage() error {
 	if c.Bucket == "" || strings.ContainsAny(c.Bucket, "/\\") {
 		return errors.New("set a valid bucket in Settings or picup config")
 	}
-	if c.R2Connection == "" && (c.AccessKey == "" || c.SecretKey == "") {
+	if c.R2Connection == "" && c.CredentialRef == "" && (c.AccessKey == "" || c.SecretKey == "") {
 		return errors.New("set access_key and secret_key, or AWS credential environment variables")
 	}
 	if c.Region == "" {

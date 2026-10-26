@@ -10,6 +10,10 @@ on:
         description: Build signed update artifacts from main without publishing
         type: boolean
         default: false
+      apple_distribution:
+        description: Use the configured Developer ID certificate and optional notarization credentials
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -23,6 +27,8 @@ jobs:
     name: macOS ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 40
+    env:
+      CGO_ENABLED: '1'
     strategy:
       fail-fast: false
       matrix:
@@ -32,6 +38,11 @@ jobs:
       - name: Reject signing requests outside main
         if: github.event_name == 'workflow_dispatch' && inputs.signed_updates
         run: test "$GITHUB_REF" = refs/heads/main
+      - name: Validate Apple distribution request
+        if: github.event_name == 'workflow_dispatch' && inputs.apple_distribution
+        env:
+          SIGNED_UPDATES: ${{ inputs.signed_updates }}
+        run: test "$GITHUB_REF" = refs/heads/main && test "$SIGNED_UPDATES" = true
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -62,11 +73,22 @@ jobs:
           overwrite: true
           retention-days: 7
       - name: Build signed update artifacts from protected source
-        if: github.event_name == 'workflow_dispatch' && inputs.signed_updates && github.ref == 'refs/heads/main'
+        if: github.event_name == 'workflow_dispatch' && inputs.signed_updates && !inputs.apple_distribution && github.ref == 'refs/heads/main'
         env:
           MYGO_UPDATER_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY }}
         run: |
           make package-release
+      - name: Build Developer ID distribution in temporary keychain
+        if: github.event_name == 'workflow_dispatch' && inputs.signed_updates && inputs.apple_distribution && github.ref == 'refs/heads/main'
+        env:
+          MYGO_UPDATER_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY }}
+          MACOS_SIGNING_CERTIFICATE: ${{ secrets.MACOS_SIGNING_CERTIFICATE }}
+          MACOS_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_SIGNING_CERTIFICATE_PASSWORD }}
+          PICUP_MACOS_CERTIFICATE_SHA256: ${{ vars.MACOS_SIGNING_CERTIFICATE_SHA256 }}
+          MACOS_NOTARY_KEY_BASE64: ${{ secrets.MACOS_NOTARY_KEY_BASE64 }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER: ${{ secrets.MACOS_NOTARY_ISSUER }}
+        run: python3 scripts/macos_signing_ci.py -- make package-release
       - name: Upload signed update artifacts
         if: github.event_name == 'workflow_dispatch' && inputs.signed_updates && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

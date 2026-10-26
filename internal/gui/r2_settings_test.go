@@ -14,9 +14,9 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
-	"github.com/knothhe/picup/internal/cloudflare"
 	"github.com/knothhe/picup/internal/config"
 	"github.com/knothhe/picup/internal/r2oauth"
+	"github.com/knothhe/r2connect"
 )
 
 func r2TestConnection() r2oauth.Connection {
@@ -109,6 +109,8 @@ func TestR2MissingPublisherRegistrationDoesNotOpenOrSave(t *testing.T) {
 	t.Setenv("PICUP_CLOUDFLARE_CLIENT_ID", "")
 	a, _ := autosaveFixture(t)
 	a.initR2Settings()
+	// The worker completion is dispatched separately from the view builder.
+	a.applyR2Configuration(a.r2.manager.Configured())
 	tt := ui.NewTester(nativeTestView(a), 1040, 760)
 	tt.SetPreferences(ui.Preferences{ReduceMotion: true, TextScale: 1})
 	tt.Frame()
@@ -133,11 +135,11 @@ func TestR2LateBucketResponseCannotChangeNewSelection(t *testing.T) {
 	a.r2.active, a.r2.working = true, true
 	a.r2.generation, a.r2.listGeneration = 3, 7
 	a.r2.bucket = "new-selection"
-	old := []cloudflare.Bucket{{Name: "old-selection"}}
+	old := []r2connect.Bucket{{Name: "old-selection"}}
 	if a.applyR2Buckets(3, 6, old, nil) || a.applyR2Buckets(2, 7, old, nil) || a.r2.bucket != "new-selection" || !a.r2.working {
 		t.Fatal("late response changed the new account or jurisdiction")
 	}
-	if !a.applyR2Buckets(3, 7, []cloudflare.Bucket{{Name: "current-bucket"}}, nil) || a.r2.bucket != "current-bucket" || a.r2.working {
+	if !a.applyR2Buckets(3, 7, []r2connect.Bucket{{Name: "current-bucket"}}, nil) || a.r2.bucket != "current-bucket" || a.r2.working {
 		t.Fatal("current response did not update the selected bucket")
 	}
 	a.r2.active = false
@@ -192,9 +194,9 @@ func TestR2AuthorizationNativeViews(t *testing.T) {
 					a.r2.active, a.r2.working = true, true
 				case "buckets", "saving":
 					a.r2.active = true
-					a.r2.accounts = []cloudflare.Account{{ID: connection.AccountID, Name: connection.AccountName}}
+					a.r2.accounts = []r2connect.Account{{ID: connection.AccountID, Name: connection.AccountName}}
 					a.r2.account, a.r2.jurisdiction, a.r2.bucket = connection.AccountID, "default", connection.Bucket
-					a.r2.buckets = []cloudflare.Bucket{{Name: connection.Bucket}}
+					a.r2.buckets = []r2connect.Bucket{{Name: connection.Bucket}}
 					if state == "saving" {
 						a.r2.working, a.r2.saving = true, true
 					}
@@ -215,7 +217,7 @@ func TestR2AuthorizationNativeViews(t *testing.T) {
 					label = "取消连接"
 				}
 				if state == "connected" {
-					label = "断开 Cloudflare"
+					label = "断开…"
 				}
 				if state == "cleanup" {
 					label = "重试清理临时连接"
@@ -243,5 +245,24 @@ func TestR2AuthorizationNativeViews(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestR2SDKProfileNeverCopiesManualKeychainReference(t *testing.T) {
+	c := config.Default()
+	connection := r2TestConnection()
+	connection.PublicURL = ""
+	c.CredentialRef = strings.Repeat("b", 32)
+	c.Endpoint, c.Bucket, c.PublicURL = connection.Endpoint, connection.Bucket, "https://existing.example.com"
+	c.EnsureProfiles()
+	original := c.Profiles[0]
+	if err := addR2Profile(&c, connection); err != nil {
+		t.Fatal(err)
+	}
+	if c.CredentialRef != "" || c.R2Connection != connection.ID || c.PublicURL != "https://existing.example.com" || !reflect.DeepEqual(c.Profiles[0], original) {
+		t.Fatal("SDK profile mixed manual Keychain credentials or lost an existing domain")
+	}
+	if err := config.Save(filepath.Join(t.TempDir(), "config.json"), c); err != nil {
+		t.Fatal("new OAuth profile cannot be saved after connecting from a Keychain profile", err)
 	}
 }

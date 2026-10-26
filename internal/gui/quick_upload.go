@@ -136,6 +136,9 @@ func (a *application) quickUploadFiles(paths []string) {
 	if a.busy || len(paths) == 0 {
 		return
 	}
+	if a.rejectBlockedUploadInput() {
+		return
+	}
 	if !a.quickUploadReady() {
 		a.quickUpload.active = false
 		return
@@ -148,6 +151,9 @@ func (a *application) quickUploadFiles(paths []string) {
 }
 
 func (a *application) quickUploadStatus() (message, detail string, failed bool) {
+	if a.uploadQueueBlocked() {
+		return tr("上传队列需要恢复"), tr("请打开上传页重置队列记录"), false
+	}
 	if a.uploading {
 		return tr("正在处理与上传"), tf("已处理 %d / %d", a.uploadBatchDone, a.uploadBatchTotal), false
 	}
@@ -214,7 +220,7 @@ func (a *application) quickUploadView(c *ui.Context) {
 		ui.Column(c).FillWidth().Height(220).Shrink(0).Padding(0, 16, 16, 16).Gap(8).Children(func() {
 			cfg := a.uploadDisplayConfig()
 			unconfigured := cfg.ValidateStorage() != nil
-			disabled := a.busy || unconfigured
+			disabled := a.busy || unconfigured || a.uploadQueueBlocked()
 			ui.Row(c).FillWidth().Height(24).Shrink(0).Gap(7).AlignItems(ui.Center).Children(func() {
 				components.Icon(c, lucide.Cloud()).Size(14, 14).Shrink(0).TextColor(t.TextMuted)
 				name := profileName(cfg.ActiveProfile, cfg.CurrentProfileName())
@@ -245,6 +251,7 @@ func (a *application) quickUploadView(c *ui.Context) {
 
 func (a *application) quickUploadCard(c *ui.Context, unconfigured bool) {
 	t := c.Theme()
+	blocked := a.uploadQueueBlocked()
 	message, detail, failed := a.quickUploadStatus()
 	hasStatus := message != "" || detail != ""
 	zone := ui.Box(c).Key("quick-drop").FillWidth().Height(128).Shrink(0).Radius(10).Border(1, t.Border).Background(sunkenColor(t))
@@ -253,6 +260,8 @@ func (a *application) quickUploadCard(c *ui.Context, unconfigured bool) {
 		succeeded = succeeded || j.result != nil
 	}
 	switch {
+	case blocked:
+		zone.BorderColor(t.Warning).Background(t.Warning.Alpha(.06))
 	case a.busy:
 		zone.BorderColor(ui.Color{}).Background(accentSoft(t).Alpha(.6))
 	case failed:
@@ -269,7 +278,7 @@ func (a *application) quickUploadCard(c *ui.Context, unconfigured bool) {
 	}
 	// A busy card is a status, rather than a disabled button that still invites
 	// file selection. Configuring storage remains an explicit available action.
-	dragging := !a.busy && !unconfigured && zone.FileDragOver()
+	dragging := !a.busy && !unconfigured && !blocked && zone.FileDragOver()
 	if paths := zone.DroppedFiles(); len(paths) > 0 {
 		a.quickUploadFiles(paths)
 	}
@@ -283,7 +292,9 @@ func (a *application) quickUploadCard(c *ui.Context, unconfigured bool) {
 			return
 		}
 		label, run := tr("选择图片…"), func() { a.chooseFiles(true) }
-		if unconfigured {
+		if blocked {
+			label, run = tr("打开上传页"), a.openQuickUploadResults
+		} else if unconfigured {
 			label, run = tr("打开存储设置"), a.openQuickUploadSettings
 		} else if failed {
 			label, run = tr("打开 Picup 查看详情并重试"), a.openQuickUploadResults
@@ -302,6 +313,11 @@ func (a *application) quickUploadCard(c *ui.Context, unconfigured bool) {
 			}
 			content.Children(func() {
 				switch {
+				case blocked:
+					components.Icon(c, lucide.Info()).Size(21, 21).Shrink(0).TextColor(t.Warning)
+					a.quickCardTitle(c, message, 13)
+					a.quickCardDetail(c, detail, 1)
+					a.quickSelectLabel(c, label, "", true, 25)
 				case dragging:
 					components.Icon(c, lucide.ImageUp()).Size(24, 24).Shrink(0).TextColor(t.Accent)
 					a.quickCardTitle(c, tr("松开即可上传图片"), 13)

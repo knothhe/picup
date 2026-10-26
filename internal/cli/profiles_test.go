@@ -78,6 +78,10 @@ func TestProfileSelectionAndEditsKeepSavedSelection(t *testing.T) {
 func TestProfileUploadUsesSelectedDestinationAndFlagPrecedence(t *testing.T) {
 	var destinations []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		destinations = append(destinations, r.URL.Path)
 		if r.Header.Get("Content-Type") != "image/png" {
 			t.Error("command flag did not override selected profile and environment", r.Header.Get("Content-Type"))

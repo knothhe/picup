@@ -6,7 +6,6 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"github.com/knothhe/picup/internal/config"
-	"github.com/knothhe/picup/internal/install"
 	"github.com/oneo-me/onevra/source/components"
 	"github.com/oneo-me/onevra/source/icons/lucide"
 )
@@ -154,7 +153,7 @@ func (a *application) settingsHeaderActions(c *ui.Context) {
 
 func (a *application) settingsView(c *ui.Context) {
 	scrollView(c).Key(settingsScrollIdentity(a.settingsTab)).FillWidth().Grow(1).MinHeight(0).Transition(tabTransition()).Children(func() {
-		busy := a.busy && !(a.settingsTab == 5 && a.updates.phase == "installing")
+		busy := a.busy && !(a.settingsTab == 5 && a.updates.phase == "installing") && !(a.settingsTab == 3 && a.cliManagement.operationActive())
 		ui.Column(c).Key(a.settingsTab).FillWidth().MaxWidth(settingsMaxWidth+64).MinWidth(0).Padding(24, 32).Gap(22).Disabled(busy || a.gallery.busy || a.r2.saving && a.settingsTab != 0 || a.r2.working && !a.r2.active).Children(func() {
 			switch a.settingsTab {
 			case 0:
@@ -177,6 +176,18 @@ func (a *application) settingsView(c *ui.Context) {
 }
 
 func (a *application) imageSettings(c *ui.Context) {
+	settingsGroup(c, "upload-task-preferences", "上传任务", func() {
+		a.preference(c, "concurrency", "同时上传数量", "限制同时处理与上传的图片，范围 1 至 6。", func() {
+			value := float64(a.config.UploadConcurrency)
+			if components.NumberInput(c, &value, 1, 6, 1).Label(tr("同时上传数量")).Width(140).Changed() {
+				a.config.UploadConcurrency = int(value)
+			}
+		})
+		settingsDivider(c)
+		a.preference(c, "collision-policy", "同路径图片", "复用会返回已有链接；覆盖会替换内容。复用、改名和跳过需要读取权限。", func() {
+			selectControl(c, "同路径图片", &a.config.CollisionPolicy, []string{"reuse", "overwrite", "rename", "skip"}, []string{"复用已有链接", "覆盖", "自动改名", "跳过并提示"})
+		})
+	})
 	settingsGroup(c, "image-processing", "图片处理", func() {
 		a.switchPreference(c, "compress", "默认压缩图片", "PNG 无损优化，JPEG / WebP / AVIF 按质量压缩。", &a.config.Compress)
 		settingsDivider(c)
@@ -230,6 +241,7 @@ func (a *application) appearanceSettings(c *ui.Context) {
 		})
 	})
 	a.windowSettings(c)
+	a.nativeActionsSettings(c)
 	settingsGroup(c, "gallery-cache", "图库缓存", func() {
 		a.preference(c, "cache-clear", "本地缓存", "最多 256 MiB，不影响云端图片。", func() {
 			if components.Button(c, tr("清理图库缓存"), components.ButtonOutline).Clicked() {
@@ -257,27 +269,4 @@ func (a *application) windowSettings(c *ui.Context) {
 	})
 }
 
-func (a *application) cliSettings(c *ui.Context) {
-	settingsGroup(c, "cli-install", "命令行工具", func() {
-		a.textPreference(c, "install-dir", "安装目录", "", install.DisplayPath(install.DefaultDir()), &a.installDir, false)
-		settingsDivider(c)
-		a.preference(c, "install", "安装或更新", "", func() {
-			if components.Button(c, tr("安装 / 更新 CLI"), components.ButtonPrimary).Clicked() {
-				a.installCLI()
-			}
-		})
-	})
-	if a.installMessage != "" {
-		components.Text(c, a.installMessage).Wrap().FontSize(12)
-	}
-	if !install.OnPath(a.installDir) {
-		components.Text(c, tr("安装后请将此目录加入 PATH。")).Wrap().FontSize(11).TextColor(c.Theme().TextMuted)
-	}
-	settingsGroup(c, "cli-example", "快速开始", func() {
-		ui.Column(c).FillWidth().Padding(16).Gap(8).Children(func() {
-			for _, command := range []string{"picup photo.png", "picup --output markdown", "picup config"} {
-				components.Text(c, command).FontSize(12).TextColor(c.Theme().Accent)
-			}
-		})
-	})
-}
+func (a *application) cliSettings(c *ui.Context) { a.cliManagementSettings(c) }

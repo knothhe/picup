@@ -39,20 +39,23 @@ class PackageReleaseTests(unittest.TestCase):
         self.output = self.root / 'build/release'
         self.environment = {'GOHOSTOS': 'darwin', 'GOHOSTARCH': 'arm64', 'GOOS': 'darwin', 'GOARCH': 'arm64'}
         self.tags = ''
+        self.cgo = '1'
 
     def make_app(self, version=None, cli_version=None):
         version = version or self.version
         contents = self.app / 'Contents'
         (contents / 'MacOS').mkdir(parents=True, exist_ok=True)
         (contents / 'Resources').mkdir(exist_ok=True)
+        development = 'picup_dev' in self.tags
+        name,identifier,cli_name = ('Picup Dev','com.knothhe.picup.dev','picup-dev') if development else ('Picup','com.knothhe.picup','picup')
         (contents / 'Info.plist').write_bytes(plistlib.dumps({
             'CFBundleVersion': version, 'CFBundleShortVersionString': version,
-            'CFBundleExecutable': 'Picup', 'CFBundleIdentifier': 'com.knothhe.picup',
+            'CFBundleExecutable': name, 'CFBundleIdentifier': identifier,
         }))
-        gui = contents / 'MacOS/Picup'
+        gui = contents / 'MacOS' / name
         gui.write_bytes(b'GUI executable fixture')
         gui.chmod(0o755)
-        cli = contents / 'Resources/picup'
+        cli = contents / 'Resources' / cli_name
         cli.write_text(f'#!/bin/sh\nprintf "picup {cli_version or version}\\n"\n')
         cli.chmod(0o755)
         (contents / 'Resources/icon').write_bytes(b'icon fixture')
@@ -82,10 +85,12 @@ class PackageReleaseTests(unittest.TestCase):
             return None
         if args[1:5] == ('tool', 'mygo', 'build', '-skip-dmg'):
             self.tags = 'picup_dev' if '-debug' in args else ''
+            if self.tags:
+                self.app = self.root / 'build/dev/dist/darwin-arm64/Picup Dev.app'
             self.make_app()
             return None
         if args[1:3] == ('version', '-m'):
-            return '\tbuild\t-tags=' + self.tags
+            return '\tbuild\t-tags=' + self.tags + '\n\tbuild\tCGO_ENABLED=' + self.cgo
         if args[:2] == ('/usr/bin/lipo', '-archs'):
             return 'arm64'
         if args[1:3] == ('run', './cmd/verify-update'):
@@ -112,6 +117,9 @@ class PackageReleaseTests(unittest.TestCase):
         build = commands.call_args_list[2]
         self.assertEqual(build.args, ('go', 'tool', 'mygo', 'build', '-skip-dmg'))
         self.assertEqual(build.kwargs['env']['MYGO_UPDATER_PRIVATE_KEY'], 'private-test-key')
+        if package.sys.platform == 'darwin':
+            self.assertEqual(build.kwargs['env']['CGO_ENABLED'], '1')
+            self.assertEqual(commands.call_args_list[1].kwargs['env']['CGO_ENABLED'], '1')
         with zipfile.ZipFile(artifacts[0]) as archive:
             self.assertIsNone(archive.testzip())
             names = archive.namelist()
@@ -215,12 +223,18 @@ class PackageReleaseTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {'MYGO_UPDATER_PRIVATE_KEY': ''}):
             with self.patch_commands() as commands:
                 with mock.patch.object(package, 'signing_environment', side_effect=AssertionError('unsigned builds must not load a key')):
-                    artifacts = package.package_release(self.root, self.version, self.output, unsigned=True)
+                    with mock.patch('build_manifest.verify_development_icon'):
+                        self.data['macos'] = {}
+                        (self.root / 'mygo.json').write_text(json.dumps(self.data))
+                        artifacts = package.package_release(self.root, self.version, self.output, unsigned=True)
         self.assertEqual(artifacts, [str(self.output / 'Picup-0.1.0-darwin-arm64-ci-unsigned.zip')])
         build = commands.call_args_list[2]
         self.assertIn('-debug', build.args)
         self.assertEqual(build.kwargs['env']['MYGO_UPDATER_PRIVATE_KEY'], '')
         self.assertFalse(any('./cmd/verify-update' in call.args for call in commands.call_args_list))
+        with zipfile.ZipFile(artifacts[0]) as archive:
+            info = plistlib.loads(archive.read('Picup Dev.app/Contents/Info.plist'))
+            self.assertEqual(info['CFBundleIdentifier'],'com.knothhe.picup.dev')
 
     def test_default_local_signer_is_loaded_only_into_mygo_environment(self):
         key = self.home / 'Library/Application Support/picup-release/mygo-update.key'
@@ -280,6 +294,24 @@ class PackageReleaseTests(unittest.TestCase):
         with self.patch_commands():
             with self.assertRaisesRegex(package.PackageError, 'development-tagged'):
                 package.validate_app(self.app, self.version, self.root)
+
+    def test_package_rejects_explicit_cgo_zero_before_reading_signer(self):
+        with mock.patch.dict(os.environ, {'GOOS': 'darwin', 'CGO_ENABLED': '0'}):
+            with mock.patch.object(package, 'signing_environment', side_effect=AssertionError('must not read key')):
+                with self.assertRaisesRegex(ValueError, 'CGO_ENABLED=1.*Keychain'):
+                    package.package_release(self.root, self.version, self.output)
+
+    def test_app_rejects_gui_or_cli_without_native_keychain_support(self):
+        self.make_app()
+        for broken_binary in ('Picup', 'picup'):
+            with self.subTest(binary=broken_binary):
+                def response(*args, **kwargs):
+                    if args[1:3] == ('version', '-m') and Path(args[3]).name == broken_binary:
+                        return '\tbuild\tCGO_ENABLED=0'
+                    return self.run_command(*args, **kwargs)
+                with self.patch_commands(response):
+                    with self.assertRaisesRegex(package.PackageError, 'native R2 Keychain support'):
+                        package.validate_app(self.app, self.version, self.root)
 
     def test_update_metadata_and_signature_must_match_exact_app(self):
         self.make_app()

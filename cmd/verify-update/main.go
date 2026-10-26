@@ -5,11 +5,15 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+
+	"github.com/knothhe/picup"
 )
 
 func verify(path, public, signature string) error {
@@ -38,6 +42,22 @@ func verify(path, public, signature string) error {
 }
 
 func main() {
+	if len(os.Args) > 1 && strings.HasPrefix(os.Args[1], "-") {
+		flags := flag.NewFlagSet("verify-update", flag.ExitOnError)
+		feed := flags.String("feed", "", "local update feed JSON")
+		archive := flags.String("archive", "", "local full update archive")
+		version := flags.String("version", "", "explicit expected release version")
+		arch := flags.String("arch", "", "expected darwin architecture: arm64 or amd64")
+		public := flags.String("public-key", picup.UpdateConfig().PublicKey, "trusted Ed25519 public key (defaults to the compiled release key)")
+		flags.Parse(os.Args[1:])
+		report, err := verifyBundle(*feed, *archive, *public, *version, *arch)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "verify-update:", err)
+			os.Exit(1)
+		}
+		json.NewEncoder(os.Stdout).Encode(report)
+		return
+	}
 	if len(os.Args) != 4 {
 		fmt.Fprintln(os.Stderr, "usage: verify-update ARCHIVE PUBLIC_KEY SIGNATURE")
 		os.Exit(2)

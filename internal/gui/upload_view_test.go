@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -43,6 +44,7 @@ func uploadViewFixture(state string) *application {
 			j.detail = "AccessDenied: storage rejected the upload (403). Check write permissions for images/2026/10/20/plant-in-sunlight.png."
 		} else if state == "processing" && i == 1 {
 			j.status = "正在处理与上传"
+			j.sentBytes, j.totalBytes = int64(j.sourceBytes/2), int64(j.sourceBytes)
 		}
 		a.jobs = append(a.jobs, j)
 	}
@@ -58,6 +60,31 @@ func uploadViewFixture(state string) *application {
 		a.config = cfg
 	}
 	return a
+}
+
+func TestUploadProgressAndReusedObjectsShowAccurateStates(t *testing.T) {
+	unsetUploadDisplayEnv(t)
+	t.Cleanup(func() { SetUILanguage("zh-CN") })
+	for _, language := range []string{"zh-CN", "en"} {
+		SetUILanguage(language)
+		a := uploadViewFixture("processing")
+		a.jobs[1].sentBytes, a.jobs[1].totalBytes = 512<<10, 1<<20
+		a.jobs[0].result.Reused = true
+		a.jobs[0].result.Bytes, a.jobs[0].result.Width, a.jobs[0].result.Height = 0, 0, 0
+		tt := uploadViewTester(a, 760, 620, false)
+		if !tt.HasText(tr("已复用云端同路径图片")) || !tt.HasText(tr("已复用")) {
+			t.Fatal("reused object displayed as newly uploaded", tt.Texts())
+		}
+		found := false
+		for _, text := range tt.Texts() {
+			if strings.Contains(text, "50%") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatal("transport byte progress was not displayed", tt.Texts())
+		}
+	}
 }
 
 func unsetUploadDisplayEnv(t *testing.T) {

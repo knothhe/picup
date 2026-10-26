@@ -2,6 +2,7 @@ package picup
 
 import (
 	"encoding/json"
+	"github.com/knothhe/picup/internal/buildidentity"
 	"testing"
 )
 
@@ -12,6 +13,9 @@ func TestPublicUpdaterConfigUsesEmbeddedManifest(t *testing.T) {
 	}
 	if err := json.Unmarshal(manifest, &expected); err != nil {
 		t.Fatal(err)
+	}
+	if buildidentity.Development() {
+		expected.Updates = UpdateSettings{}
 	}
 	if got := UpdateConfig(); got != expected.Updates {
 		t.Fatalf("updater config diverged from package manifest: %#v", got)

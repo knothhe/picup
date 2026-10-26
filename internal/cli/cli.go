@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -16,7 +17,6 @@ import (
 	"github.com/knothhe/picup"
 	"github.com/knothhe/picup/internal/clipboard"
 	"github.com/knothhe/picup/internal/config"
-	"github.com/knothhe/picup/internal/imageproc"
 	"github.com/knothhe/picup/internal/service"
 	"github.com/knothhe/picup/internal/storage"
 	"golang.org/x/term"
@@ -33,7 +33,11 @@ Usage:
   picup config set KEY VALUE      Save a setting (use - to read stdin)
   picup config test               Write and delete a temporary test object
   picup config path              Print the shared settings path
+  picup config export FILE       Export profiles without credentials
+  picup config import FILE       Merge profiles; reconnect credentials
   picup history [--output json]   Show the last 200 uploads
+  picup cli status [--dir DIR]    Inspect this channel's CLI installation
+  picup cli uninstall [--dir DIR] Remove this channel's installed CLI
 
 Options:
   --no-compress       Upload original bytes unless converting or resizing
@@ -41,6 +45,9 @@ Options:
   --quality N        Compression quality, 1-100 (default 85)
   --max-width N      Resize proportionally, never enlarge (0: unlimited)
   --output FORMAT    url, markdown, json
+  --concurrency N    Simultaneous image jobs, 1-6 (default 3)
+  --collision POLICY reuse, overwrite, rename, skip
+  --progress         Print per-image byte progress to stderr
   --copy             Copy even when stdout is redirected
   --no-copy          Do not copy results
   --config PATH      Override shared configuration location
@@ -118,6 +125,9 @@ func (r Runner) run(ctx context.Context, args []string) error {
 		}
 	}
 	args = rest
+	if len(args) > 0 && args[0] == "cli" {
+		return r.manageCLI(ctx, args[1:])
+	}
 	if len(args) > 0 && args[0] == "config" && len(args) > 1 && args[1] == "path" {
 		fmt.Fprintln(r.Out, path)
 		return nil
@@ -181,10 +191,13 @@ func (r Runner) run(ctx context.Context, args []string) error {
 	}
 	flags := flag.NewFlagSet("picup", flag.ContinueOnError)
 	flags.SetOutput(r.Err)
-	var noCompress, noCopy, forceCopy bool
+	var noCompress, noCopy, forceCopy, progress bool
 	flags.BoolVar(&noCompress, "no-compress", false, "")
 	flags.BoolVar(&noCopy, "no-copy", false, "")
 	flags.BoolVar(&forceCopy, "copy", false, "")
+	flags.BoolVar(&progress, "progress", false, "")
+	flags.IntVar(&c.UploadConcurrency, "concurrency", c.UploadConcurrency, "")
+	flags.StringVar(&c.CollisionPolicy, "collision", c.CollisionPolicy, "")
 	flags.StringVar(&c.Format, "format", c.Format, "")
 	flags.IntVar(&c.Quality, "quality", c.Quality, "")
 	flags.IntVar(&c.MaxWidth, "max-width", c.MaxWidth, "")
@@ -203,7 +216,7 @@ func (r Runner) run(ctx context.Context, args []string) error {
 		}
 		opts = append(opts, a)
 		key := strings.TrimLeft(strings.SplitN(a, "=", 2)[0], "-")
-		if !strings.Contains(a, "=") && (key == "format" || key == "quality" || key == "max-width" || key == "output") {
+		if !strings.Contains(a, "=") && (key == "format" || key == "quality" || key == "max-width" || key == "output" || key == "concurrency" || key == "collision") {
 			if i+1 == len(args) {
 				return fmt.Errorf("--%s needs a value", key)
 			}
@@ -223,34 +236,43 @@ func (r Runner) run(ctx context.Context, args []string) error {
 	if len(files) == 0 {
 		files = []string{""}
 	}
+	inputs := make([]service.Input, len(files))
+	for i, file := range files {
+		inputs[i] = service.Input{Path: file, Name: file}
+		if file == "" {
+			data, e := clipboard.ReadImage(ctx)
+			if e != nil {
+				return e
+			}
+			inputs[i] = service.Input{Name: "clipboard.png", Data: data}
+		}
+	}
+	outcomes := (service.Service{Config: c, ConfigPath: path}).Batch(ctx, inputs, c.UploadConcurrency, func(event service.Event) {
+		if progress && event.Total > 0 {
+			fmt.Fprintf(r.Err, "%s: %d/%d bytes\n", inputs[event.Index].Name, event.Sent, event.Total)
+		}
+	})
 	var results []service.Result
 	failed := false
-	for _, file := range files {
-		if err = ctx.Err(); err != nil {
-			return err
-		}
-		var b []byte
-		name := file
-		if file == "" {
-			name = "clipboard.png"
-			b, err = clipboard.ReadImage(ctx)
-		} else {
-			b, err = imageproc.ReadFile(file)
-		}
-		var result service.Result
-		if err == nil {
-			uploadCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-			result, err = (service.Service{Config: c, ConfigPath: path}).Upload(uploadCtx, b, name)
-			cancel()
-		}
-		if err != nil {
-			failed = true
-			fmt.Fprintf(r.Err, "%s: %v\n", name, err)
+	for i, outcome := range outcomes {
+		name := inputs[i].Name
+		if outcome.Skipped {
+			fmt.Fprintf(r.Err, "%s: skipped existing object\n", name)
 			continue
 		}
+		if outcome.Err != nil {
+			failed = true
+			fmt.Fprintf(r.Err, "%s: %v\n", name, outcome.Err)
+			continue
+		}
+		result := outcome.Result
 		results = append(results, result)
-		fmt.Fprintf(r.Err, "%s: %d → %d bytes\n", name, result.OriginalBytes, result.Bytes)
-		if err = service.Record(path, result); err != nil {
+		if result.Reused {
+			fmt.Fprintf(r.Err, "%s: reused existing object\n", name)
+		} else {
+			fmt.Fprintf(r.Err, "%s: %d → %d bytes\n", name, result.OriginalBytes, result.Bytes)
+		}
+		if err := service.Record(path, result); err != nil {
 			fmt.Fprintln(r.Err, "history:", err)
 		}
 		if c.Output != "json" {
@@ -280,6 +302,58 @@ func (r Runner) configure(ctx context.Context, path string, c config.Config, arg
 		return r.setup(path, c, persistedProfile)
 	}
 	switch args[0] {
+	case "export":
+		if len(args) != 2 {
+			return errors.New("usage: picup config export FILE (or - for stdout)")
+		}
+		data, err := config.ExportProfiles(c, nil)
+		if err != nil {
+			return err
+		}
+		if args[1] == "-" {
+			_, err = r.Out.Write(data)
+			return err
+		}
+		absolute, err := filepath.Abs(args[1])
+		if err != nil {
+			return err
+		}
+		current, _ := filepath.Abs(path)
+		if absolute == current {
+			return errors.New("export destination must not replace your configuration")
+		}
+		file, err := os.OpenFile(absolute, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if err != nil {
+			return err
+		}
+		_, writeErr := file.Write(data)
+		return errors.Join(writeErr, file.Close())
+	case "import":
+		if len(args) != 2 {
+			return errors.New("usage: picup config import FILE (or - for stdin)")
+		}
+		var reader io.Reader = r.In
+		if args[1] != "-" {
+			file, err := os.Open(args[1])
+			if err != nil {
+				return err
+			}
+			defer file.Close()
+			reader = file
+		}
+		data, err := io.ReadAll(io.LimitReader(reader, (1<<20)+1))
+		if err != nil {
+			return err
+		}
+		merged, report, err := config.ImportProfiles(c, data)
+		if err != nil {
+			return err
+		}
+		if err := saveConfig(path, merged, persistedProfile); err != nil {
+			return err
+		}
+		fmt.Fprintf(r.Out, "Imported %d profiles. Credentials are not included; reconnect before uploading.\n", report.Added)
+		return nil
 	case "show":
 		if err := c.ApplyEnv(); err != nil {
 			return err
@@ -323,7 +397,7 @@ func (r Runner) configure(ctx context.Context, path string, c config.Config, arg
 		fmt.Fprintln(r.Out, "Connection OK. Test object deleted.")
 		return nil
 	default:
-		return errors.New("unknown config command; use show, set, test or path")
+		return errors.New("unknown config command; use show, set, test, path, export or import")
 	}
 }
 

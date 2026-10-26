@@ -88,6 +88,52 @@ func TestGalleryListFailureNeverReturnsPartialSuccess(t *testing.T) {
 		})
 	}
 }
+
+func TestGalleryListPageMakesOneBoundedRequest(t *testing.T) {
+	calls := 0
+	client := galleryTestClient(t, "s3", func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		query := r.URL.Query()
+		if query.Get("prefix") != "images/海 +/" || query.Get("continuation-token") != "opaque+/=" || query.Get("max-keys") != "200" {
+			t.Error("page request lost its exact scope, token, or limit", query)
+		}
+		fmt.Fprint(w, `<ListBucketResult><IsTruncated>true</IsTruncated><NextContinuationToken>next+/=</NextContinuationToken><Contents><Key>images/海 +/a.png</Key><Size>42</Size></Contents><Contents><Key>notes.txt</Key></Contents></ListBucketResult>`)
+	})
+	objects, next, err := client.ListPage(context.Background(), "images/海 +/", "opaque+/=", 200)
+	if err != nil || calls != 1 || next != "next+/=" || len(objects) != 1 || objects[0].Size != 42 {
+		t.Fatal("page fetch was unbounded or lost its continuation", objects, next, calls, err)
+	}
+}
+
+func TestGalleryListPageCanBeEmptyBeforeFinalPage(t *testing.T) {
+	client := galleryTestClient(t, "s3", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `<ListBucketResult><IsTruncated>true</IsTruncated><NextContinuationToken>images-start-later</NextContinuationToken><Contents><Key>notes.txt</Key></Contents></ListBucketResult>`)
+	})
+	objects, next, err := client.ListPage(context.Background(), "", "", 200)
+	if err != nil || len(objects) != 0 || next != "images-start-later" {
+		t.Fatal("a page without images was mistaken for the end of the bucket", objects, next, err)
+	}
+}
+
+func TestGalleryListPageRejectsMalformedContinuationAndLimit(t *testing.T) {
+	for _, next := range []string{"", "current"} {
+		t.Run(next, func(t *testing.T) {
+			client := galleryTestClient(t, "r2", func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprintf(w, `<ListBucketResult><IsTruncated>true</IsTruncated><NextContinuationToken>%s</NextContinuationToken><Contents><Key>a.png</Key></Contents></ListBucketResult>`, next)
+			})
+			objects, token, err := client.ListPage(context.Background(), "", "current", 200)
+			if err == nil || objects != nil || token != "" {
+				t.Fatal("malformed pagination became a successful partial result", objects, token, err)
+			}
+		})
+	}
+	client := galleryTestClient(t, "r2", func(w http.ResponseWriter, r *http.Request) { t.Fatal("invalid page limit sent a cloud request") })
+	for _, limit := range []int{-1, 0, 1001} {
+		if _, _, err := client.ListPage(context.Background(), "", "", limit); err == nil {
+			t.Fatal("unbounded page size was accepted", limit)
+		}
+	}
+}
 func TestGallerySignedReadAndDeleteEscapedKey(t *testing.T) {
 	var methods []string
 	key := "images/海 a+#?.png"

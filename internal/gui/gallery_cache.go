@@ -38,8 +38,16 @@ var galleryCacheEpoch atomic.Uint64
 
 type galleryDiskCache struct {
 	root, dir string
+	scope     string
 	limit     int64
 	epoch     uint64
+}
+
+type galleryCachedPage struct {
+	Version int                   `json:"version"`
+	Prefix  string                `json:"prefix"`
+	Next    string                `json:"next,omitempty"`
+	Objects []galleryCachedObject `json:"objects"`
 }
 
 type galleryCachedObject struct {
@@ -61,11 +69,17 @@ type galleryCachedThumb struct {
 }
 
 func galleryCacheDirectory() (string, error) {
+	if override := os.Getenv("PICUP_CACHE_DIR"); override != "" {
+		if !filepath.IsAbs(override) {
+			return "", errors.New("PICUP_CACHE_DIR must be an absolute path")
+		}
+		return filepath.Join(override, "gallery-v1"), nil
+	}
 	root, err := os.UserCacheDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(root, "picup", "gallery-v1"), nil
+	return filepath.Join(root, config.DirectoryName, "gallery-v1"), nil
 }
 
 func galleryDigest(value any) string {
@@ -85,8 +99,93 @@ func newGalleryDiskCache(c config.Config) *galleryDiskCache {
 		Provider, Endpoint, Region, Bucket, AccessKey, SecretKey, SessionToken, PublicURL string
 		PathStyle                                                                         bool
 		R2Connection                                                                      string `json:",omitempty"`
-	}{c.Provider, c.Endpoint, c.Region, c.Bucket, c.AccessKey, c.SecretKey, c.SessionToken, c.PublicURL, c.PathStyle, c.R2Connection}
+		CredentialRef                                                                     string `json:",omitempty"`
+	}{c.Provider, c.Endpoint, c.Region, c.Bucket, c.AccessKey, c.SecretKey, c.SessionToken, c.PublicURL, c.PathStyle, c.R2Connection, c.CredentialRef}
 	return &galleryDiskCache{root: root, dir: filepath.Join(root, galleryDigest(identity)), limit: galleryCacheLimit, epoch: galleryCacheEpoch.Load()}
+}
+
+func (c *galleryDiskCache) scoped(prefix string) *galleryDiskCache {
+	if c == nil {
+		return nil
+	}
+	copy := *c
+	copy.scope = prefix
+	return &copy
+}
+
+func galleryPageCacheName(prefix string) string { return galleryDigest(prefix) + ".page.json" }
+
+func (c *galleryDiskCache) readPageLocked(prefix string) ([]storage.Object, string, error) {
+	if c == nil || c.epoch != galleryCacheEpoch.Load() {
+		return nil, "", os.ErrNotExist
+	}
+	b, err := readGalleryCacheFile(filepath.Join(c.dir, galleryPageCacheName(prefix)), galleryIndexLimit)
+	if err != nil {
+		return nil, "", err
+	}
+	var page galleryCachedPage
+	if err = json.Unmarshal(b, &page); err != nil {
+		return nil, "", err
+	}
+	if page.Version != 1 || page.Prefix != prefix {
+		return nil, "", errors.New("invalid gallery page cache")
+	}
+	objects := make([]storage.Object, 0, len(page.Objects))
+	for _, o := range page.Objects {
+		objects = append(objects, storage.Object{Key: o.Key, Size: o.Size, Modified: o.Modified, ETag: o.ETag})
+	}
+	return objects, page.Next, nil
+}
+
+func (c *galleryDiskCache) readPage(prefix string) ([]storage.Object, string, error) {
+	galleryCacheLock.Lock()
+	defer galleryCacheLock.Unlock()
+	objects, next, err := c.readPageLocked(prefix)
+	if errors.Is(err, os.ErrNotExist) && prefix == "" {
+		objects, err = c.readListLocked()
+		if err == nil {
+			now := time.Now()
+			_ = os.Chtimes(filepath.Join(c.dir, "index.json"), now, now)
+		}
+		return objects, "", err
+	}
+	if err == nil {
+		now := time.Now()
+		_ = os.Chtimes(filepath.Join(c.dir, galleryPageCacheName(prefix)), now, now)
+	}
+	return objects, next, err
+}
+
+func (c *galleryDiskCache) writePageLocked(prefix string, objects []storage.Object, next string) error {
+	if c == nil || c.epoch != galleryCacheEpoch.Load() {
+		return nil
+	}
+	index := galleryCachedPage{Version: 1, Prefix: prefix, Next: next, Objects: make([]galleryCachedObject, 0, len(objects))}
+	for _, o := range objects {
+		index.Objects = append(index.Objects, galleryCachedObject{Key: o.Key, Size: o.Size, Modified: o.Modified.UTC(), ETag: o.ETag})
+	}
+	b, err := json.Marshal(index)
+	if err != nil {
+		return err
+	}
+	if len(b) > galleryIndexLimit {
+		return errors.New("gallery page cache exceeds limit")
+	}
+	return config.AtomicWrite(filepath.Join(c.dir, galleryPageCacheName(prefix)), b, 0600)
+}
+
+// Partial and prefix listings have their own snapshots. They can never replace
+// the complete whole-bucket index used by older installations.
+func (c *galleryDiskCache) writePage(prefix string, objects []storage.Object, next string) error {
+	if c == nil {
+		return nil
+	}
+	galleryCacheLock.Lock()
+	defer galleryCacheLock.Unlock()
+	if err := c.writePageLocked(prefix, objects, next); err != nil {
+		return err
+	}
+	return c.pruneLocked()
 }
 
 func galleryObjectDigest(o storage.Object) string {
@@ -143,6 +242,12 @@ func (c *galleryDiskCache) writeList(objects []storage.Object) error {
 	if c == nil {
 		return nil
 	}
+	galleryCacheLock.Lock()
+	defer galleryCacheLock.Unlock()
+	return c.writeListLocked(objects)
+}
+
+func (c *galleryDiskCache) writeListLocked(objects []storage.Object) error {
 	index := galleryCachedIndex{Version: 1, Objects: make([]galleryCachedObject, 0, len(objects))}
 	valid := make(map[string]bool, len(objects))
 	for _, o := range objects {
@@ -156,8 +261,6 @@ func (c *galleryDiskCache) writeList(objects []storage.Object) error {
 	if len(b) > galleryIndexLimit {
 		return errors.New("gallery cache index exceeds limit")
 	}
-	galleryCacheLock.Lock()
-	defer galleryCacheLock.Unlock()
 	if c.epoch != galleryCacheEpoch.Load() {
 		return nil
 	}
@@ -171,6 +274,56 @@ func (c *galleryDiskCache) writeList(objects []storage.Object) error {
 		}
 	}
 	return c.pruneLocked()
+}
+
+// Reconcile cloud mutations into existing complete and scoped snapshots. A
+// deletion in a partially loaded directory must not publish that directory as
+// the complete bucket, or recreate a full index that was never fetched.
+func (c *galleryDiskCache) mutateLists(removed map[string]bool, replacement *storage.Object) error {
+	if c == nil {
+		return nil
+	}
+	galleryCacheLock.Lock()
+	defer galleryCacheLock.Unlock()
+	if c.epoch != galleryCacheEpoch.Load() {
+		return nil
+	}
+	mutate := func(objects []storage.Object, prefix string) []storage.Object {
+		out := make([]storage.Object, 0, len(objects)+1)
+		for _, object := range objects {
+			if !removed[object.Key] && (replacement == nil || object.Key != replacement.Key) {
+				out = append(out, object)
+			}
+		}
+		if replacement != nil && galleryPrefixMatches(replacement.Key, prefix) {
+			out = append(out, *replacement)
+		}
+		return out
+	}
+	if objects, err := c.readListLocked(); err == nil {
+		if err = c.writeListLocked(mutate(objects, "")); err != nil {
+			return err
+		}
+	}
+	files, _ := os.ReadDir(c.dir)
+	for _, file := range files {
+		if !strings.HasSuffix(file.Name(), ".page.json") {
+			continue
+		}
+		b, err := readGalleryCacheFile(filepath.Join(c.dir, file.Name()), galleryIndexLimit)
+		var page galleryCachedPage
+		if err != nil || json.Unmarshal(b, &page) != nil || page.Version != 1 {
+			continue
+		}
+		objects, next, err := c.readPageLocked(page.Prefix)
+		if err != nil {
+			continue
+		}
+		if err = c.writePageLocked(page.Prefix, mutate(objects, page.Prefix), next); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c *galleryDiskCache) readThumb(o storage.Object) (galleryThumb, bool) {
@@ -226,7 +379,10 @@ func (c *galleryDiskCache) writeThumb(o storage.Object, img image.Image, width, 
 	defer galleryCacheLock.Unlock()
 	// Check the authoritative cached list again after encoding. A refreshed,
 	// renamed or deleted object must not be resurrected by an older download.
-	objects, err := c.readListLocked()
+	objects, _, err := c.readPageLocked(c.scope)
+	if errors.Is(err, os.ErrNotExist) {
+		objects, err = c.readListLocked()
+	}
 	if err != nil {
 		return nil
 	}

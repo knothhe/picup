@@ -9,11 +9,6 @@ import _ "embed"
 //go:embed icon.svg
 var IconSVG []byte
 
-// IconPNG is the packaged app icon, also used for native window and Dock icons.
-//
-//go:embed icon.png
-var IconPNG []byte
-
 // MenuBarPNG is the same photograph and upload mark without its app tile.
 //
 //go:embed menu-bar.png
