@@ -54,4 +54,4 @@ make release          # 预览 patch 升级
 
 发布默认仅预览，添加 `RELEASE_FLAGS=--apply` 即可完成检查、构建打包、tag、推送和 GitHub Release 附件上传；后续升级还会更新版本并提交。完整命令、历史版本补包和失败恢复见[发布流程](docs/release.md)，代码结构、设计稿和图标维护见[开发指南](docs/development.md)。
 
-GitHub CI 对 PR 和 `main` 运行检查，并在原生 macOS arm64 / amd64 runner 构建试包；CI 不自动发布。正式更新沿用 MyGo 的 Ed25519 签名与完整更新包，本机发布自动读取已保存的发行私钥，CI 使用签名 secret，详见[自动更新与 CI](docs/updates.md)。
+GitHub CI 对 PR 和 `main` 运行检查，并在原生 macOS Apple Silicon（arm64）runner 构建试包；CI 不自动发布。正式更新沿用 MyGo 的 Ed25519 签名与完整更新包，本机发布自动读取已保存的发行私钥，CI 使用签名 secret，详见[自动更新与 CI](docs/updates.md)。

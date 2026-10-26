@@ -73,7 +73,7 @@ macOS 代码签名沿用 MyGo 的 ad-hoc 签名，当前未配置 Developer ID �
 
 Release 标题使用 tag，正文包含 Full Changelog 链接，以及上一个可达的较低 SemVer tag 以来的非 merge commit 标题和短 hash，排除版本提交；没有此前 tag 时列出全部历史。预发布会标记为 prerelease。新 Release 先创建草稿，收齐本次全部安装包、更新包和 Feed，并核对 GitHub 返回的 SHA-256 与大小后才公开。已有 Release 保留正文与同名附件；同名内容不一致时停止，不静默覆盖。补传时先完成更新包上传，再上传 Feed。
 
-此处仍由本地 `make release` 执行发布。GitHub CI 只运行检查和构建 artifact，不在 tag 推送后另启发布引擎。CI 中手动选择签名构建也不会上传 Release，见[自动更新与 CI](updates.md)。本地发布只构建本机架构；不要把 arm64 的 Feed 或安装包改名冒充 amd64。
+此处仍由本地 `make release` 执行发布。GitHub CI 只验证 Apple Silicon（arm64），运行检查和构建 artifact，不在 tag 推送后另启发布引擎。CI 中手动选择签名构建也不会上传 Release，见[自动更新与 CI](updates.md)。本地发布只构建本机架构，安装包和 Feed 的架构必须与实际产物一致。
 
 ## 为已有 tag 补建 Release 和安装包
 

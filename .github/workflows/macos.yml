@@ -28,7 +28,6 @@ jobs:
       matrix:
         include:
           - {runner: macos-15, arch: arm64}
-          - {runner: macos-15-intel, arch: amd64}
     steps:
       - name: Reject signing requests outside main
         if: github.event_name == 'workflow_dispatch' && inputs.signed_updates

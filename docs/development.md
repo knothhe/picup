@@ -24,7 +24,7 @@ CLI 和 GUI 分别输出到 `build/bin/picup`、`build/bin/picup-gui`。`make bu
 
 发布附件使用 `make package-release`，构建并验证当前源码版本的 `Picup.app` 和附带 CLI，再输出 ZIP、MyGo 签名完整更新包和更新清单到 `build/release/`。脚本优先读取 `MYGO_UPDATER_PRIVATE_KEY`；未设置时自动读取本机默认签名文件，详见[密钥说明](updates.md)。此入口仅支持本机 macOS 架构，不生成 DMG；目前已验证 macOS arm64。也可传 `VERSION=0.1.0` 校验预期版本，版本不符时会停止。
 
-无私钥时运行 `make package-ci`，产物位于 `build/ci/`，名称包含 `ci-unsigned`，MyGo debug 构建禁用安装式更新。CI 的 macOS arm64 / amd64 矩阵、手动签名构建与验证边界见[自动更新与 CI](updates.md)。每次 `make build` 会生成并打包 `THIRD_PARTY_NOTICES.txt`。
+无私钥时运行 `make package-ci`，产物位于 `build/ci/`，名称包含 `ci-unsigned`，MyGo debug 构建禁用安装式更新。CI 目前只验证 macOS Apple Silicon（arm64）；手动签名构建与验证边界见[自动更新与 CI](updates.md)。每次 `make build` 会生成并打包 `THIRD_PARTY_NOTICES.txt`。
 
 本地安装使用 `make install`，详见[安装说明](install-local.md)。版本与发布命令见[发布流程](release.md)。
 

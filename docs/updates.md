@@ -28,15 +28,14 @@ CI 使用仓库 secret `MYGO_UPDATER_PRIVATE_KEY`。无签名试包不会读取�
 
 ## GitHub CI
 
-[macos.yml](../.github/workflows/macos.yml) 在 PR 和 `main` 推送时执行，矩阵只包含 macOS：
+[macos.yml](../.github/workflows/macos.yml) 在 PR 和 `main` 推送时执行，目前只验证 macOS Apple Silicon（arm64）：
 
 | Runner | Go 架构 | 产物 |
 | --- | --- | --- |
 | `macos-15` | `arm64` | 含 `ci-unsigned` 标记的 ZIP |
-| `macos-15-intel` | `amd64` | 含 `ci-unsigned` 标记的 ZIP |
 
 每个 job 校验实际宿主架构，运行 `make check`、`make test`，再在本机架构打包。它们只读仓库，不访问生产签名密钥，不运行安装或发布命令。artifact 名称包含架构、CI 标记与提交 SHA，保留七天。[GitHub 官方 runner 架构表](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
 
-手动运行 workflow 时，默认仍是无私钥试包；勾选 `signed_updates` 只允许 `main`，需要仓库 secret `MYGO_UPDATER_PRIVATE_KEY`，会生成每个架构的 ZIP、签名更新包和 Feed 作为 CI artifact。它不会创建 tag、Release 或公开 Feed。生产 secret 不提供给 PR job。
+手动运行 workflow 时，默认仍是无私钥试包；勾选 `signed_updates` 只允许 `main`，需要仓库 secret `MYGO_UPDATER_PRIVATE_KEY`，会生成 arm64 的 ZIP、签名更新包和 Feed 作为 CI artifact。它不会创建 tag、Release 或公开 Feed。生产 secret 不提供给 PR job。
 
 Actions 固定为核对过的提交 SHA，版本与 Go 工具链分别来自 `mygo.json`、`go.mod`。CI 的原生构建覆盖不能替代真实窗口、安装、系统钥匙串、不同 macOS 版本或更新重启链路的验收；当前本地验证系统为 macOS arm64，远程 CI 成功状态需在工作流实际运行后核实。
