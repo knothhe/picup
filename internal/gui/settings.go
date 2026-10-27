@@ -50,7 +50,7 @@ func (a *application) textPreference(c *ui.Context, key, label, description, pla
 	})
 }
 
-func selectControl(c *ui.Context, label string, value *string, choices, labels []string) {
+func selectControl(c *ui.Context, label string, value *string, choices, labels []string) ui.Element {
 	s := components.Select(c, value)
 	caption := *value
 	for i, choice := range choices {
@@ -64,6 +64,7 @@ func selectControl(c *ui.Context, label string, value *string, choices, labels [
 			s.Item(choice).Label(tr(labels[i])).Children(func() { components.Text(c, tr(labels[i])).FontSize(12) })
 		}
 	})
+	return s.Trigger
 }
 
 func (a *application) switchPreference(c *ui.Context, key, title, description string, value *bool) {

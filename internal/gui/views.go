@@ -130,7 +130,7 @@ func (a *application) uploadView(c *ui.Context) {
 			_, height := c.Size()
 			a.uploadSetup(c, counts.total > 0 || height < 720)
 		}
-		a.processingEditorFocused = processingDisclosure(c, "upload-processing", &a.uploadProcessingExpanded, processingSummary(config.Compress, config.Format, config.Quality, config.MaxWidth), &a.config.Compress, &a.config.Format, &a.quality, &a.maxWidth, a.uploading)
+		a.processingEditorFocused = a.processingDisclosure(c, "upload-processing", &a.uploadProcessing, processingSummaryParts(config.Compress, config.Format, config.Quality, config.MaxWidth), &a.config.Compress, &a.config.Format, &a.quality, &a.maxWidth, a.uploading)
 		if a.settingsSave.failed {
 			ui.Row(c).FillWidth().MinWidth(0).AlignItems(ui.Center).Gap(8).Children(func() {
 				components.Text(c, tr("保存失败，输入已保留")).Grow(1).MinWidth(0).Wrap().FontSize(12).TextColor(c.Theme().Danger)

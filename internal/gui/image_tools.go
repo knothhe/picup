@@ -32,7 +32,7 @@ type imageToolJob struct {
 
 type imageToolsState struct {
 	initialized            bool
-	optionsExpanded        bool
+	processing             processingDisclosureState
 	compress               bool
 	format                 string
 	quality, maxWidth      float64

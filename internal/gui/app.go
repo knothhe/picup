@@ -41,7 +41,7 @@ type application struct {
 	gallery                               galleryState
 	imageTools                            imageToolsState
 	processingEditorFocused               bool
-	uploadProcessingExpanded              bool
+	uploadProcessing                      processingDisclosureState
 	path                                  string
 	config                                config.Config
 	savedConfig                           *config.Config

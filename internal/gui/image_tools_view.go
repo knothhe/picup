@@ -21,14 +21,14 @@ func (a *application) imageToolsView(c *ui.Context) {
 	// Keep the empty drop target in a bounded column so it takes the available
 	// room. Editors, errors and queued files can scroll at smaller window sizes.
 	var body ui.Element
-	if len(s.jobs) > 0 || s.optionsExpanded || s.preferenceErr != nil || s.preferenceLoadErr != nil {
+	if len(s.jobs) > 0 || s.processing.expanded || s.preferenceErr != nil || s.preferenceLoadErr != nil {
 		body = scrollView(c).Key("image-tools-scroll").FillWidth().Grow(1).MinHeight(0)
 	} else {
 		body = ui.Column(c).Key("image-tools-empty").FillWidth().Grow(1).MinHeight(0)
 	}
 	body.Children(func() {
 		ui.Column(c).FillWidth().Grow(1).MinWidth(0).Padding(20, 24).Gap(14).Children(func() {
-			a.processingEditorFocused = processingDisclosure(c, "local-processing", &s.optionsExpanded, processingSummary(s.compress, s.format, int(s.quality), int(s.maxWidth)), &s.compress, &s.format, &s.quality, &s.maxWidth, s.running)
+			a.processingEditorFocused = a.processingDisclosure(c, "local-processing", &s.processing, processingSummaryParts(s.compress, s.format, int(s.quality), int(s.maxWidth)), &s.compress, &s.format, &s.quality, &s.maxWidth, s.running)
 			if s.preferenceLoadErr != nil {
 				ui.Row(c).FillWidth().MinWidth(0).Wrap().AlignItems(ui.Center).Gap(8).Children(func() {
 					components.Text(c, tr("读取图片工具参数失败，原记录已保留")).Grow(1).MinWidth(0).Wrap().FontSize(12).TextColor(c.Theme().Danger)

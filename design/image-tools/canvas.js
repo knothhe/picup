@@ -22,7 +22,7 @@ window.IMAGE_TOOLS_BOARDS = [
   },
   {
     "id": "processing",
-    "title": "工具 · 处理中",
+    "title": "工具 · 处理中 / 参数锁定",
     "src": "processing.html",
     "width": 1040,
     "height": 760

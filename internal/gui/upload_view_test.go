@@ -233,7 +233,7 @@ func TestUploadSummaryUsesSavedSettings(t *testing.T) {
 	a.savedConfig.Format = "webp"
 	a.config.Bucket, a.config.Quality = "draft-bucket", 40
 	tt := uploadViewTester(a, 1040, 760, false)
-	if !tt.HasText("R2 · photos") || !tt.HasText(processingSummary(true, "webp", 85, 0)) || tt.HasText("R2 · draft-bucket") || tt.HasText("质量 40") {
+	if !tt.HasText("R2 · photos") || !hasProcessingSummary(tt, true, "webp", 85, 0) || tt.HasText("R2 · draft-bucket") || tt.HasText("质量 40") {
 		t.Fatal("upload summary describes unsaved settings", tt.Texts())
 	}
 }

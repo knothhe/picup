@@ -22,6 +22,16 @@ func openProcessingOptions(t *testing.T, tt *ui.Tester) {
 	}
 }
 
+// hasProcessingSummary reports whether every summary chip is visible.
+func hasProcessingSummary(tt *ui.Tester, compress bool, format string, quality, maxWidth int) bool {
+	for _, part := range processingSummaryParts(compress, format, quality, maxWidth) {
+		if !tt.HasText(part.text) {
+			return false
+		}
+	}
+	return true
+}
+
 func assertProcessingControlsHidden(t *testing.T, tt *ui.Tester) {
 	t.Helper()
 	for _, label := range []string{"压缩图片", "图片格式", "压缩质量", "最大宽度"} {
@@ -122,7 +132,7 @@ func TestProcessingCollapsePreservesEditedValuesAndAutosaves(t *testing.T) {
 	}
 }
 
-func TestProcessingDisclosureStateIsSeparateAcrossPagesAndResetsOnRestart(t *testing.T) {
+func TestProcessingDisclosureStateIsSeparateAcrossPagesAndSurvivesRestart(t *testing.T) {
 	SetUILanguage("zh-CN")
 	a := imageToolsTestApplication(t)
 	a.tab = 0
@@ -145,12 +155,81 @@ func TestProcessingDisclosureStateIsSeparateAcrossPagesAndResetsOnRestart(t *tes
 	if _, exists := tt.Find("收起处理选项"); !exists {
 		t.Fatal("closing upload parameters also closed the local editor")
 	}
-	restarted := &application{path: a.path, config: config.Default(), quality: 85, tab: imageToolsTab}
-	if err := restarted.restoreImageToolsPreferences(); err != nil {
+	for _, tab := range []int{0, imageToolsTab} {
+		restarted := &application{path: a.path, config: config.Default(), quality: 85, tab: tab}
+		if err := restarted.restoreWorkspacePreferences(); err != nil {
+			t.Fatal(err)
+		}
+		if err := restarted.restoreImageToolsPreferences(); err != nil {
+			t.Fatal(err)
+		}
+		restartView := uploadViewTester(restarted, 1040, 760, false)
+		_, open := restartView.Find("收起处理选项")
+		if open != (tab == imageToolsTab) {
+			t.Fatal("restart did not restore the page's disclosure state", tab, open)
+		}
+	}
+}
+
+func TestProcessingSummaryChipsOpenTheMatchingControl(t *testing.T) {
+	SetUILanguage("zh-CN")
+	for _, tab := range []int{0, imageToolsTab} {
+		for chip, control := range map[string]string{"修改输出格式": "图片格式", "修改压缩质量": "压缩质量"} {
+			t.Run(fmt.Sprintf("tab=%d/%s", tab, chip), func(t *testing.T) {
+				a := imageToolsTestApplication(t)
+				a.tab = tab
+				a.config.Format, a.imageTools.format = "webp", "webp"
+				tt := uploadViewTester(a, 1040, 760, false)
+				if err := tt.Click(chip); err != nil {
+					t.Fatal(err)
+				}
+				tt.Frame()
+				if _, open := tt.Find("收起处理选项"); !open {
+					t.Fatal("summary chip did not open the editor")
+				}
+				if !tt.Focused(control) {
+					t.Fatal("summary chip did not focus its control", control)
+				}
+				b := &application{path: a.path}
+				if err := b.restoreWorkspacePreferences(); err != nil {
+					t.Fatal(err)
+				}
+				if b.uploadProcessing.expanded != (tab == 0) || b.imageTools.processing.expanded != (tab == imageToolsTab) {
+					t.Fatal("opening from a chip was not remembered")
+				}
+			})
+		}
+	}
+}
+
+func TestLockedProcessingOptionsCannotOpenButCanClose(t *testing.T) {
+	SetUILanguage("zh-CN")
+	a := imageToolsTestApplication(t)
+	a.tab = imageToolsTab
+	a.imageTools.running = true
+	tt := uploadViewTester(a, 1040, 760, false)
+	if !tt.HasText("已锁定") {
+		t.Fatal("locked options are not labelled")
+	}
+	for _, label := range []string{"展开处理选项", "修改输出格式"} {
+		_ = tt.Click(label)
+		tt.Frame()
+	}
+	if _, open := tt.Find("收起处理选项"); open || a.imageTools.processing.expanded {
+		t.Fatal("locked options opened")
+	}
+	if _, chip := tt.Find("修改输出格式"); chip {
+		t.Fatal("locked summary still offers to edit a value")
+	}
+	a.imageTools.processing.expanded = true
+	tt.Frame()
+	if err := tt.Click("收起处理选项"); err != nil {
 		t.Fatal(err)
 	}
-	restartView := uploadViewTester(restarted, 1040, 760, false)
-	assertProcessingControlsHidden(t, restartView)
+	tt.Frame()
+	if a.imageTools.processing.expanded {
+		t.Fatal("an editor left open when processing started could not be closed")
+	}
 }
 
 func TestProcessingPreferenceErrorsRemainActionableWhileCollapsed(t *testing.T) {

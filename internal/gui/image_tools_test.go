@@ -350,8 +350,16 @@ func TestImageToolsControlsRemainReachableAtMinimumWindowSize(t *testing.T) {
 					a := imageToolsViewFixture(t, state)
 					tt := uploadViewTester(a, 760, 620, dark)
 					imageToolsControlReachable(t, tt, tr("展开处理选项"), 760, 620)
-					openProcessingOptions(t, tt)
-					for _, label := range []string{"压缩图片", "图片格式", "压缩质量", "最大宽度", "选择图片", "粘贴图片", "更改目录"} {
+					labels := []string{"选择图片", "粘贴图片", "更改目录"}
+					if state == "processing" {
+						if !tt.HasText(tr("已锁定")) {
+							t.Fatal("running tools do not show that their options are locked")
+						}
+					} else {
+						openProcessingOptions(t, tt)
+						labels = append(labels, "压缩图片", "图片格式", "压缩质量", "最大宽度")
+					}
+					for _, label := range labels {
 						imageToolsControlReachable(t, tt, tr(label), 760, 620)
 					}
 					if state == "processing" {

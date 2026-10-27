@@ -154,7 +154,7 @@ func TestProfileSelectorSwitchesUploadDestination(t *testing.T) {
 		t.Fatal(err)
 	}
 	tt.Frame()
-	if a.config.ActiveProfile != id || !tt.HasText("R2 · archive-bucket") || !tt.HasText(processingSummary(true, "original", 60, 0)) {
+	if a.config.ActiveProfile != id || !tt.HasText("R2 · archive-bucket") || !hasProcessingSummary(tt, true, "original", 60, 0) {
 		t.Fatal("selector did not change visible destination and upload options", tt.Texts())
 	}
 	openProcessingOptions(t, tt)
