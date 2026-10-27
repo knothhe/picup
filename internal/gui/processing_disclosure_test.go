@@ -17,7 +17,7 @@ import (
 
 func openProcessingOptions(t *testing.T, tt *ui.Tester) {
 	t.Helper()
-	if err := tt.Click(tr("展开处理选项")); err != nil {
+	if err := tt.Click(tr("展开输出设置")); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -53,14 +53,14 @@ func TestProcessingOptionsDefaultCollapsedAndToggleHasNoBusinessSideEffects(t *t
 				settings, options := a.currentSettings(), a.imageTools.viewPreferences()
 				tt := uploadViewTester(a, 760, 620, false)
 				assertProcessingControlsHidden(t, tt)
-				assertUploadControlWithin(t, tt, tr("展开处理选项"), 760, 620)
+				assertUploadControlWithin(t, tt, tr("展开输出设置"), 760, 620)
 				openProcessingOptions(t, tt)
 				for _, label := range []string{"压缩图片", "图片格式", "压缩质量", "最大宽度"} {
 					if _, exists := tt.Find(tr(label)); !exists {
 						t.Fatal("expanded processing options do not expose an editor", label)
 					}
 				}
-				if err := tt.Click(tr("收起处理选项")); err != nil {
+				if err := tt.Click(tr("收起输出设置")); err != nil {
 					t.Fatal(err)
 				}
 				tt.Advance(settingsAutosaveDelay + time.Second)
@@ -93,7 +93,7 @@ func TestProcessingCollapsePreservesEditedValuesAndAutosaves(t *testing.T) {
 			tt.Key(ui.Cmd, ui.KeyA)
 			tt.Type("73")
 			tt.Key(0, ui.KeyEnter)
-			if err := tt.Click("收起处理选项"); err != nil {
+			if err := tt.Click("收起输出设置"); err != nil {
 				t.Fatal(err)
 			}
 			assertProcessingControlsHidden(t, tt)
@@ -144,15 +144,15 @@ func TestProcessingDisclosureStateIsSeparateAcrossPagesAndSurvivesRestart(t *tes
 	openProcessingOptions(t, tt)
 	a.navigate(0)
 	tt.Frame()
-	if _, exists := tt.Find("收起处理选项"); !exists {
+	if _, exists := tt.Find("收起输出设置"); !exists {
 		t.Fatal("switching pages discarded the upload editor state")
 	}
-	if err := tt.Click("收起处理选项"); err != nil {
+	if err := tt.Click("收起输出设置"); err != nil {
 		t.Fatal(err)
 	}
 	a.navigate(imageToolsTab)
 	tt.Frame()
-	if _, exists := tt.Find("收起处理选项"); !exists {
+	if _, exists := tt.Find("收起输出设置"); !exists {
 		t.Fatal("closing upload parameters also closed the local editor")
 	}
 	for _, tab := range []int{0, imageToolsTab} {
@@ -164,7 +164,7 @@ func TestProcessingDisclosureStateIsSeparateAcrossPagesAndSurvivesRestart(t *tes
 			t.Fatal(err)
 		}
 		restartView := uploadViewTester(restarted, 1040, 760, false)
-		_, open := restartView.Find("收起处理选项")
+		_, open := restartView.Find("收起输出设置")
 		if open != (tab == imageToolsTab) {
 			t.Fatal("restart did not restore the page's disclosure state", tab, open)
 		}
@@ -184,7 +184,7 @@ func TestProcessingSummaryChipsOpenTheMatchingControl(t *testing.T) {
 					t.Fatal(err)
 				}
 				tt.Frame()
-				if _, open := tt.Find("收起处理选项"); !open {
+				if _, open := tt.Find("收起输出设置"); !open {
 					t.Fatal("summary chip did not open the editor")
 				}
 				if !tt.Focused(control) {
@@ -211,11 +211,11 @@ func TestLockedProcessingOptionsCannotOpenButCanClose(t *testing.T) {
 	if !tt.HasText("已锁定") {
 		t.Fatal("locked options are not labelled")
 	}
-	for _, label := range []string{"展开处理选项", "修改输出格式"} {
+	for _, label := range []string{"展开输出设置", "修改输出格式"} {
 		_ = tt.Click(label)
 		tt.Frame()
 	}
-	if _, open := tt.Find("收起处理选项"); open || a.imageTools.processing.expanded {
+	if _, open := tt.Find("收起输出设置"); open || a.imageTools.processing.expanded {
 		t.Fatal("locked options opened")
 	}
 	if _, chip := tt.Find("修改输出格式"); chip {
@@ -223,7 +223,7 @@ func TestLockedProcessingOptionsCannotOpenButCanClose(t *testing.T) {
 	}
 	a.imageTools.processing.expanded = true
 	tt.Frame()
-	if err := tt.Click("收起处理选项"); err != nil {
+	if err := tt.Click("收起输出设置"); err != nil {
 		t.Fatal(err)
 	}
 	tt.Frame()

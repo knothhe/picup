@@ -140,7 +140,7 @@ func TestNavigationAndSidebar(t *testing.T) {
 			}
 			tt.Advance(400 * time.Millisecond)
 		}
-		click("展开处理选项")
+		click("展开输出设置")
 		click("压缩图片")
 		// Let the save notice leave the lower-left navigation before clicking
 		// another page; this test exercises navigation rather than toast input.

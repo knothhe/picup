@@ -141,6 +141,12 @@ func (a *application) uploadView(c *ui.Context) {
 			saved:  processingValues{saved.Compress, saved.Format, saved.Quality, saved.MaxWidth},
 			locked: a.uploading,
 			commit: func() bool { a.save(); return !a.settingsSave.failed },
+			destinationChip: func(open func(string)) {
+				if destinationChip(c, tr("修改链接与剪贴板"), lucide.Clipboard(), copyChoiceSummary(config), false, false) {
+					open("output")
+				}
+			},
+			destination: func(focus *string) { a.uploadDestination(c, focus) },
 		})
 		if a.settingsSave.failed {
 			ui.Row(c).FillWidth().MinWidth(0).AlignItems(ui.Center).Gap(8).Children(func() {
@@ -163,7 +169,7 @@ func (a *application) uploadView(c *ui.Context) {
 			})
 		}
 	})
-	a.uploadActionBar(c, counts, config)
+	a.uploadActionBar(c, counts)
 }
 
 // uploadSetup walks a new profile through connecting storage. Once files are
@@ -350,45 +356,47 @@ func (a *application) uploadQueueToolbar(c *ui.Context, counts uploadQueueCounts
 var formatLabels = map[string]string{"original": "保留原格式", "webp": "WebP", "avif": "AVIF", "jpeg": "JPEG", "png": "PNG"}
 var outputLabels = map[string]string{"url": "URL", "markdown": "Markdown", "json": "JSON"}
 
-// uploadChip summarizes a setting the next upload will use and opens it.
-func uploadChip(c *ui.Context, label string, icon *ui.SVG, text string) bool {
-	t := c.Theme()
-	chip := ui.ButtonBase(c).Label(label).Tooltip(label).Height(28).MinWidth(0).Shrink(1).Padding(0, 10).Gap(6).Radius(7).Border(1, t.Border).Background(t.Surface).AlignItems(ui.Center)
-	if chip.Hovered() || chip.FocusVisible() {
-		chip.Background(t.SurfaceHover)
+// copyChoiceSummary names the link format and whether uploads copy it.
+func copyChoiceSummary(config config.Config) string {
+	output := outputLabels[config.Output]
+	if output == "" {
+		output = config.Output
 	}
-	chip.Children(func() {
-		components.Icon(c, icon).Size(14, 14).Shrink(0).TextColor(t.Accent)
-		components.Text(c, text).FontSize(12).TextColor(t.TextMuted).SingleLine().Ellipsis("…").MinWidth(0)
-	})
-	return chip.Clicked()
+	if config.Copy {
+		return tf("自动复制 %s", output)
+	}
+	return tf("复制为 %s", output)
 }
 
-func (a *application) uploadActionBar(c *ui.Context, counts uploadQueueCounts, config config.Config) {
+// uploadDestination edits the link and clipboard preferences shared with
+// settings and the CLI.
+func (a *application) uploadDestination(c *ui.Context, focus *string) {
 	t := c.Theme()
-	ui.Row(c).Key("upload-actions").FillWidth().Height(56).Shrink(0).Padding(0, 16, 0, 24).Gap(8).AlignItems(ui.Center).BorderWidth(1, 0, 0, 0).BorderColor(t.Border).Children(func() {
-		output := outputLabels[config.Output]
-		if output == "" {
-			output = config.Output
-		}
-		copied := tf("复制为 %s", output)
-		if config.Copy {
-			copied = tf("自动复制 %s", output)
-		}
-		if uploadChip(c, tr("链接与剪贴板"), lucide.Clipboard(), copied) {
-			a.openSettings(1)
-		}
-		ui.Spacer(c)
+	ui.Row(c).FillWidth().MinWidth(0).Wrap().Gap(12).AlignItems(ui.End).Children(func() {
+		ui.Column(c).Key("output").Width(180).Shrink(0).Gap(5).Children(func() {
+			components.Text(c, tr("链接格式")).FontSize(12).TextColor(t.TextMuted)
+			trigger := selectControl(c, "链接格式", &a.config.Output, []string{"url", "markdown", "json"}, []string{"URL", "Markdown", "JSON"})
+			requestFocus(focus, "output", trigger.FocusWithin(), func() { trigger.AutoFocus() })
+		})
+		ui.Row(c).Key("copy").Height(32).AlignItems(ui.Center).Children(func() {
+			components.Switch(c, &a.config.Copy, tr("上传后自动复制结果"))
+		})
+	})
+}
+
+func (a *application) uploadActionBar(c *ui.Context, counts uploadQueueCounts) {
+	if !a.uploading && counts.pending == 0 {
+		return
+	}
+	ui.Row(c).Key("upload-actions").FillWidth().Height(56).Shrink(0).Padding(0, 16, 0, 24).Gap(8).AlignItems(ui.Center).Justify(ui.End).BorderWidth(1, 0, 0, 0).BorderColor(c.Theme().Border).Children(func() {
 		if a.uploading {
 			if components.Button(c, tr("取消上传"), components.ButtonOutline).Shrink(0).Clicked() && a.cancel != nil {
 				a.cancel()
 			}
 			return
 		}
-		if counts.pending > 0 {
-			if components.Button(c, tf("上传 %d 张图片", counts.pending), components.ButtonPrimary).Shrink(0).Disabled(a.busy).Clicked() {
-				a.upload()
-			}
+		if components.Button(c, tf("上传 %d 张图片", counts.pending), components.ButtonPrimary).Shrink(0).Disabled(a.busy).Clicked() {
+			a.upload()
 		}
 	})
 }

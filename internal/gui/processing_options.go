@@ -143,6 +143,11 @@ type processingEditor struct {
 	// savedNotice confirms saves in the header. Uploads leave this to the
 	// app's settings toast so one save is not announced twice.
 	savedNotice bool
+	// destinationChip summarizes where results go in the collapsed header;
+	// open expands the editor at a destination control.
+	destinationChip func(open func(field string))
+	// destination edits where results go, below the processing fields.
+	destination func(focus *string)
 }
 
 func (e processingEditor) current() processingValues {
@@ -187,9 +192,9 @@ func (a *application) processingDisclosure(c *ui.Context, e processingEditor) (e
 			}
 		}
 		header.Children(func() {
-			label := "展开处理选项"
+			label := "展开输出设置"
 			if state.expanded {
-				label = "收起处理选项"
+				label = "收起输出设置"
 			}
 			toggle := ui.ButtonBase(c).Key("processing-toggle").Shrink(0).Height(44).Padding(0, 4, 0, 14).Gap(9).AlignItems(ui.Center).Label(tr(label)).Expanded(state.expanded).Background(ui.Color{}).Disabled(!canToggle)
 			if locked {
@@ -197,7 +202,7 @@ func (a *application) processingDisclosure(c *ui.Context, e processingEditor) (e
 			}
 			toggle.Children(func() {
 				components.Icon(c, lucide.SlidersHorizontal()).Size(15, 15).Shrink(0).TextColor(t.TextMuted)
-				components.Text(c, tr("处理选项")).FontSize(12.5).FontWeight(500).SingleLine().Shrink(0)
+				components.Text(c, tr("输出设置")).FontSize(12.5).FontWeight(500).SingleLine().Shrink(0)
 			})
 			if toggle.Clicked() {
 				open(!state.expanded, "")
@@ -218,6 +223,10 @@ func (a *application) processingDisclosure(c *ui.Context, e processingEditor) (e
 						processingChip(c, part, locked, unprocessed, func() { open(true, part.field) })
 					}
 				})
+				if e.destinationChip != nil {
+					ui.Box(c).Size(1, 16).Shrink(0).Background(t.Border)
+					e.destinationChip(func(field string) { open(true, field) })
+				}
 			}
 			if saved {
 				ui.Row(c).Key("processing-saved").Shrink(0).Gap(4).AlignItems(ui.Center).Children(func() {
@@ -242,6 +251,11 @@ func (a *application) processingDisclosure(c *ui.Context, e processingEditor) (e
 		if state.expanded {
 			ui.Column(c).FillWidth().MinWidth(0).BorderWidth(1, 0, 0, 0).BorderColor(t.Border.Alpha(.65)).Children(func() {
 				editorFocused = processingOptions(c, e.key, &state.focus, e.compress, e.format, e.quality, e.maxWidth, e.stacked, locked)
+				if e.destination != nil {
+					ui.Column(c).Key(e.key+"-destination").FillWidth().MinWidth(0).Padding(12, 14).Gap(10).BorderWidth(1, 0, 0, 0).BorderColor(t.Border.Alpha(.65)).Children(func() {
+						e.destination(&state.focus)
+					})
+				}
 			})
 		}
 	})
@@ -317,6 +331,26 @@ func processingChip(c *ui.Context, part processingPart, locked, unprocessed bool
 	if !locked && chip.Clicked() {
 		open()
 	}
+}
+
+// destinationChip shows where results go next to the processing summary.
+// Accent marks a destination still to be chosen.
+func destinationChip(c *ui.Context, label string, icon *ui.SVG, text string, accent, disabled bool) bool {
+	t := c.Theme()
+	chip := ui.ButtonBase(c).Key("destination").Label(label).Tooltip(label).Shrink(1).MinWidth(0).MaxWidth(220).Height(24).Padding(0, 8).Gap(5).Radius(6).AlignItems(ui.Center).Disabled(disabled)
+	color := t.TextMuted
+	if accent {
+		color = t.Accent
+	}
+	if !disabled && (chip.Hovered() || chip.FocusVisible()) {
+		chip.Background(accentSoft(t))
+		color = t.Accent
+	}
+	chip.Children(func() {
+		components.Icon(c, icon).Size(13, 13).Shrink(0).TextColor(color)
+		components.Text(c, text).FontSize(12).TextColor(color).SingleLine().Ellipsis("…").MinWidth(0)
+	})
+	return !disabled && chip.Clicked()
 }
 
 // processingOptions edits only the values owned by its caller. Uploads keep

@@ -7,6 +7,7 @@ import unittest
 from unittest import mock
 
 import build_binaries
+import dev_signing
 from macos_signing import Signing, SigningError
 
 
@@ -90,6 +91,21 @@ class DevBuildTests(unittest.TestCase):
         self.sign.assert_not_called()
         self.release_select.assert_called_once()
         self.package.assert_called_once_with(Path.cwd(), False, None)
+
+    def test_linux_dev_package_skips_macos_signing_and_bundle_packaging(self):
+        self.select.side_effect = dev_signing.configuration
+        executable = Path('build/dev/bin/picup-gui')
+        with mock.patch.object(build_binaries.sys, 'platform', 'linux'):
+            with mock.patch.object(build_binaries, 'package_linux_development',
+                                   return_value=executable) as package_linux:
+                self.assertEqual(build_binaries.build(package=True, development=True), executable)
+        self.assertEqual(self.execute.call_count, 3)
+        go, environment, directory = package_linux.call_args.args
+        self.assertEqual((go, directory), ('go', Path('build/dev')))
+        self.assertIn('-tags=picup_dev', environment['GOFLAGS'])
+        self.sign.assert_not_called()
+        self.package.assert_not_called()
+        self.verify.assert_not_called()
 
     def test_explicit_ci_unsigned_dev_build_does_not_sign_outputs(self):
         self.select.return_value = None

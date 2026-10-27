@@ -77,6 +77,28 @@ make install-release
 
 正式 CLI 会先于桌面应用安装。如果后续应用替换失败，错误信息会说明 CLI 是否已安装，以及应用备份的位置（如有）。
 
+## Linux 本地安装
+
+Linux 上 `make install` 同样安装隔离的 Dev 通道：
+
+```sh
+make install
+```
+
+此命令构建 Dev CLI 与 GUI，由 `make package-dev` 组装为 `build/dev/dist/linux-<arch>/picup-dev/`（GUI、同目录的 CLI、图标与第三方声明），再安装到：
+
+| 产物 | 默认路径 |
+| --- | --- |
+| Dev 桌面应用 | `~/.local/lib/picup-dev/picup-gui` |
+| Dev CLI | `~/.local/bin/picup-dev` |
+| 应用菜单入口 | `$XDG_DATA_HOME/applications/com.knothhe.picup.dev.desktop`（默认 `~/.local/share`） |
+
+`-app-dir` 指定 `picup-dev` 目录所在位置，例如 `make install INSTALL_FLAGS="-app-dir $HOME/.local/opt"`。安装器只替换核验为 Dev 构建、且只含上述文件的 `picup-dev` 目录，不覆盖并非由它写入的同名菜单入口。
+
+`make uninstall` 核验后移除应用目录、CLI、菜单入口，以及指向这一 GUI 的登录自启动项（`$XDG_CONFIG_HOME/autostart` 下），保留配置、图库缓存、数据和凭据。已安装的 Dev 正在运行时，安装和卸载会先请求它正常退出。
+
+Linux 的 MyGo 打包会以应用名命名 GUI，与同名 CLI 冲突，因此 `make package` 与 `make install-release` 在 Linux 上暂不可用。
+
 ## 将 CLI 加入 PATH
 
 默认 CLI 目录不在 `PATH` 时，将下面一行加入 shell 配置，例如 zsh 的 `~/.zshrc`，再打开新的终端：
@@ -97,7 +119,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 macOS 和 Linux 默认使用 `~/.local/bin`，Windows 默认使用 `%LOCALAPPDATA%\Picup\bin`。也可直接运行 `make build` 生成的 CLI。
 
-`make install`、`make uninstall` 及显式通道安装、卸载入口当前只支持 macOS；其他平台使用 `make package` 构建当前平台的正式包。版本发布命令独立于本地安装，见[版本发布](release.md)。
+`make install`、`make uninstall` 支持 macOS 和 Linux，Linux 见上文「Linux 本地安装」；`make install-release` 当前只支持 macOS。版本发布命令独立于本地安装，见[版本发布](release.md)。
 
 ## 独立 Dev 应用与卸载
 

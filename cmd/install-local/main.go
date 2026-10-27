@@ -1,4 +1,4 @@
-// Local installation of the macOS app and its companion CLI.
+// Local installation of the desktop app and its companion CLI.
 package main
 
 import (
@@ -27,7 +27,11 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	appDir := flag.String("app-dir", filepath.Join(home, "Applications"), "desktop application directory")
+	defaultAppDir := filepath.Join(home, "Applications")
+	if runtime.GOOS == "linux" {
+		defaultAppDir = filepath.Join(home, ".local", "lib")
+	}
+	appDir := flag.String("app-dir", defaultAppDir, "desktop application directory")
 	cliDir := flag.String("cli-dir", install.DefaultDir(), "CLI installation directory")
 	development := flag.Bool("dev", false, "install the isolated Picup Dev application and picup-dev CLI")
 	uninstall := flag.Bool("uninstall", false, "remove a verified Dev installation, preserving all user data")
@@ -36,8 +40,11 @@ func run() error {
 	if flag.NArg() != 0 {
 		return fmt.Errorf("unexpected arguments: %v", flag.Args())
 	}
-	if runtime.GOOS != "darwin" {
-		return fmt.Errorf("make install currently supports macOS; use make package on other platforms")
+	if runtime.GOOS != "darwin" && (runtime.GOOS != "linux" || !*development) {
+		if runtime.GOOS == "linux" {
+			return fmt.Errorf("make install-release currently supports macOS; use make install for the Linux Dev channel")
+		}
+		return fmt.Errorf("make install currently supports macOS and Linux; use make package on other platforms")
 	}
 	if !filepath.IsAbs(*appDir) || !filepath.IsAbs(*cliDir) {
 		return fmt.Errorf("installation directories must be absolute paths")
@@ -65,12 +72,12 @@ func run() error {
 			if err := runBuildCommand("make", "package-dev", "GO="+goCommand); err != nil {
 				return err
 			}
-			source = filepath.Join("build/dev/dist", "darwin-"+runtime.GOARCH, "Picup Dev.app")
+			source = filepath.Join("build/dev/dist", runtime.GOOS+"-"+runtime.GOARCH, developmentName())
 		}
 		if err := install.InstallDevelopment(source, *appDir, *cliDir); err != nil {
 			return err
 		}
-		fmt.Println("Installed Dev desktop:", filepath.Join(*appDir, "Picup Dev.app"))
+		fmt.Println("Installed Dev desktop:", filepath.Join(*appDir, developmentName()))
 		fmt.Println("Installed Dev CLI:", filepath.Join(*cliDir, "picup-dev"))
 		return nil
 	}
@@ -149,6 +156,13 @@ func run() error {
 		fmt.Printf("Add %s to PATH to use picup from your shell.\n", *cliDir)
 	}
 	return nil
+}
+
+func developmentName() string {
+	if runtime.GOOS == "linux" {
+		return "picup-dev"
+	}
+	return "Picup Dev.app"
 }
 
 var runBuildCommand = command

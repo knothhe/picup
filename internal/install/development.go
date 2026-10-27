@@ -32,6 +32,9 @@ type developmentRecord struct {
 	PlistHash         string `json:"plist_sha256"`
 	CLIHash           string `json:"cli_sha256"`
 	LoginUnregistered bool   `json:"login_item_unregistered,omitempty"`
+	Platform          string `json:"platform,omitempty"`
+	Desktop           string `json:"desktop_entry,omitempty"`
+	DesktopHash       string `json:"desktop_entry_sha256,omitempty"`
 }
 
 var readDevelopmentBuildInfo = buildinfo.ReadFile
@@ -95,6 +98,9 @@ func developmentTargets(appDir, cliDir string) (string, string, error) {
 		return "", "", err
 	}
 	app := filepath.Join(appDir, developmentAppName)
+	if runtime.GOOS == "linux" {
+		app = filepath.Join(appDir, linuxDevelopmentDirectory)
+	}
 	cli := filepath.Join(cliDir, "picup-dev")
 	if overlap(app, cliDir) || overlap(app, cli) {
 		return "", "", errors.New("CLI directory must not be inside the application bundle")
@@ -237,6 +243,9 @@ func unregisterDevelopmentLogin(executable string) error {
 // InstallDevelopment consumes a precise, validated Dev bundle. It creates no
 // login item, protocol registration or user configuration.
 func InstallDevelopment(source, appDir, cliDir string) error {
+	if runtime.GOOS == "linux" {
+		return installLinuxDevelopment(source, appDir, cliDir)
+	}
 	app, cli, err := developmentTargets(appDir, cliDir)
 	if err != nil {
 		return err
@@ -326,6 +335,9 @@ func InstallDevelopment(source, appDir, cliDir string) error {
 // UninstallDevelopment preserves all configuration, user data and credentials.
 // A missing bundle never authorizes deleting an unverified CLI or receipt.
 func UninstallDevelopment(appDir, cliDir string) error {
+	if runtime.GOOS == "linux" {
+		return uninstallLinuxDevelopment(appDir, cliDir)
+	}
 	app, cli, err := developmentTargets(appDir, cliDir)
 	if err != nil {
 		return err
