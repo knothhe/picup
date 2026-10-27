@@ -268,10 +268,10 @@ func TestUploadActionsAndLongRowsFitNativeWindow(t *testing.T) {
 								a.jobs[0], a.jobs[1] = failed, a.jobs[0]
 							}
 							tt := uploadViewTester(a, size[0], size[1], dark)
-							for _, label := range []string{tr("存储设置"), tr("选择图片"), tr("从剪贴板粘贴"), tr("展开处理选项")} {
+							for _, label := range []string{tr("存储设置"), tr("选择图片"), tr("从剪贴板粘贴"), tr("展开输出设置")} {
 								assertUploadControlWithin(t, tt, label, size[0], size[1])
 							}
-							disclosure := assertUploadControlWithin(t, tt, tr("展开处理选项"), size[0], size[1])
+							disclosure := assertUploadControlWithin(t, tt, tr("展开输出设置"), size[0], size[1])
 							if state == "processing" {
 								assertUploadControlWithin(t, tt, tr("取消上传"), size[0], size[1])
 								assertUploadControlWithin(t, tt, tf("已处理 %d / %d", 1, 3), size[0], size[1])

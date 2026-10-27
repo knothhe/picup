@@ -38,6 +38,17 @@ func (a *application) imageToolsView(c *ui.Context) {
 				locked:      s.running,
 				commit:      a.flushImageToolsPreferences,
 				savedNotice: true,
+				destinationChip: func(func(string)) {
+					text, label := filepath.Base(s.outputDir), tr("更改导出目录")
+					if s.outputDir == "" {
+						text, label = tr("选择导出目录"), tr("选择导出目录")
+					}
+					// A folder is chosen in a dialog, so the chip opens it directly.
+					if destinationChip(c, label, lucide.FolderOpen(), text, s.outputDir == "", a.busy || s.running) {
+						a.chooseImageToolOutput()
+					}
+				},
+				destination: func(*string) { a.imageToolsDestination(c) },
 			})
 			if s.preferenceLoadErr != nil {
 				ui.Row(c).FillWidth().MinWidth(0).Wrap().AlignItems(ui.Center).Gap(8).Children(func() {
@@ -177,46 +188,54 @@ func (a *application) imageToolRow(c *ui.Context, j *imageToolJob, first bool) {
 	})
 }
 
-func (a *application) imageToolsActionBar(c *ui.Context) {
+// imageToolsDestination shows the export folder inside the options editor.
+func (a *application) imageToolsDestination(c *ui.Context) {
 	s, t := &a.imageTools, c.Theme()
-	width, _ := c.Size()
-	ui.Column(c).Key("local-export-actions").FillWidth().Shrink(0).Padding(10, 16, 10, 24).Gap(8).BorderWidth(1, 0, 0, 0).BorderColor(t.Border).Children(func() {
-		folder := func() {
-			components.Icon(c, lucide.FolderOpen()).Size(16, 16).Shrink(0).TextColor(t.TextMuted)
-			ui.Column(c).Grow(1).Shrink(1).MinWidth(0).Gap(3).Children(func() {
-				label := s.outputDir
-				if label == "" {
-					label = tr("选择导出目录")
-				}
-				components.Text(c, label).FontSize(12).SingleLine().Ellipsis("…").Tooltip(s.outputDir)
-				components.Text(c, tr("保留原图，重名文件自动改名。")).FontSize(11).TextColor(t.TextMuted).Wrap()
-			})
-			label := "更改目录"
-			if s.outputDir == "" {
-				label = "选择导出目录"
+	ui.Row(c).FillWidth().MinWidth(0).Gap(8).AlignItems(ui.Center).Children(func() {
+		components.Icon(c, lucide.FolderOpen()).Size(16, 16).Shrink(0).TextColor(t.TextMuted)
+		ui.Column(c).Grow(1).Shrink(1).MinWidth(0).Gap(3).Children(func() {
+			label := s.outputDir
+			if label == "" {
+				label = tr("选择导出目录")
 			}
-			if components.Button(c, tr(label), components.ButtonGhost).Shrink(0).Disabled(a.busy).Clicked() {
+			components.Text(c, label).FontSize(12).SingleLine().Ellipsis("…").Tooltip(s.outputDir)
+			components.Text(c, tr("保留原图，重名文件自动改名。")).FontSize(11).TextColor(t.TextMuted).Wrap()
+		})
+		label := "更改目录"
+		if s.outputDir == "" {
+			label = "选择导出目录"
+		}
+		if components.Button(c, tr(label), components.ButtonOutline).Shrink(0).Disabled(a.busy).Clicked() {
+			a.chooseImageToolOutput()
+		}
+	})
+}
+
+func (a *application) imageToolsActionBar(c *ui.Context) {
+	s := &a.imageTools
+	pending := a.imageToolPending()
+	if !s.running && pending == 0 {
+		return
+	}
+	ui.Row(c).Key("local-export-actions").FillWidth().MinWidth(0).Height(56).Shrink(0).Padding(0, 16, 0, 24).Gap(8).AlignItems(ui.Center).BorderWidth(1, 0, 0, 0).BorderColor(c.Theme().Border).Children(func() {
+		if s.running {
+			ui.Spacer(c)
+			if components.Button(c, tr("取消处理"), components.ButtonOutline).Clicked() && s.cancel != nil {
+				s.cancel()
+			}
+			return
+		}
+		if s.outputDir == "" {
+			components.Text(c, tr("先选择导出目录")).Shrink(1).MinWidth(0).SingleLine().Ellipsis("…").FontSize(12).TextColor(c.Theme().TextMuted)
+		}
+		ui.Spacer(c)
+		if s.outputDir == "" {
+			if components.Button(c, tr("选择导出目录"), components.ButtonOutline).Shrink(0).Disabled(a.busy).Clicked() {
 				a.chooseImageToolOutput()
 			}
 		}
-		actions := func() {
-			if s.running {
-				if components.Button(c, tr("取消处理"), components.ButtonOutline).Clicked() && s.cancel != nil {
-					s.cancel()
-				}
-			} else if pending := a.imageToolPending(); pending > 0 {
-				if components.Button(c, tf("处理并导出 %d 张", pending), components.ButtonPrimary).Disabled(a.busy || s.outputDir == "").Clicked() {
-					a.exportImageTools(false)
-				}
-			}
-		}
-		if width < 800 {
-			ui.Row(c).FillWidth().MinWidth(0).Gap(8).AlignItems(ui.Center).Children(folder)
-			if s.running || a.imageToolPending() > 0 {
-				ui.Row(c).FillWidth().Justify(ui.End).Children(actions)
-			}
-		} else {
-			ui.Row(c).FillWidth().MinWidth(0).Gap(8).AlignItems(ui.Center).Children(func() { folder(); actions() })
+		if components.Button(c, tf("处理并导出 %d 张", pending), components.ButtonPrimary).Shrink(0).Disabled(a.busy || s.outputDir == "").Clicked() {
+			a.exportImageTools(false)
 		}
 	})
 }
