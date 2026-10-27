@@ -8,7 +8,8 @@ import sys
 
 from build_flags import build_environment, BuildFlagsError
 from build_manifest import packaging_configuration, verify_development_icon
-from macos_signing import configuration, verify_application, SigningError
+from dev_signing import configuration as development_signing
+from macos_signing import configuration, sign_development_binaries, verify_application, SigningError
 
 
 def build(package=False, skip_dmg=False, development=False):
@@ -17,6 +18,11 @@ def build(package=False, skip_dmg=False, development=False):
     is_dev = 'picup_dev' in environment.get('GOFLAGS', '').split('-tags=')[-1].split(',')
     if is_dev:
         verify_development_icon(Path.cwd())
+    signing = (development_signing(Path.cwd(), environment) if is_dev else
+               configuration(environment) if package else None)
+    macos_target = sys.platform == 'darwin' and (environment.get('GOOS') or 'darwin') == 'darwin'
+    if is_dev and signing and not macos_target:
+        raise SigningError('Signing Picup Dev requires a macOS host and target; unset GOOS or use a Mac.')
     go = environment.get('GO', 'go')
     directory = Path('build/dev' if is_dev else 'build')
     (directory / 'bin').mkdir(parents=True, exist_ok=True)
@@ -28,8 +34,9 @@ def build(package=False, skip_dmg=False, development=False):
     ]
     for command in commands:
         subprocess.run(command, env=environment, check=True)
+    if is_dev and signing:
+        sign_development_binaries(directory, signing)
     if package:
-        signing = configuration()
         with packaging_configuration(Path.cwd(), is_dev, signing) as config_dir:
             arguments = [go, 'tool', 'mygo', 'build']
             if skip_dmg and not (signing and signing.profile):

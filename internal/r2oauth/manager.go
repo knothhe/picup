@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -37,6 +38,7 @@ type sdkSession struct {
 	client      *r2connect.Client
 	manager     *r2connect.Manager
 	fingerprint [32]byte
+	missing     bool
 }
 type authorization struct {
 	id                           string
@@ -75,14 +77,31 @@ func New(path string) *Manager {
 }
 
 func (m *Manager) observeSecretDenial() {
-	if store, ok := m.secrets.(*keyring.Store); ok {
-		store.OnAccessDenied = func() { m.accessDenied.Store(true) }
+	var store *keyring.Store
+	switch secrets := m.secrets.(type) {
+	case *keyring.Store:
+		store = secrets
+	case *sessionSecrets:
+		store = secrets.Store
+	}
+	if store != nil {
+		store.OnAccessDenied = func() {
+			m.accessDenied.Store(true)
+			m.forgetSecretSession()
+		}
+	}
+}
+
+func (m *Manager) forgetSecretSession() {
+	if secrets, ok := m.secrets.(interface{ Forget() }); ok {
+		secrets.Forget()
 	}
 }
 
 func (m *Manager) accessError(err error) error {
 	if errors.Is(err, keyring.ErrAccessDenied) {
 		m.accessDenied.Store(true)
+		m.forgetSecretSession()
 	}
 	if m.accessDenied.Load() {
 		return keyring.ErrAccessDenied
@@ -134,16 +153,20 @@ func (m *Manager) ensureDirectory() error {
 func (m *Manager) sessionIDs() ([]string, error) {
 	info, err := os.Lstat(m.sessionDirectory())
 	if errors.Is(err, os.ErrNotExist) {
+		m.forgetRemovedSessions(nil)
 		return nil, nil
 	}
 	if err != nil {
+		m.forgetSecretSession()
 		return nil, err
 	}
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		m.forgetSecretSession()
 		return nil, r2connect.ErrInvalidState
 	}
 	entries, err := os.ReadDir(m.sessionDirectory())
 	if err != nil {
+		m.forgetSecretSession()
 		return nil, err
 	}
 	var ids []string
@@ -153,11 +176,29 @@ func (m *Manager) sessionIDs() ([]string, error) {
 			continue
 		}
 		if !entry.Type().IsRegular() {
+			m.forgetSecretSession()
 			return nil, r2connect.ErrInvalidState
 		}
 		ids = append(ids, id)
 	}
+	m.forgetRemovedSessions(ids)
 	return ids, nil
+}
+
+func (m *Manager) forgetRemovedSessions(ids []string) {
+	removed := false
+	for id, cached := range m.sessions {
+		// A new authorization can have an SDK instance before its state is
+		// first saved. Only disappearance of previously saved state revokes
+		// the successful reads retained for this process.
+		if !cached.missing && cached.fingerprint != sha256.Sum256(nil) && !slices.Contains(ids, id) {
+			cached.missing = true
+			removed = true
+		}
+	}
+	if removed {
+		m.forgetSecretSession()
+	}
 }
 
 // A changed public state file invalidates the cache. Keeping an unchanged SDK
@@ -169,15 +210,22 @@ func (m *Manager) session(id string) (*sdkSession, error) {
 	path := m.sessionPath(id)
 	state, err := r2connect.LoadState(r2connect.FileStateStore{Path: path})
 	if err != nil {
+		m.forgetSecretSession()
 		return nil, err
 	}
 	data, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		m.forgetSecretSession()
 		return nil, err
 	}
 	fingerprint := sha256.Sum256(data)
-	if cached := m.sessions[id]; cached != nil && cached.fingerprint == fingerprint {
-		return cached, nil
+	if cached := m.sessions[id]; cached != nil {
+		if !cached.missing && cached.fingerprint == fingerprint {
+			return cached, nil
+		}
+		// A CLI or another process changed this session. Its public state is
+		// the cross-process invalidation boundary for successful secret reads.
+		m.forgetSecretSession()
 	}
 	configuration := DefaultConfig()
 	if state.ClientID != "" {
@@ -199,6 +247,9 @@ func (m *Manager) session(id string) (*sdkSession, error) {
 func (m *Manager) remember(s *sdkSession) {
 	if data, err := os.ReadFile(m.sessionPath(s.id)); err == nil {
 		s.fingerprint = sha256.Sum256(data)
+		s.missing = false
+	} else {
+		m.forgetSecretSession()
 	}
 }
 func (m *Manager) configured() error {
@@ -536,10 +587,12 @@ func (m *Manager) cleanupAuthorization(a *authorization) error {
 						err = nil
 					}
 					delete(m.sessions, a.id)
+					m.forgetSecretSession()
 				}
 			}
 			if !committed && !authorized && !a.preserve {
 				delete(m.sessions, a.id)
+				m.forgetSecretSession()
 			}
 		}
 		a.cleanupErr = err
@@ -755,6 +808,7 @@ func (m *Manager) Resolve(ctx context.Context, id, endpoint, bucket string) (str
 	err = m.accessError(err)
 	m.remember(s)
 	if err != nil {
+		m.forgetSecretSession()
 		return "", "", err
 	}
 	return credentials.AccessKeyID, credentials.SecretAccessKey, nil
@@ -827,6 +881,7 @@ func (m *Manager) Disconnect(ctx context.Context, id string) error {
 		return err
 	}
 	delete(m.sessions, s.id)
+	m.forgetSecretSession()
 	m.authMu.Lock()
 	if m.lastCleanupID == s.id {
 		m.lastCleanupErr = nil

@@ -10,9 +10,12 @@ RELEASE_FLAGS ?=
 INSTALL_FLAGS ?=
 VERSION ?= $(shell $(PYTHON) -c 'import json; print(json.load(open("mygo.json"))["version"])')
 
-.PHONY: build test check run package package-app package-dev package-ci package-release release release-initial release-assets install install-dev install-release uninstall uninstall-dev icons icons-dev notices verify-update
+.PHONY: build dev-signing test check run package package-app package-dev package-ci package-release release release-initial release-assets install install-dev install-release uninstall uninstall-dev icons icons-dev notices verify-update
 build:
 	$(PYTHON) scripts/build_binaries.py
+
+dev-signing:
+	$(PYTHON) scripts/dev_signing.py
 
 test:
 	$(GO) test -race ./...

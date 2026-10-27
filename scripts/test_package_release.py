@@ -220,7 +220,9 @@ class PackageReleaseTests(unittest.TestCase):
         commands.assert_not_called()
 
     def test_unsigned_ci_package_disables_updater_and_does_not_use_signing_key(self):
-        with mock.patch.dict(os.environ, {'MYGO_UPDATER_PRIVATE_KEY': ''}):
+        with mock.patch.dict(os.environ, {'MYGO_UPDATER_PRIVATE_KEY': '',
+                'PICUP_MACOS_SIGNING_IDENTITY': 'local-certificate',
+                'PICUP_MACOS_NOTARY_PROFILE': 'local-notary'}):
             with self.patch_commands() as commands:
                 with mock.patch.object(package, 'signing_environment', side_effect=AssertionError('unsigned builds must not load a key')):
                     with mock.patch('build_manifest.verify_development_icon'):
@@ -231,6 +233,10 @@ class PackageReleaseTests(unittest.TestCase):
         build = commands.call_args_list[2]
         self.assertIn('-debug', build.args)
         self.assertEqual(build.kwargs['env']['MYGO_UPDATER_PRIVATE_KEY'], '')
+        for call in (commands.call_args_list[1], build):
+            self.assertEqual(call.kwargs['env']['CI'], '1')
+            self.assertTrue(all(variable not in call.kwargs['env']
+                                for variable in package.SIGNING_VARIABLES))
         self.assertFalse(any('./cmd/verify-update' in call.args for call in commands.call_args_list))
         with zipfile.ZipFile(artifacts[0]) as archive:
             info = plistlib.loads(archive.read('Picup Dev.app/Contents/Info.plist'))

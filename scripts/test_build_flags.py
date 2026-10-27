@@ -47,6 +47,9 @@ class BuildFlagsTests(unittest.TestCase):
             self.assertEqual(build_environment('', formal=True)['GOFLAGS'], '')
 
     def test_bare_build_tags_both_programs_and_packaging_overrides_development_default(self):
+        signing = mock.patch.object(build_binaries, 'development_signing', return_value=None)
+        signing.start()
+        self.addCleanup(signing.stop)
         with mock.patch.dict(os.environ, {'BUILD_TAGS': 'picup_dev', 'GO': 'go', 'GOFLAGS': '-tags=extra'}):
             with mock.patch.object(build_binaries.subprocess, 'run') as execute:
                 with mock.patch.object(build_binaries.Path, 'mkdir'):

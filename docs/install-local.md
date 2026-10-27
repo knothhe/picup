@@ -8,13 +8,14 @@
 
 当前发布流程只生成构建机器所用的 macOS 架构，目前已验证 macOS arm64。Release 中未提供的架构或平台需要自行构建并验证。
 
-未显式配置签名身份时，安装包沿用 MyGo 的本地 ad-hoc 签名。已接入显式 Developer ID 签名与 Apple 公证入口；实际完成这两项需要发行者提供已有证书及公证凭据，见[macOS 分发签名](macos-distribution.md)。
+正式安装包未显式配置签名身份时，沿用 MyGo 的本地 ad-hoc 签名。已接入显式 Developer ID 签名与 Apple 公证入口；实际完成这两项需要发行者提供已有证书及公证凭据，见[macOS 分发签名](macos-distribution.md)。本机 Dev 构建会选择并记住已有签名证书，见下文。
 
 ## 构建与打包
 
 ```sh
 make build            # 构建 Dev CLI 和桌面应用
 make run              # 构建并运行 Dev 桌面应用
+make dev-signing      # 选择或更换本机 Dev 签名证书
 make package          # 构建并打包当前平台的正式应用
 make package-release  # 构建本机 macOS 发布 ZIP
 ```
@@ -32,6 +33,16 @@ make package-release  # 构建本机 macOS 发布 ZIP
 ```sh
 make install
 ```
+
+首次运行时会发现钥匙串中具有配对私钥、用途及有效期符合要求的代码签名证书，列出名称、SHA-1、SHA-256 和有效期，按编号选择；自签名身份不因未受系统信任而被过滤。选择保存到仓库根目录的 `.picup-dev-signing.json`，已被 Git 忽略，仅含公开证书身份信息。后续 `make build`、`make run`、`make package-dev` 和 `make install` 自动复用同一证书，并核对已保存的 SHA-256。旧版缓存会在确认同一身份仍可用后自动升级，保留原选择。GUI、CLI 和应用包都使用固定证书和签名标识。本地自签应用还受到系统按二进制哈希检查的钥匙串 partition 限制，重新构建或从 ad-hoc 切换后仍可能需要确认；普通读取弹窗可选择「始终允许」记住当前版本的访问。具体边界见[Dev 签名说明](macos-distribution.md#dev-构建的本地证书选择)。
+
+若需要更换证书，运行 `make dev-signing`。无交互终端首次构建前，先在终端完成选择，或显式保存已有证书：
+
+```sh
+PICUP_MACOS_SIGNING_IDENTITY='<精确证书名称或四十位 SHA-1>' make dev-signing
+```
+
+普通构建也可用该变量临时覆盖缓存，不会更改已保存的选择。缓存证书被删除或失效、缓存损坏、没有有效证书，或无交互终端尚未保存选择时，构建停止并给出提示，不自动切换证书或回退 ad-hoc。`CI=1` 和非 macOS 环境跳过本地自动选择与缓存，正式构建沿用显式签名机制。更多细节见 [Dev 签名说明](macos-distribution.md#dev-构建的本地证书选择)。
 
 此命令会构建 Dev CLI 与 GUI、生成不含 DMG 的 `Picup Dev.app`，再安装到：
 

@@ -26,6 +26,7 @@ from urllib.parse import unquote, urlsplit
 
 from build_flags import build_environment
 from build_manifest import packaging_configuration
+from dev_signing import SIGNING_VARIABLES
 from macos_signing import configuration as signing_configuration, verify_application, SigningError
 
 
@@ -270,6 +271,12 @@ def package_release(root, version, output_dir, unsigned=False):
     if not unsigned:
         validate_update_config(data)
     compile_environment = build_environment('picup_dev' if unsigned else '', formal=not unsigned)
+    if unsigned:
+        # This route explicitly produces an unsigned CI package, even when
+        # invoked on a developer's Mac with a saved local certificate.
+        compile_environment['CI'] = '1'
+        for variable in SIGNING_VARIABLES:
+            compile_environment.pop(variable, None)
     environment = dict(compile_environment, MYGO_UPDATER_PRIVATE_KEY='') if unsigned else signing_environment()
     environment['GOFLAGS'] = compile_environment.get('GOFLAGS', '')
     if 'CGO_ENABLED' in compile_environment:

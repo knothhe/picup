@@ -6,6 +6,7 @@
 /build/ci/
 /build/verification/
 /build/THIRD_PARTY_NOTICES.txt
+/.picup-dev-signing.json
 /.codex/skills/
 /picup
 /picup-gui

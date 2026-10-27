@@ -25,10 +25,10 @@ func systemKeyring(service, label string) *keyring.Store {
 	return actual.(*keyring.Store)
 }
 
-func newSDKSecrets(path string) *keyring.Store {
+func newSDKSecrets(path string) *sessionSecrets {
 	// Manager owns and caches the actual instance. A fresh store lets New bind
 	// its denial callback before LoadOrStore without mutating a shared callback.
-	return keyring.New(namespace(path)+".sdk", "Picup Cloudflare credentials")
+	return newSessionSecrets(namespace(path)+".sdk", keyring.Native("Picup Cloudflare credentials"))
 }
 
 func legacySecrets(path string) *keyring.Store {
