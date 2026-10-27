@@ -304,3 +304,89 @@ func TestRenderProcessingDisclosureStates(t *testing.T) {
 		}
 	}
 }
+
+func TestProcessingPresetsMatchDefaultsAndIgnoreUnreadQuality(t *testing.T) {
+	o := config.Default()
+	if got := matchPreset(processingValues{o.Compress, o.Format, o.Quality, o.MaxWidth}); got != "standard" {
+		t.Fatal("default options are not the standard preset", got)
+	}
+	if got := matchPreset(processingValues{false, "original", 40, 0}); got != "original" {
+		t.Fatal("quality an unprocessed upload never reads broke the original preset", got)
+	}
+	if got := matchPreset(processingValues{true, "webp", 80, 0}); got != "custom" {
+		t.Fatal("edited quality still matched a preset", got)
+	}
+	SetUILanguage("zh-CN")
+	if got := processingSummary(false, "original", 85, 0); got != "保持原图，不做处理" {
+		t.Fatal("unprocessed summary lists settings instead of saying nothing changes", got)
+	}
+}
+
+func TestProcessingPresetAppliesAndSavesWithoutOpening(t *testing.T) {
+	SetUILanguage("zh-CN")
+	for _, tab := range []int{0, imageToolsTab} {
+		t.Run(fmt.Sprintf("tab=%d", tab), func(t *testing.T) {
+			a := imageToolsTestApplication(t)
+			a.tab = tab
+			if tab == 0 {
+				a.initSettingsAutosave()
+			}
+			tt := uploadViewTester(a, 1040, 760, false)
+			if err := tt.Click("处理预设"); err != nil {
+				t.Fatal(err)
+			}
+			if err := tt.Click("体积优先"); err != nil {
+				t.Fatal(err)
+			}
+			tt.Frame()
+			assertProcessingControlsHidden(t, tt)
+			// Uploads confirm through the settings toast, tools in the header.
+			if !hasProcessingSummary(tt, true, "avif", 60, 1920) || !tt.HasText("已保存") {
+				t.Fatal("preset did not update the summary or confirm the save", tt.Texts())
+			}
+			if _, header := tt.Find("已保存"); header != (tab == imageToolsTab) {
+				t.Fatal("save was announced in the wrong place", tab)
+			}
+			if tab == 0 {
+				saved, err := config.Load(a.path)
+				if err != nil || saved.Format != "avif" || saved.Quality != 60 || saved.MaxWidth != 1920 {
+					t.Fatal("upload preset was not saved at once", saved.Format, saved.Quality, saved.MaxWidth, err)
+				}
+			} else {
+				restarted := &application{path: a.path}
+				if err := restarted.restoreImageToolsPreferences(); err != nil || restarted.imageTools.format != "avif" || restarted.imageTools.maxWidth != 1920 {
+					t.Fatal("tool preset was not saved at once", err)
+				}
+			}
+			if tab == imageToolsTab {
+				tt.Advance(processingSavedFlash + time.Second)
+				if tt.HasText("已保存") {
+					t.Fatal("saved confirmation did not fade")
+				}
+			}
+		})
+	}
+}
+
+func TestProcessingSavedNoticeFollowsEditsOnly(t *testing.T) {
+	var s processingDisclosureState
+	now := time.Unix(0, 0)
+	base := processingValues{true, "original", 85, 0}
+	edited := processingValues{true, "original", 70, 0}
+	other := processingValues{true, "webp", 85, 0}
+	s.noteSave(now, base, base)
+	s.noteSave(now, other, other) // a profile switch moves both at once
+	if !s.savedAt.IsZero() {
+		t.Fatal("switching values together reported a save")
+	}
+	s.noteSave(now, edited, other) // edited, not yet saved
+	s.noteSave(now, other, other)  // a discarded edit leaves the record alone
+	if !s.savedAt.IsZero() {
+		t.Fatal("discarding an edit reported a save")
+	}
+	s.noteSave(now, edited, other)
+	s.noteSave(now, edited, edited)
+	if s.savedAt != now {
+		t.Fatal("a saved edit was not reported")
+	}
+}

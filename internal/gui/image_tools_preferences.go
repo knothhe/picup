@@ -192,6 +192,18 @@ func (a *application) flushImageToolsPreferenceRecord(force bool) bool {
 	return s.preferenceErr == nil
 }
 
+// savedProcessingValues are the options last written, or the current ones
+// while nothing is stored yet.
+func (s *imageToolsState) savedProcessingValues() processingValues {
+	p := s.viewPreferences()
+	if s.preferences != nil {
+		s.preferences.mu.Lock()
+		p = s.preferences.saved
+		s.preferences.mu.Unlock()
+	}
+	return processingValues{p.Compress, p.Format, p.Quality, p.MaxWidth}
+}
+
 func (s *imageToolsState) hasUnsavedPreferences() bool {
 	if s.preferences == nil {
 		return false

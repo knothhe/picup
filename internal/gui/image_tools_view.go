@@ -28,7 +28,17 @@ func (a *application) imageToolsView(c *ui.Context) {
 	}
 	body.Children(func() {
 		ui.Column(c).FillWidth().Grow(1).MinWidth(0).Padding(20, 24).Gap(14).Children(func() {
-			a.processingEditorFocused = a.processingDisclosure(c, "local-processing", &s.processing, processingSummaryParts(s.compress, s.format, int(s.quality), int(s.maxWidth)), &s.compress, &s.format, &s.quality, &s.maxWidth, s.running)
+			width, _ := c.Size()
+			a.processingEditorFocused = a.processingDisclosure(c, processingEditor{
+				key: "local-processing", state: &s.processing,
+				compress: &s.compress, format: &s.format, quality: &s.quality, maxWidth: &s.maxWidth,
+				shown:       processingValues{s.compress, s.format, int(s.quality), int(s.maxWidth)},
+				saved:       s.savedProcessingValues(),
+				stacked:     width < 800,
+				locked:      s.running,
+				commit:      a.flushImageToolsPreferences,
+				savedNotice: true,
+			})
 			if s.preferenceLoadErr != nil {
 				ui.Row(c).FillWidth().MinWidth(0).Wrap().AlignItems(ui.Center).Gap(8).Children(func() {
 					components.Text(c, tr("读取图片工具参数失败，原记录已保留")).Grow(1).MinWidth(0).Wrap().FontSize(12).TextColor(c.Theme().Danger)

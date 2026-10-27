@@ -142,7 +142,7 @@ func TestProcessingOptionsPNGDisablesQualityWithoutLosingIt(t *testing.T) {
 	tt := ui.NewTester(func(c *ui.Context) {
 		c.SetTheme(palette(c))
 		ui.Column(c).Fill().Padding(20).Children(func() {
-			processingOptions(c, "test-processing", new(string), &compress, &format, &quality, &maxWidth, false)
+			processingOptions(c, "test-processing", new(string), &compress, &format, &quality, &maxWidth, false, false)
 		})
 	}, 760, 400)
 	tt.SetPreferences(ui.Preferences{ReduceMotion: true, TextScale: 1})
