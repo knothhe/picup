@@ -6,7 +6,6 @@
 /build/ci/
 /build/verification/
 /build/THIRD_PARTY_NOTICES.txt
-mygo-update.key
 /.codex/skills/
 /picup
 /picup-gui
@@ -15,3 +14,11 @@ mygo-update.key
 coverage.out
 __pycache__/
 .wrangler/
+/build/icon-preview/
+.env*
+*.pem
+*.key
+.claude/settings.local.json
+.idea/
+.vscode/
+node_modules/
