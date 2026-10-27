@@ -30,8 +30,8 @@ func TestDevelopmentControlChildProcess(t *testing.T) {
 }
 
 func TestNormalQuitCoordinatesExactProcessAndSurvivesStaleSocket(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("macOS exact process inspection")
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("exact process inspection")
 	}
 	executable, err := os.Executable()
 	if err != nil {

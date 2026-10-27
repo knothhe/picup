@@ -3,6 +3,7 @@
 import argparse
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -28,6 +29,8 @@ def build(package=False, skip_dmg=False, development=False):
     ]
     for command in commands:
         subprocess.run(command, env=environment, check=True)
+    if package and development and sys.platform.startswith('linux'):
+        return package_linux_development(go, environment, directory)
     if package:
         signing = configuration()
         with packaging_configuration(Path.cwd(), is_dev, signing) as config_dir:
@@ -43,6 +46,21 @@ def build(package=False, skip_dmg=False, development=False):
             host = subprocess.check_output([go, 'env', 'GOHOSTOS', 'GOHOSTARCH'], text=True).split()
             app = directory / 'dist' / '-'.join(host) / ('Picup Dev.app' if is_dev else 'Picup.app')
             verify_application(app, signing, 'Picup Dev' if is_dev else 'Picup', cli)
+    return directory / 'bin/picup-gui'
+
+
+def package_linux_development(go, environment, directory):
+    """MyGo names the Linux GUI after the app, which would replace picup-dev,
+    so the Dev directory keeps the GUI next to its companion CLI instead."""
+    host = subprocess.check_output([go, 'env', 'GOHOSTOS', 'GOHOSTARCH'], env=environment, text=True).split()
+    app = directory / 'dist' / '-'.join(host) / 'picup-dev'
+    if app.exists():
+        shutil.rmtree(app)
+    app.mkdir(parents=True)
+    for source, name in ((directory / 'bin/picup-gui', 'picup-gui'), (directory / 'bin/picup-dev', 'picup-dev'),
+                         (directory / 'THIRD_PARTY_NOTICES.txt', 'THIRD_PARTY_NOTICES.txt'),
+                         (Path('assets/dev/icon-dev-256.png'), 'icon.png')):
+        shutil.copy2(source, app / name)
     return directory / 'bin/picup-gui'
 
 

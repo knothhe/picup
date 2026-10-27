@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -147,6 +148,9 @@ func (s *Server) Close() error {
 }
 
 func running(executable string) bool {
+	if runtime.GOOS == "linux" {
+		return runningLinux(executable)
+	}
 	output, err := exec.Command("/bin/ps", "-axo", "pid=,comm=").Output()
 	if err != nil {
 		return true
@@ -167,6 +171,27 @@ func running(executable string) bool {
 			}
 		}
 		if candidate == executable {
+			return true
+		}
+	}
+	return false
+}
+
+// runningLinux reads each process's exact executable, since ps reports only a
+// truncated command name there.
+func runningLinux(executable string) bool {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return true
+	} // Inspection failure must not permit deletion.
+	self := strconv.Itoa(os.Getpid())
+	for _, entry := range entries {
+		if entry.Name() == self || strings.Trim(entry.Name(), "0123456789") != "" {
+			continue
+		}
+		// Exited processes and those of other users have no readable link.
+		target, err := os.Readlink(filepath.Join("/proc", entry.Name(), "exe"))
+		if err == nil && strings.TrimSuffix(target, " (deleted)") == executable {
 			return true
 		}
 	}
