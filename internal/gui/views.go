@@ -127,7 +127,17 @@ func (a *application) uploadView(c *ui.Context) {
 			})
 		}
 		if unconfigured {
-			a.uploadSetup(c, counts.total > 0)
+			_, height := c.Size()
+			a.uploadSetup(c, counts.total > 0 || height < 720)
+		}
+		a.processingEditorFocused = processingDisclosure(c, "upload-processing", &a.uploadProcessingExpanded, processingSummary(config.Compress, config.Format, config.Quality, config.MaxWidth), &a.config.Compress, &a.config.Format, &a.quality, &a.maxWidth, a.uploading)
+		if a.settingsSave.failed {
+			ui.Row(c).FillWidth().MinWidth(0).AlignItems(ui.Center).Gap(8).Children(func() {
+				components.Text(c, tr("保存失败，输入已保留")).Grow(1).MinWidth(0).Wrap().FontSize(12).TextColor(c.Theme().Danger)
+				if components.Button(c, tr("重试保存"), components.ButtonGhost).Clicked() {
+					a.save()
+				}
+			})
 		}
 		a.uploadDropZone(c, counts.total > 0)
 		if counts.total > 0 {
@@ -190,7 +200,7 @@ func (a *application) uploadDropZone(c *ui.Context, compact bool) {
 	if compact {
 		zone.Shrink(0).Height(68).Radius(10)
 	} else {
-		zone.Grow(1).MinHeight(200)
+		zone.Grow(1).MinHeight(120)
 	}
 	dragging := zone.FileDragOver()
 	if paths := zone.DroppedFiles(); len(paths) > 0 {
@@ -346,16 +356,6 @@ func uploadChip(c *ui.Context, label string, icon *ui.SVG, text string) bool {
 func (a *application) uploadActionBar(c *ui.Context, counts uploadQueueCounts, config config.Config) {
 	t := c.Theme()
 	ui.Row(c).Key("upload-actions").FillWidth().Height(56).Shrink(0).Padding(0, 16, 0, 24).Gap(8).AlignItems(ui.Center).BorderWidth(1, 0, 0, 0).BorderColor(t.Border).Children(func() {
-		processing := tr("保留原图")
-		if config.Compress {
-			processing = tf("默认压缩 · 质量 %d", config.Quality)
-			if format := formatLabels[config.Format]; format != "" && config.Format != "original" {
-				processing += " · " + format
-			}
-		}
-		if uploadChip(c, tr("图片设置"), lucide.Sparkles(), processing) {
-			a.openSettings(1)
-		}
 		output := outputLabels[config.Output]
 		if output == "" {
 			output = config.Output

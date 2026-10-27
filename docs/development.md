@@ -41,10 +41,13 @@ make package-release  # 本机 macOS 架构的发布 ZIP 与签名更新附件
 | `internal/r2oauth` | r2connect 薄适配、公开注册配置、profile 提交边界、凭据命名空间和诊断日志 |
 | `internal/service` | 有限并发批量上传、本地成功记录和持久化队列 |
 | `internal/imageproc` | 图片处理 |
+| `internal/imagetools` | 独立本地批量处理、安全导出与重名编号 |
 
 测试通过本地 S3 模拟端点验证并发上传、条件冲突、字节进度和图库分页，通过 SDK 的系统凭据存储与状态替身验证提交、拒绝、失败补偿与目标绑定，不需要真实云凭据或真实钥匙串。
 
 队列测试覆盖按序写入与退出 flush、损坏项部分恢复、单独移除与原件保留、重复 blob 复用及总量超限拒绝；实现限制为 1000 条、去重后剪贴板源图合计 256 MiB。批量结果按输入顺序返回；`skip` 是独立状态，不计实际失败。`reuse` 表示按 key 复用，结果中云端尺寸/大小未知时为零；不能以本地压缩结果代替云端元数据。
+
+本地图片工具复用 `internal/imageproc`，通过 `internal/imagetools` 串行处理与导出，测试覆盖格式转换、缩小、原件与已有文件保留、并发重名、部分失败和取消。GUI 将工具参数与目录单独写入 `config.image-tools.json`；上传页参数继续走 profile 自动保存与 CLI 配置流程。
 
 隔离运行时显式指定独立的 `PICUP_CONFIG`，并将 `PICUP_CACHE_DIR` 设为独立绝对根目录；图库缓存位于该根的 `gallery-v1`。只改变配置路径不会改变默认图库缓存根目录。恢复队列不自动上传，验证可在上传前检查所选 profile。快捷键与系统通知需分开验证：原生 `.app` 验证全局注册和后台通知，单元/离屏测试覆盖失败恢复及布局；系统通知首次实际发送才请求权限。源码测试、本地 S3 替身与签名产物检查分别记录，不代替真实 Cloudflare 授权、Apple 公证或未覆盖平台验收。
 
@@ -59,6 +62,7 @@ R2 OAuth、Cloudflare 控制面和系统凭据存储直接使用 [r2connect](htt
 ## 界面设计
 
 - [上传](../design/upload/index.html)
+- [图片工具与页面内处理参数](../design/image-tools/index.html)
 - [菜单栏快捷上传](../design/quick-upload/index.html)
 - [设置与指南](../design/guide/index.html)
 - [图库](../design/gallery/index.html)

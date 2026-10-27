@@ -103,13 +103,26 @@ func process(ctx context.Context, data []byte, name string, c config.Config) (Im
 	if animated {
 		return finish(out, data, format), nil
 	}
-	resize := c.MaxWidth > 0 && cfg.Width > c.MaxWidth
+	// JPEG EXIF and AVIF irot/imir can swap the stored width and height. Resolve
+	// their display dimensions before deciding to preserve the encoded source.
+	// Other unchanged formats keep the metadata-only passthrough path.
+	var img image.Image
+	if format == "jpeg" || format == "avif" {
+		img, err = Decode(data)
+		if err != nil {
+			return out, err
+		}
+		out.Width, out.Height = img.Bounds().Dx(), img.Bounds().Dy()
+	}
+	resize := c.MaxWidth > 0 && out.Width > c.MaxWidth
 	if !c.Compress && !resize && target == format {
 		return finish(out, data, format), nil
 	}
-	img, err := Decode(data)
-	if err != nil {
-		return out, err
+	if img == nil {
+		img, err = Decode(data)
+		if err != nil {
+			return out, err
+		}
 	}
 	if c.MaxWidth > 0 && img.Bounds().Dx() > c.MaxWidth {
 		img = imaging.Resize(img, c.MaxWidth, 0, imaging.Lanczos)
@@ -135,7 +148,6 @@ func process(ctx context.Context, data []byte, name string, c config.Config) (Im
 	out.Width, out.Height = img.Bounds().Dx(), img.Bounds().Dy()
 	// A requested resize or conversion takes priority over a size-only fallback.
 	if !resize && target == format && buf.Len() >= len(data) {
-		out.Width, out.Height = cfg.Width, cfg.Height
 		return finish(out, data, format), nil
 	}
 	return finish(out, buf.Bytes(), target), nil

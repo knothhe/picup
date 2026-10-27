@@ -56,11 +56,13 @@ func TestAVIFPreviewsRejectDamagedAndOversizedMetadata(t *testing.T) {
 }
 
 func TestAVIFSettingAutosavesAndPreviews(t *testing.T) {
+	SetUILanguage("zh-CN")
 	cfg := config.Default()
-	a := &application{config: cfg, path: filepath.Join(t.TempDir(), "config.json"), quality: 85, tab: 2, settingsTab: 1}
+	a := &application{config: cfg, path: filepath.Join(t.TempDir(), "config.json"), quality: 85, tab: 0}
 	tt := ui.NewTester(nativeTestView(a), 1040, 760)
 	tt.SetPreferences(ui.Preferences{ReduceMotion: true, TextScale: 1})
 	tt.Frame()
+	openProcessingOptions(t, tt)
 	if err := tt.Click("保留原格式"); err != nil {
 		t.Fatal(err)
 	}
@@ -90,6 +92,90 @@ func TestAVIFSettingAutosavesAndPreviews(t *testing.T) {
 		if galleryImage.err != nil || galleryImage.bitmap == nil || galleryImage.width != 240 || galleryImage.height != 120 {
 			t.Fatal("AVIF gallery thumbnail or full preview failed", full, galleryImage.err)
 		}
+	}
+}
+
+func TestUploadProcessingParametersAutosaveOutsideSettings(t *testing.T) {
+	unsetUploadDisplayEnv(t)
+	SetUILanguage("zh-CN")
+	a := uploadViewFixture("empty")
+	a.path = filepath.Join(t.TempDir(), "config.json")
+	tt := uploadViewTester(a, 1040, 760, false)
+	openProcessingOptions(t, tt)
+	for _, edit := range []struct{ label, value string }{{"压缩质量", "72"}, {"最大宽度", "2048"}} {
+		if err := tt.Click(edit.label); err != nil {
+			t.Fatal(err)
+		}
+		tt.Key(ui.Cmd, ui.KeyA)
+		tt.Type(edit.value)
+		tt.Key(0, ui.KeyEnter)
+	}
+	if err := tt.Click("压缩图片"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tt.Click("保留原格式"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tt.Click("WebP"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Advance(settingsAutosaveDelay)
+	saved, err := config.Load(a.path)
+	if err != nil || saved.Compress || saved.Format != "webp" || saved.Quality != 72 || saved.MaxWidth != 2048 {
+		t.Fatalf("page parameters were not remembered: compress=%t format=%q quality=%d max-width=%d err=%v", saved.Compress, saved.Format, saved.Quality, saved.MaxWidth, err)
+	}
+	a.tab, a.settingsTab = 2, 1
+	tt.Frame()
+	for _, label := range []string{"压缩图片", "默认压缩图片", "图片格式", "压缩质量", "最大宽度"} {
+		if _, exists := tt.Find(label); exists {
+			t.Fatal("processing parameter remains in settings", label)
+		}
+	}
+	if !tt.HasText("链接与剪贴板") || !tt.HasText("上传任务") {
+		t.Fatal("upload and output preferences were removed with processing controls", tt.Texts())
+	}
+}
+
+func TestProcessingOptionsPNGDisablesQualityWithoutLosingIt(t *testing.T) {
+	SetUILanguage("zh-CN")
+	compress, format, quality, maxWidth := true, "jpeg", 71.0, 0.0
+	tt := ui.NewTester(func(c *ui.Context) {
+		c.SetTheme(palette(c))
+		ui.Column(c).Fill().Padding(20).Children(func() {
+			processingOptions(c, "test-processing", &compress, &format, &quality, &maxWidth, false)
+		})
+	}, 760, 400)
+	tt.SetPreferences(ui.Preferences{ReduceMotion: true, TextScale: 1})
+	tt.Frame()
+	if err := tt.Click("JPEG"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tt.Click("PNG"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tt.Click("压缩质量"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Key(ui.Cmd, ui.KeyA)
+	tt.Type("25")
+	tt.Key(0, ui.KeyEnter)
+	if quality != 71 || format != "png" {
+		t.Fatal("PNG allowed an irrelevant quality edit", format, quality)
+	}
+	if err := tt.Click("PNG"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tt.Click("JPEG"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tt.Click("压缩质量"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Key(ui.Cmd, ui.KeyA)
+	tt.Type("83")
+	tt.Key(0, ui.KeyEnter)
+	if quality != 83 || format != "jpeg" {
+		t.Fatal("lossy format did not restore editable quality", format, quality)
 	}
 }
 

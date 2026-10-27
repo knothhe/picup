@@ -97,7 +97,7 @@ func (a *application) leaveSettings() {
 }
 
 func pageLabel(tab int) string {
-	return map[int]string{0: "上传", 2: "设置", 3: "指南", 4: "图库"}[tab]
+	return map[int]string{0: "上传", 2: "设置", 3: "指南", 4: "图库", imageToolsTab: "图片工具"}[tab]
 }
 
 func (a *application) pageTitle() string {
@@ -146,6 +146,8 @@ func (a *application) header(c *ui.Context) {
 				a.settingsHeaderContext(c)
 			case 4:
 				a.galleryHeaderContext(c)
+			case imageToolsTab:
+				headerChip(c, lucide.Sparkles(), tr("本地处理 · 无需连接存储"))
 			}
 		})
 	})
@@ -296,6 +298,7 @@ func (a *application) workspaceNavigation(c *ui.Context, rail bool) {
 	ui.Box(c).Height(12).Shrink(0)
 	a.navigationItem(c, 0, "上传", lucide.ImageUp(), rail)
 	a.navigationItem(c, 4, "图库", lucide.Images(), rail)
+	a.navigationItem(c, imageToolsTab, "图片工具", lucide.Sparkles(), rail)
 	ui.Spacer(c)
 	a.navigationItem(c, 3, "指南", lucide.BookOpen(), rail)
 	a.navigationItem(c, 2, "设置", lucide.Settings(), rail)
@@ -346,6 +349,7 @@ func (a *application) settingsNavigation(c *ui.Context, rail bool) {
 }
 
 func (a *application) view(c *ui.Context) {
+	a.processingEditorFocused = false
 	a.initSettingsAutosave()
 	if c.Preferences().ReduceMotion {
 		c.DisableAnimations()
@@ -365,6 +369,8 @@ func (a *application) view(c *ui.Context) {
 					a.guideView(c)
 				case 4:
 					a.galleryView(c)
+				case imageToolsTab:
+					a.imageToolsView(c)
 				default:
 					a.uploadView(c)
 				}

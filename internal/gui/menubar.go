@@ -96,9 +96,9 @@ func (a *application) applicationMenu() *mygo.Menu {
 
 func (a *application) editMenu() *mygo.MenuItem {
 	// On macOS RolePaste uses the native paste: selector, bypassing Click
-	// and key shortcuts. The upload page has no editor to receive that
-	// command, so give its image-paste action the native accelerator instead.
-	// Other pages retain RolePaste for their text fields.
+	// and key shortcuts. Outside the page's numeric editors, the upload and
+	// image-tools pages use it for image paste instead. A focused numeric
+	// editor must retain the native command for pasting parameter values.
 	standard := mygo.NewMenu([]*mygo.MenuItem{{Role: mygo.RoleEditMenu}}).Items()[0]
 	var clone func(*mygo.MenuItem) *mygo.MenuItem
 	clone = func(item *mygo.MenuItem) *mygo.MenuItem {
@@ -108,14 +108,14 @@ func (a *application) editMenu() *mygo.MenuItem {
 		}
 		if item.Role == mygo.RolePaste {
 			copy.ID = "paste"
-			if !a.fileDialogOpen && (a.tab == 0 || a.quickUpload.visible) {
+			if !a.fileDialogOpen && (a.quickUpload.visible || (a.tab == 0 || a.tab == imageToolsTab) && !a.processingEditorFocused) {
 				copy.Role = ""
 				copy.Accelerator = a.shortcutBinding("paste").value()
 				copy.Click = func(*mygo.MenuItem, *mygo.Window) {
 					if a.shortcutEditing == "" {
 						if a.quickUpload.visible {
 							a.pasteImage(true)
-						} else if a.tab == 0 {
+						} else if (a.tab == 0 || a.tab == imageToolsTab) && !a.processingEditorFocused {
 							a.paste()
 						}
 					}

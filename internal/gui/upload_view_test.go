@@ -230,9 +230,10 @@ func TestUploadSummaryUsesSavedSettings(t *testing.T) {
 	unsetUploadDisplayEnv(t)
 	SetUILanguage("zh-CN")
 	a := uploadViewFixture("pending")
+	a.savedConfig.Format = "webp"
 	a.config.Bucket, a.config.Quality = "draft-bucket", 40
 	tt := uploadViewTester(a, 1040, 760, false)
-	if !tt.HasText("R2 · photos") || !tt.HasText("默认压缩 · 质量 85") || tt.HasText("R2 · draft-bucket") || tt.HasText("质量 40") {
+	if !tt.HasText("R2 · photos") || !tt.HasText(processingSummary(true, "webp", 85, 0)) || tt.HasText("R2 · draft-bucket") || tt.HasText("质量 40") {
 		t.Fatal("upload summary describes unsaved settings", tt.Texts())
 	}
 }
@@ -267,17 +268,17 @@ func TestUploadActionsAndLongRowsFitNativeWindow(t *testing.T) {
 								a.jobs[0], a.jobs[1] = failed, a.jobs[0]
 							}
 							tt := uploadViewTester(a, size[0], size[1], dark)
-							for _, label := range []string{tr("存储设置"), tr("选择图片"), tr("从剪贴板粘贴"), tr("图片设置")} {
+							for _, label := range []string{tr("存储设置"), tr("选择图片"), tr("从剪贴板粘贴"), tr("展开处理选项")} {
 								assertUploadControlWithin(t, tt, label, size[0], size[1])
 							}
-							chips := assertUploadControlWithin(t, tt, tr("图片设置"), size[0], size[1])
+							disclosure := assertUploadControlWithin(t, tt, tr("展开处理选项"), size[0], size[1])
 							if state == "processing" {
 								assertUploadControlWithin(t, tt, tr("取消上传"), size[0], size[1])
 								assertUploadControlWithin(t, tt, tf("已处理 %d / %d", 1, 3), size[0], size[1])
 							} else if pending := a.uploadCounts().pending; pending > 0 {
 								primary := assertUploadControlWithin(t, tt, tf("上传 %d 张图片", pending), size[0], size[1])
-								if primary.X < chips.X+chips.W || primary.Y > chips.Y+chips.H || chips.Y > primary.Y+primary.H {
-									t.Fatal("upload action left the action bar beside the image settings", primary, chips)
+								if primary.Y <= disclosure.Y+disclosure.H || primary.Y < float32(size[1])-56 {
+									t.Fatal("upload action left the fixed bottom action bar", primary, disclosure)
 								}
 							}
 							if state == "partial-failure" {

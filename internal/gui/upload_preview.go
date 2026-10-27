@@ -162,6 +162,9 @@ func (a *application) loadUploadPreviews(rows []*job) {
 	for _, j := range a.jobs {
 		live[j] = true
 	}
+	for _, j := range a.imageTools.jobs {
+		live[j.source] = true
+	}
 	requested := make([]*job, 0, len(rows))
 	seen := make(map[*job]bool, len(rows))
 	for _, j := range rows {
@@ -171,6 +174,11 @@ func (a *application) loadUploadPreviews(rows []*job) {
 		}
 	}
 	s := &a.uploadPreviews
+	for j := range s.pending {
+		if !live[j] || j.previewDone {
+			delete(s.pending, j)
+		}
+	}
 	if sameUploadPreviewJobs(s.jobs, requested) && (s.ctx == nil || s.ctx.Err() == nil) {
 		return
 	}
@@ -180,9 +188,16 @@ func (a *application) loadUploadPreviews(rows []*job) {
 	}
 	for _, j := range s.jobs {
 		j.previewLoading = false
-		if !seen[j] {
+		if !live[j] {
+			// A completed clipboard upload has released its encoded source.
+			// Keep its thumbnail while it remains in either page's live queue.
 			j.preview = nil
 			j.previewDone = false
+		}
+		// A just-finished clipboard upload may release job.data before decoding
+		// completes. Retain its only source until it is decoded or removed.
+		needsClipboardSource := live[j] && j.data == nil && j.path == "" && !j.previewDone
+		if !seen[j] && !needsClipboardSource {
 			delete(s.pending, j)
 		}
 	}
@@ -234,6 +249,12 @@ func (a *application) loadUploadPreviews(rows []*job) {
 							}
 						}
 						j := input.job
+						for _, tool := range a.imageTools.jobs {
+							if tool.source == j {
+								present = true
+								break
+							}
+						}
 						delete(a.uploadPreviews.pending, j)
 						j.previewLoading = false
 						if !present {

@@ -15,8 +15,11 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/ui"
 	"github.com/gen2brain/webp"
 	"github.com/knothhe/picup/internal/imageproc"
+	"github.com/knothhe/picup/internal/service"
 	"golang.org/x/image/tiff"
 )
 
@@ -200,5 +203,72 @@ func TestPendingUploadPreviewSurvivesClipboardUpload(t *testing.T) {
 	}
 	if !bytes.Equal(resumed.data, data) {
 		t.Fatal("pending clipboard source changed")
+	}
+}
+
+func TestCompletedClipboardPreviewSurvivesImageToolsNavigation(t *testing.T) {
+	// Successful clipboard uploads release their encoded source. Their decoded
+	// thumbnail is the only local preview that can survive a page round trip.
+	bitmap := ui.NewBitmap(image.NewNRGBA(image.Rect(0, 0, 48, 32)))
+	upload := &job{id: 1, name: "clipboard.png", preview: bitmap, previewDone: true, result: &service.Result{URL: "https://images.example/clipboard.png"}}
+	toolBitmap := ui.NewBitmap(image.NewNRGBA(image.Rect(0, 0, 32, 48)))
+	tool := &imageToolJob{source: &job{id: 1, name: "local.png", preview: toolBitmap, previewDone: true}}
+	a := &application{win: &mygo.Window{}, jobs: []*job{upload}, imageTools: imageToolsState{jobs: []*imageToolJob{tool}}, uploadPreviews: uploadPreviewState{jobs: []*job{upload}}}
+	a.loadUploadPreviews([]*job{tool.source})
+	if upload.preview != bitmap || !upload.previewDone || upload.previewLoading {
+		t.Fatal("opening image tools discarded the completed clipboard thumbnail")
+	}
+	a.loadUploadPreviews(a.jobs)
+	if upload.preview != bitmap || !upload.previewDone || upload.previewLoading || a.uploadPreviewCancel != nil {
+		t.Fatal("returning to uploads tried to decode a released clipboard source")
+	}
+	if tool.source.preview != toolBitmap || !tool.source.previewDone {
+		t.Fatal("returning to uploads discarded the live local thumbnail")
+	}
+}
+
+func TestPreviewNavigationReleasesRemovedJobsAndCanceledSourceSnapshots(t *testing.T) {
+	removed := &job{id: 1, preview: ui.NewBitmap(image.NewNRGBA(image.Rect(0, 0, 8, 8))), previewDone: true}
+	tool := &imageToolJob{source: &job{id: 2, previewDone: true}}
+	a := &application{win: &mygo.Window{}, imageTools: imageToolsState{jobs: []*imageToolJob{tool}}, uploadPreviews: uploadPreviewState{jobs: []*job{removed}, pending: map[*job]uploadPreviewSource{removed: {job: removed, data: []byte("released encoded source")}}}}
+	a.loadUploadPreviews([]*job{tool.source})
+	if removed.preview != nil || removed.previewDone || removed.previewLoading || len(a.uploadPreviews.pending) != 0 {
+		t.Fatal("navigation retained a removed row or its encoded source")
+	}
+}
+
+func TestPendingClipboardPreviewKeepsItsOnlySourceAcrossToolNavigation(t *testing.T) {
+	data := uploadPreviewFixture(t, "png", 180, 120)
+	upload := &job{id: 1, name: "clipboard.png", previewLoading: true, result: &service.Result{URL: "https://images.example/clipboard.png"}}
+	tool := &imageToolJob{source: &job{id: 2, previewDone: true}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a := &application{win: &mygo.Window{}, jobs: []*job{upload}, imageTools: imageToolsState{jobs: []*imageToolJob{tool}}, uploadPreviewCancel: cancel, uploadPreviews: uploadPreviewState{jobs: []*job{upload}, ctx: ctx, pending: map[*job]uploadPreviewSource{upload: {job: upload, data: data}}}}
+	a.loadUploadPreviews([]*job{tool.source})
+	source, exists := a.uploadPreviews.pending[upload]
+	if !exists || !bytes.Equal(source.data, data) || ctx.Err() == nil {
+		t.Fatal("navigation discarded the only encoded source of a pending clipboard preview")
+	}
+	resumed := a.uploadPreviews.source(upload)
+	preview := readUploadPreview(resumed.path, resumed.data)
+	if preview.err != nil || preview.image == nil || preview.width != 180 || preview.height != 120 {
+		t.Fatal("returning to uploads could not resume its pending clipboard preview", preview.err)
+	}
+	// Once a decoded thumbnail exists, the encoded snapshot is expendable even
+	// if the currently visible local rows have not changed.
+	upload.preview, upload.previewDone = ui.NewBitmap(preview.image), true
+	a.loadUploadPreviews([]*job{tool.source})
+	if len(a.uploadPreviews.pending) != 0 {
+		t.Fatal("a completed thumbnail retained its full encoded clipboard source")
+	}
+}
+
+func TestPreviewNavigationReleasesOffPageRemovedClipboardSources(t *testing.T) {
+	upload := &job{id: 1, name: "clipboard.png"}
+	tool := &imageToolJob{source: &job{id: 2, previewDone: true}}
+	a := &application{win: &mygo.Window{}, imageTools: imageToolsState{jobs: []*imageToolJob{tool}}, uploadPreviews: uploadPreviewState{jobs: []*job{tool.source}, pending: map[*job]uploadPreviewSource{upload: {job: upload, data: []byte("removed clipboard source")}}}}
+	a.loadUploadPreviews([]*job{tool.source})
+	if len(a.uploadPreviews.pending) != 0 {
+		t.Fatal("unchanged local rows retained a removed off-page clipboard source")
 	}
 }

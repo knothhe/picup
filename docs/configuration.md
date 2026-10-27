@@ -46,9 +46,16 @@
 
 默认保留格式并压缩，JPEG / WebP / AVIF 质量为 85；最大宽度为 0，表示不限。处理不修改源文件。
 
+上传页直接调整压缩参数并按当前 profile 自动保存，与 CLI 沿用 `compress`、`format`、`quality`、`max_width` 字段；设置页不再展示这些控件。独立「图片工具」的参数与导出目录保存在配置文件旁的 `config.image-tools.json`，所有 profile 共用；使用自定义配置文件名时，将扩展名替换为 `.image-tools.json`。
+
+| 使用范围 | 参数来源与覆盖 |
+| --- | --- |
+| 上传页与 CLI | 当前 profile；继续接受 CLI 参数及 `PICUP_COMPRESS`、`PICUP_FORMAT`、`PICUP_QUALITY`、`PICUP_MAX_WIDTH` 环境覆盖 |
+| 本地图片工具 | 独立记忆压缩、格式、质量、最大宽度和绝对导出目录；不读取上传 profile 或上述环境覆盖 |
+
 - PNG 使用无损优化，动画保留原文件。
 - HEIC / HEIF 默认转 WebP；AVIF 支持直接读取与输出。
-- 同格式压缩后若更大，则保留原图；已优化的图片可能体积不变，上传结果展示实际节省比例。
+- 同格式压缩后若更大，则保留原图；已优化的图片可能体积不变，处理结果展示实际节省比例。显式转换或缩小尺寸仍按请求输出。
 - 单文件上限 100 MiB，解码上限 4000 万像素。
 
 CLI 可用 `--format`、`--quality`、`--max-width` 等参数覆盖处理选项，示例见 [CLI 文档](cli.md)。

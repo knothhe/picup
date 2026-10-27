@@ -150,7 +150,7 @@ func TestNativeSettingsTabTransitions(t *testing.T) {
 				tab         int
 			}{
 				{name: "storage", label: "连接方式", tab: 0},
-				{name: "image-output", label: "图片处理", tab: 1},
+				{name: "image-output", label: "上传任务", tab: 1},
 				{name: "general", label: "界面", tab: 2},
 				{name: "cli", label: "安装位置", tab: 3},
 				{name: "shortcuts", label: "点击键位后按下新的快捷键。", tab: 4},
@@ -183,7 +183,7 @@ func TestNativeTabTransitionsRapidReturn(t *testing.T) {
 			a := nativeMotionApplication(t, layout)
 			a.tab, a.settingsTab = 2, 1
 			tt := nativeMotionTester(a, layout, false)
-			before := nativeMotionBounds(t, tt, "默认压缩图片")
+			before := nativeMotionBounds(t, tt, "上传后自动复制结果")
 			a.settingsTab = 2
 			tt.Frame()
 			tt.Advance(60 * time.Millisecond)
@@ -192,15 +192,15 @@ func TestNativeTabTransitionsRapidReturn(t *testing.T) {
 			if err := tt.Click("关闭窗口后继续运行"); err == nil {
 				t.Fatal("a fading settings category still exposes an interactive control")
 			}
-			if err := tt.Click("默认压缩图片"); err != nil {
+			if err := tt.Click("上传后自动复制结果"); err != nil {
 				t.Fatal(err)
 			}
-			if a.config.Compress {
+			if a.config.Copy {
 				t.Fatal("the returning settings category did not receive its click")
 			}
 			tt.Advance(300 * time.Millisecond)
 			tt.Frame()
-			if after := nativeMotionBounds(t, tt, "默认压缩图片"); after != before {
+			if after := nativeMotionBounds(t, tt, "上传后自动复制结果"); after != before {
 				t.Fatalf("returning settings content did not settle in its original layout: before=%v after=%v", before, after)
 			}
 			a.navigate(3)
@@ -213,7 +213,7 @@ func TestNativeTabTransitionsRapidReturn(t *testing.T) {
 			}
 			tt.Advance(300 * time.Millisecond)
 			tt.Frame()
-			if after := nativeMotionBounds(t, tt, "默认压缩图片"); after != before {
+			if after := nativeMotionBounds(t, tt, "上传后自动复制结果"); after != before {
 				t.Fatalf("returning main tab did not settle in its original layout: before=%v after=%v", before, after)
 			}
 			// General settings contains segmented controls. Their old paint

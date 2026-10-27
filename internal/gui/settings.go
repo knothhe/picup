@@ -188,21 +188,6 @@ func (a *application) imageSettings(c *ui.Context) {
 			selectControl(c, "同路径图片", &a.config.CollisionPolicy, []string{"reuse", "overwrite", "rename", "skip"}, []string{"复用已有链接", "覆盖", "自动改名", "跳过并提示"})
 		})
 	})
-	settingsGroup(c, "image-processing", "图片处理", func() {
-		a.switchPreference(c, "compress", "默认压缩图片", "PNG 无损优化，JPEG / WebP / AVIF 按质量压缩。", &a.config.Compress)
-		settingsDivider(c)
-		a.preference(c, "format", "图片格式", "动画保持原样；HEIC 默认转为 WebP。", func() {
-			selectControl(c, "图片格式", &a.config.Format, []string{"original", "webp", "avif", "jpeg", "png"}, []string{"保留原格式", "WebP", "AVIF", "JPEG", "PNG"})
-		})
-		settingsDivider(c)
-		a.preference(c, "quality", "压缩质量", "适用于 JPEG / WebP / AVIF，范围 1 至 100。", func() {
-			components.NumberInput(c, &a.quality, 1, 100, 1).Label(tr("压缩质量")).Width(140)
-		})
-		settingsDivider(c)
-		a.preference(c, "max-width", "最大宽度", "单位为像素，0 为不限；只缩小，不放大。", func() {
-			components.NumberInput(c, &a.maxWidth, 0, 32768, 1).Label(tr("最大宽度")).Width(140)
-		})
-	})
 	settingsGroup(c, "image-output", "链接与剪贴板", func() {
 		a.preference(c, "output", "链接格式", "", func() {
 			selectControl(c, "链接格式", &a.config.Output, []string{"url", "markdown", "json"}, []string{"URL", "Markdown", "JSON"})

@@ -39,6 +39,9 @@ type application struct {
 	updates                               updatesState
 	lifecycle                             lifecycleState
 	gallery                               galleryState
+	imageTools                            imageToolsState
+	processingEditorFocused               bool
+	uploadProcessingExpanded              bool
 	path                                  string
 	config                                config.Config
 	savedConfig                           *config.Config
@@ -92,6 +95,7 @@ func Run() error {
 	a.initSettingsAutosave()
 	workspacePreferencesErr := a.restoreWorkspacePreferences()
 	galleryPreferencesErr := a.restoreGalleryPreferences()
+	imageToolsPreferencesErr := a.restoreImageToolsPreferences()
 	mygo.App.SetName(buildidentity.Name())
 	mygo.App.SetPath(mygo.PathUserData, filepath.Dir(path))
 	if !mygo.App.RequestSingleInstanceLock() {
@@ -100,6 +104,14 @@ func Run() error {
 	control, controlErr := devcontrol.Start(mygo.RunOnMain, mygo.App.Quit)
 	mygo.Theme.SetSource(mygo.ThemeSource(cfg.Appearance))
 	mygo.App.OnBeforeQuit(func(e *mygo.QuitEvent) {
+		if a.imageTools.running {
+			e.PreventDefault()
+			a.imageTools.quitAfterWork = true
+			if a.imageTools.cancel != nil {
+				a.imageTools.cancel()
+			}
+			return
+		}
 		if a.uploading {
 			e.PreventDefault()
 			a.quitAfterUpload = true
@@ -129,6 +141,11 @@ func Run() error {
 			return
 		}
 		if !a.flushSettingsAutosave() {
+			e.PreventDefault()
+			a.showWindow()
+			return
+		}
+		if !a.flushImageToolsPreferences() {
 			e.PreventDefault()
 			a.showWindow()
 			return
@@ -201,6 +218,9 @@ func Run() error {
 		if galleryPreferencesErr != nil {
 			a.feedback("读取图库偏好失败", galleryPreferencesErr)
 		}
+		if imageToolsPreferencesErr != nil {
+			a.feedback("读取图片工具参数失败，原记录已保留", imageToolsPreferencesErr)
+		}
 		mygo.App.OnLocaleChanged(func(string) { a.refreshSystemLanguage() })
 		a.newMainWindow()
 		a.setupMenus()
@@ -262,7 +282,13 @@ func (a *application) addFiles(paths []string) {
 		a.win.Invalidate()
 	}
 }
-func (a *application) choose() { a.chooseFiles(false) }
+func (a *application) choose() {
+	if a.tab == imageToolsTab {
+		a.chooseImageToolFiles()
+		return
+	}
+	a.chooseFiles(false)
+}
 
 func (a *application) chooseFiles(quick bool) {
 	if a.busy || a.rejectBlockedUploadInput() {
@@ -313,6 +339,10 @@ func (a *application) chooseFiles(quick bool) {
 	}()
 }
 func (a *application) paste() {
+	if a.tab == imageToolsTab {
+		a.pasteImageTool()
+		return
+	}
 	if a.pasteImageAction != nil {
 		a.pasteImageAction()
 		return

@@ -53,7 +53,7 @@ func (a *application) newMainWindow() {
 			a.mainWindowVisibilityChanged(false)
 		}
 	})
-	w.OnFileDrop(func(e *mygo.FileDropEvent) { a.addFiles(e.Paths) })
+	w.OnFileDrop(func(e *mygo.FileDropEvent) { a.addPageFiles(e.Paths) })
 }
 
 func (a *application) handleMainWindowClose(e *mygo.CloseEvent) {
@@ -66,6 +66,10 @@ func (a *application) handleMainWindowClose(e *mygo.CloseEvent) {
 	}
 	a.cancelR2Connection()
 	if !a.flushSettingsAutosave() {
+		a.showWindow()
+		return
+	}
+	if !a.flushImageToolsPreferences() {
 		a.showWindow()
 		return
 	}
@@ -237,6 +241,9 @@ func (a *application) releaseUIPresentation() {
 	a.uploadPreviews = uploadPreviewState{generation: a.uploadPreviews.generation + 1, slots: a.uploadPreviews.slots}
 	for _, j := range a.jobs {
 		j.preview, j.previewLoading, j.previewDone = nil, false, false
+	}
+	for _, j := range a.imageTools.jobs {
+		j.source.preview, j.source.previewLoading, j.source.previewDone = nil, false, false
 	}
 	a.profiles = profileUIState{}
 	a.notifications = nil

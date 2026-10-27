@@ -154,8 +154,19 @@ func TestProfileSelectorSwitchesUploadDestination(t *testing.T) {
 		t.Fatal(err)
 	}
 	tt.Frame()
-	if a.config.ActiveProfile != id || !tt.HasText("R2 · archive-bucket") || !tt.HasText("默认压缩 · 质量 60") {
+	if a.config.ActiveProfile != id || !tt.HasText("R2 · archive-bucket") || !tt.HasText(processingSummary(true, "original", 60, 0)) {
 		t.Fatal("selector did not change visible destination and upload options", tt.Texts())
+	}
+	openProcessingOptions(t, tt)
+	if a.quality != 60 {
+		t.Fatal("switching profiles did not restore the selected profile's processing parameters", a.quality, tt.Texts())
+	}
+	if err := tt.Click("压缩质量"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Key(0, ui.KeyUp)
+	if a.quality != 61 {
+		t.Fatal("quality editor did not start from the selected profile's value", a.quality)
 	}
 }
 

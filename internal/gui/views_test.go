@@ -84,10 +84,8 @@ func TestNativeViewsAndSharedSave(t *testing.T) {
 			if !tt.HasText("选择图片") || !tt.HasText("从剪贴板粘贴") {
 				t.Fatal("missing upload actions", tt.Texts())
 			}
-			a.tab = 2
-			a.settingsTab = 1
-			tt.Frame()
-			if e := tt.Click("默认压缩图片"); e != nil {
+			openProcessingOptions(t, tt)
+			if e := tt.Click("压缩图片"); e != nil {
 				t.Fatal(e)
 			}
 			if a.config.Compress {
@@ -98,6 +96,12 @@ func TestNativeViewsAndSharedSave(t *testing.T) {
 			saved, e := config.Load(a.path)
 			if e != nil || saved.Compress {
 				t.Fatal("GUI preferences not shared with CLI", e)
+			}
+			a.tab = 2
+			a.settingsTab = 1
+			tt.Frame()
+			if _, exists := tt.Find("压缩图片"); exists {
+				t.Fatal("compression controls remain in settings")
 			}
 			a.settingsTab = 3
 			tt.Frame()
@@ -136,13 +140,17 @@ func TestNavigationAndSidebar(t *testing.T) {
 			}
 			tt.Advance(400 * time.Millisecond)
 		}
+		click("展开处理选项")
+		click("压缩图片")
+		// Let the save notice leave the lower-left navigation before clicking
+		// another page; this test exercises navigation rather than toast input.
+		tt.Advance(settingsAutosaveDelay + 6*time.Second)
 		click("图库")
 		click("设置")
 		if a.tab != 2 || a.previousTab != 4 {
 			t.Fatal("settings did not retain the previous page")
 		}
 		click("图片与输出")
-		click("默认压缩图片")
 		click("收起侧边栏")
 		if !a.sidebarCollapsed || a.settingsTab != 1 || a.config.Compress {
 			t.Fatal("sidebar collapse lost settings state")

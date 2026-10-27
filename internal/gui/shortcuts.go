@@ -311,11 +311,14 @@ func (a *application) registerShortcuts(c *ui.Context) {
 		a.onShortcut(c, "paste", a.paste)
 		a.onShortcut(c, "upload", a.upload)
 	}
+	if a.tab == imageToolsTab {
+		a.onShortcut(c, "paste", a.paste)
+	}
 }
 
 func (a *application) nativeMenuStateKey() string {
 	var key strings.Builder
-	fmt.Fprintf(&key, "%t|%t|%t|%t", a.tab == 0, a.shortcutEditing != "", a.quickUpload.visible, a.fileDialogOpen)
+	fmt.Fprintf(&key, "%d|%t|%t|%t|%t", a.tab, a.shortcutEditing != "", a.quickUpload.visible, a.fileDialogOpen, a.processingEditorFocused)
 	for _, command := range shortcutCommands {
 		if globalShortcut(command) || command.id == "paste" {
 			key.WriteByte('|')
