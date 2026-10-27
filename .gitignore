@@ -14,3 +14,4 @@ mygo-update.key
 *.test
 coverage.out
 __pycache__/
+.wrangler/
