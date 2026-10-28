@@ -10,6 +10,7 @@
 make build            # 构建 Dev CLI 和桌面应用
 make run              # 构建并运行 Dev 桌面应用
 make dev-signing      # 选择并记住本机 Dev 代码签名证书
+make release-signing  # 预览发行代码签名身份与 GitHub Secrets 配置
 make install          # 构建并安装隔离的 Dev 应用与 CLI
 make uninstall        # 卸载已核验的 Dev 程序，保留配置、数据与凭据
 make install-release  # 显式构建并安装正式应用与 CLI
@@ -25,6 +26,8 @@ make package-release  # 本机 macOS 架构的发布 ZIP 与签名更新附件
 macOS 本地 Dev 构建首次会列出钥匙串中用途及有效期符合要求的代码签名证书，包括未受系统信任的自签名身份，展示名称、SHA-1、SHA-256 和有效期。输入编号选择后，将证书 SHA-1、SHA-256 和名称保存到仓库根目录的 `.picup-dev-signing.json`。该文件已被 Git 忽略，只保存公开身份信息；旧缓存确认同一身份后自动升级。之后的 `make build`、`make run`、`make package-dev` 和 `make install` 都复用该证书并核对 SHA-256，直接生成的 GUI、CLI 与应用包使用各自固定的签名 identifier，稳定应用的 designated requirement。本地自签应用仍可能受随二进制变化的 Keychain partition 检查影响，重新构建或从 ad-hoc 切换后仍可能需要确认；详见 [Dev 签名说明](macos-distribution.md#dev-构建的本地证书选择)。
 
 运行 `make dev-signing` 可以重新选择证书；在无交互终端中可用 `PICUP_MACOS_SIGNING_IDENTITY='<精确证书名称或 SHA-1>' make dev-signing` 保存选择。普通构建中的同名环境变量优先于本地缓存，但不会覆盖已保存的选择。证书已删除或失效、缓存损坏，或无交互终端中尚无缓存时，构建会停止并提示处理方式，不自动回退 ad-hoc 或换用其他证书。`CI=1` 和非 macOS 环境跳过本地自动选择与缓存；正式版继续使用显式签名配置。详见 [Dev 签名说明](macos-distribution.md#dev-构建的本地证书选择)。
+
+正式 CI 默认使用固定代码签名身份。`make release-signing` 只读预览本机候选、发行 pin、目标仓库及 Secret 状态；明确 `make release-signing SIGNING_FLAGS='--identity <SHA-1> --apply'` 后才导出选中证书与私钥、隔离导入验证、仓库外备份并上传两个 Secrets，随后写入公开 pin。Dev 选择与发行配置分开，pin 须提交后再运行签名 CI；完整流程见[分发签名说明](macos-distribution.md#将本地固定身份配置到-github)。
 
 `BUILD_TAGS` 可覆盖直接开发构建的标签，例如 `make build BUILD_TAGS=picup_dev,custom_tag`；已有 `GOFLAGS` 环境变量中的标签会合并，其他选项与引号保留。构建显式选择 `GOFLAGS`，避免个人 Go 配置中的隐式标签改变数据通道。`make install` 固定使用 Dev 通道；`make package` / `make install-release` / `make package-release` 统一编译正式 CLI 和 GUI，拒绝 `GOFLAGS` 中的 `picup_dev`。正式包继续使用 `~/.config/picup/config.json`。
 

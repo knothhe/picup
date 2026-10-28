@@ -9,8 +9,13 @@ on:
         description: Exact existing release tag to build or recover
         required: true
         type: string
+      signing_mode:
+        description: Code signing mode; keep the original mode when recovering a release
+        type: choice
+        options: [fixed-identity, update-only, developer-id]
+        default: fixed-identity
       apple_distribution:
-        description: Use the configured Developer ID certificate and optional notarization credentials
+        description: Compatibility option selecting Developer ID and optional notarization
         type: boolean
         default: false
 
@@ -23,7 +28,7 @@ concurrency:
 
 env:
   PYTHONDONTWRITEBYTECODE: '1'
-  SIGNING_MODE: ${{ (vars.PICUP_APPLE_DISTRIBUTION == 'true' || inputs.apple_distribution == true) && 'developer-id' || 'update-only' }}
+  SIGNING_MODE: ${{ (vars.PICUP_APPLE_DISTRIBUTION == 'true' || inputs.apple_distribution == true) && 'developer-id' || inputs.signing_mode || vars.PICUP_SIGNING_MODE || 'fixed-identity' }}
 
 jobs:
   checks:
@@ -53,7 +58,12 @@ jobs:
         run: python3 scripts/ci_release.py validate --tag "$RELEASE_TAG" --github-output "$GITHUB_OUTPUT"
       - name: Record explicit distribution mode
         id: mode
-        run: printf 'signing_mode=%s\n' "$SIGNING_MODE" >> "$GITHUB_OUTPUT"
+        run: |
+          case "$SIGNING_MODE" in
+            fixed-identity|update-only|developer-id) ;;
+            *) echo '::error::Unknown signing mode'; exit 1 ;;
+          esac
+          printf 'signing_mode=%s\n' "$SIGNING_MODE" >> "$GITHUB_OUTPUT"
       - name: Set up pinned Go toolchain
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -103,6 +113,13 @@ jobs:
         env:
           MYGO_UPDATER_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY }}
         run: make package-release
+      - name: Build with the fixed code signing identity in temporary keychain
+        if: env.SIGNING_MODE == 'fixed-identity'
+        env:
+          MYGO_UPDATER_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY }}
+          MACOS_SIGNING_CERTIFICATE: ${{ secrets.MACOS_SIGNING_CERTIFICATE }}
+          MACOS_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_SIGNING_CERTIFICATE_PASSWORD }}
+        run: python3 scripts/macos_signing_ci.py --mode fixed-identity -- make package-release
       - name: Build Developer ID distribution in temporary keychain
         if: env.SIGNING_MODE == 'developer-id'
         env:
@@ -112,7 +129,7 @@ jobs:
           MACOS_NOTARY_KEY_BASE64: ${{ secrets.MACOS_NOTARY_KEY_BASE64 }}
           MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
           MACOS_NOTARY_ISSUER: ${{ secrets.MACOS_NOTARY_ISSUER }}
-        run: python3 scripts/macos_signing_ci.py -- make package-release
+        run: python3 scripts/macos_signing_ci.py --mode developer-id -- make package-release
       - name: Verify exact artifact set and record build provenance
         id: provenance
         run: |

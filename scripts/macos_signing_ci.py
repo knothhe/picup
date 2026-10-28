@@ -15,9 +15,12 @@ import subprocess
 import sys
 import tempfile
 
+import macos_signing
+
 
 PRIVATE_VARIABLES = ('MACOS_SIGNING_CERTIFICATE', 'MACOS_SIGNING_CERTIFICATE_PASSWORD',
                      'MACOS_NOTARY_KEY_BASE64', 'MACOS_NOTARY_KEY_ID', 'MACOS_NOTARY_ISSUER')
+SIGNING_MODES = ('fixed-identity', 'developer-id')
 PIN_PATH = Path(__file__).resolve().parent.parent / 'config/macos-signing.json'
 
 
@@ -26,7 +29,7 @@ def repository_certificate_pin():
     try:
         data = json.loads(PIN_PATH.read_text(encoding='utf-8'))
     except OSError:
-        raise ValueError('CI Apple signing requires a readable, committed '
+        raise ValueError('CI fixed signing requires a readable, committed '
                          'config/macos-signing.json with the existing distribution '
                          'certificate SHA-256 pin.') from None
     except ValueError:
@@ -52,13 +55,15 @@ def run(arguments, capture=False):
 
 
 @contextmanager
-def signing_environment(environment=None):
+def signing_environment(environment=None, mode='fixed-identity'):
+    if mode not in SIGNING_MODES:
+        raise ValueError('Unknown CI code signing mode.')
     environment = dict(os.environ if environment is None else environment)
     certificate = environment.get('MACOS_SIGNING_CERTIFICATE', '')
     password = environment.get('MACOS_SIGNING_CERTIFICATE_PASSWORD', '')
     pin = environment.get('PICUP_MACOS_CERTIFICATE_SHA256', '').lower()
     if not certificate or not password or not re.fullmatch(r'[a-f0-9]{64}', pin):
-        raise ValueError('CI Apple signing requires certificate, password and its public SHA-256 pin.')
+        raise ValueError('CI fixed signing requires certificate, password and its public SHA-256 pin.')
     try:
         decoded = base64.b64decode(certificate, validate=True)
     except ValueError:
@@ -92,12 +97,18 @@ def signing_environment(environment=None):
             if len(matches)!=1:
                 raise ValueError('CI keychain must contain exactly one codesigning identity.')
             identity,name=next(iter(matches))
-            if not name.startswith('Developer ID Application:'):
-                raise ValueError('CI Apple distribution requires a Developer ID Application certificate.')
+            if (mode == 'developer-id' or all(notary_fields)) and not name.startswith('Developer ID Application:'):
+                raise ValueError('Developer ID mode and Apple notarization require a Developer ID Application certificate.')
             run(['/usr/bin/security','list-keychains','-d','user','-s',str(keychain),*original])
-            child={key:value for key,value in environment.items() if key not in PRIVATE_VARIABLES}
+            child={key:value for key,value in environment.items()
+                   if key not in PRIVATE_VARIABLES and not key.startswith('PICUP_MACOS_')}
             child['PICUP_MACOS_SIGNING_IDENTITY']=identity.upper()
             child['PICUP_MACOS_CERTIFICATE_SHA256']=pin
+            child['PICUP_MACOS_SIGNING_KEYCHAIN']=str(keychain)
+            # Validate the actual imported leaf, its purpose, validity and pin
+            # before exposing the build command to this temporary identity.
+            macos_signing.configuration({key:value for key,value in child.items()
+                                         if key.startswith('PICUP_MACOS_')})
             if all(notary_fields):
                 try:api_key=base64.b64decode(notary_fields[0],validate=True)
                 except ValueError:raise ValueError('Invalid Base64 notary API key.') from None
@@ -123,14 +134,16 @@ def signing_environment(environment=None):
 
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--mode', choices=SIGNING_MODES, default='fixed-identity')
     parser.add_argument('command',nargs=argparse.REMAINDER)
-    arguments=parser.parse_args(argv).command
+    options=parser.parse_args(argv)
+    arguments=options.command
     if arguments[:1]==['--']:arguments=arguments[1:]
     if not arguments:parser.error('a build command is required after --')
     try:
         environment = dict(os.environ)
         environment['PICUP_MACOS_CERTIFICATE_SHA256'] = repository_certificate_pin()
-        with signing_environment(environment) as child:
+        with signing_environment(environment, mode=options.mode) as child:
             return subprocess.run(arguments,env=child).returncode
     except (ValueError,OSError) as error:
         print(f'CI signing: {error}',file=sys.stderr)

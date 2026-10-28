@@ -16,7 +16,10 @@ class SigningError(ValueError):
 
 def command(*arguments, capture=False, diagnostics=False):
     environment = dict(os.environ)
-    environment.pop('MYGO_UPDATER_PRIVATE_KEY', None)
+    for name in ('MYGO_UPDATER_PRIVATE_KEY', 'MACOS_SIGNING_CERTIFICATE',
+                 'MACOS_SIGNING_CERTIFICATE_PASSWORD', 'MACOS_NOTARY_KEY_BASE64',
+                 'MACOS_NOTARY_KEY_ID', 'MACOS_NOTARY_ISSUER'):
+        environment.pop(name, None)
     environment['LC_ALL'] = 'C'
     result = subprocess.run(arguments, env=environment, text=True,
                             stdout=subprocess.PIPE if capture else None,
@@ -36,6 +39,7 @@ class Signing:
     certificate_sha256: str = ''
     not_before: str = ''
     not_after: str = ''
+    signing_keychain: str = ''
 
 
 def _certificate_date(value):
@@ -52,9 +56,10 @@ def _certificate_date(value):
         raise SigningError('Cannot read the signing certificate validity period.') from error
 
 
-def discover_identities():
+def discover_identities(keychain=''):
     """Find key-paired identities and validate public leaf metadata, independent of trust."""
-    listing = command('/usr/bin/security', 'find-identity', '-p', 'codesigning', capture=True)
+    scope = [keychain] if keychain else []
+    listing = command('/usr/bin/security', 'find-identity', '-p', 'codesigning', *scope, capture=True)
     identities = {}
     for line in listing.splitlines():
         # security prints the label verbatim between quotes, including embedded
@@ -66,7 +71,7 @@ def discover_identities():
     if not identities:
         return []
     # This exports only public certificates, never private keys or PKCS#12.
-    exported = command('/usr/bin/security', 'find-certificate', '-a', '-p', capture=True)
+    exported = command('/usr/bin/security', 'find-certificate', '-a', '-p', *scope, capture=True)
     certificates = re.findall(r'-----BEGIN CERTIFICATE-----\s+.*?-----END CERTIFICATE-----',
                               exported, re.DOTALL)
     found = {}
@@ -106,9 +111,10 @@ def configuration(environment=None):
     identity = environment.get('PICUP_MACOS_SIGNING_IDENTITY', '').strip()
     profile = environment.get('PICUP_MACOS_NOTARY_PROFILE', '').strip()
     keychain = environment.get('PICUP_MACOS_NOTARY_KEYCHAIN', '').strip()
+    signing_keychain = environment.get('PICUP_MACOS_SIGNING_KEYCHAIN', '').strip()
     pin = environment.get('PICUP_MACOS_CERTIFICATE_SHA256', '').strip().lower()
     if not identity:
-        if profile or keychain or pin:
+        if profile or keychain or signing_keychain or pin:
             raise SigningError('Notary/profile/certificate pin requires PICUP_MACOS_SIGNING_IDENTITY.')
         if 'PICUP_MACOS_SIGNING_IDENTITY' in environment:
             raise SigningError('Explicit PICUP_MACOS_SIGNING_IDENTITY is empty.')
@@ -117,7 +123,8 @@ def configuration(environment=None):
         raise SigningError('Explicit signing requires a real identity; omit the variable for ad-hoc builds.')
     if pin and not re.fullmatch(r'[a-f0-9]{64}', pin):
         raise SigningError('PICUP_MACOS_CERTIFICATE_SHA256 must contain 64 hexadecimal characters.')
-    matches = [signing for signing in discover_identities()
+    available = discover_identities(signing_keychain) if signing_keychain else discover_identities()
+    matches = [signing for signing in available
                if signing.identity_hash.lower() == identity.lower() or signing.name == identity]
     if len(matches) != 1:
         raise SigningError('Signing identity must match exactly one valid existing codesigning identity.')
@@ -128,7 +135,7 @@ def configuration(environment=None):
         raise SigningError('Apple notarization requires a Developer ID Application identity.')
     if keychain and not profile:
         raise SigningError('PICUP_MACOS_NOTARY_KEYCHAIN requires PICUP_MACOS_NOTARY_PROFILE.')
-    return replace(signing, profile=profile, keychain=keychain)
+    return replace(signing, profile=profile, keychain=keychain, signing_keychain=signing_keychain)
 
 
 def verify_signed_code(target, signing, executable='Picup', is_cli=False):
@@ -163,7 +170,8 @@ def sign_development_binaries(directory, signing):
     )
     for name, identifier, is_cli in binaries:
         target = Path(directory) / 'bin' / name
-        command('/usr/bin/codesign', '--force', '--sign', signing.identity_hash,
+        scope = ['--keychain', signing.signing_keychain] if signing.signing_keychain else []
+        command('/usr/bin/codesign', '--force', '--sign', signing.identity_hash, *scope,
                 '--identifier', identifier, str(target))
         verify_signed_code(target, signing, 'Picup Dev', is_cli)
 
@@ -192,8 +200,13 @@ def _normalize_requirement(value):
     # Ignore dumper annotations and formatting outside literals. Certificate
     # names can themselves contain spaces, escaped quotes, or comment markers.
     tokens = r'"(?:\\.|[^"\\])*"|(?:/\*.*?\*/|\s+)+'
-    return re.sub(tokens, lambda match: match[0] if match[0].startswith('"') else ' ',
-                  value, flags=re.DOTALL).strip()
+    normalized = re.sub(tokens, lambda match: match[0] if match[0].startswith('"') else ' ',
+                        value, flags=re.DOTALL).strip()
+    # Security's dumper may omit quotes around simple identifiers such as
+    # "picup". Canonicalize only that literal, keeping the complete predicate
+    # comparison below strict (including all certificate constraints).
+    return re.sub(r'^identifier ([A-Za-z0-9_.-]+)(?= and )',
+                  lambda match: 'identifier "' + match[1] + '"', normalized)
 
 
 def verify_designated_requirement(target,signing,executable,is_cli=False,certificate_hashes=None):

@@ -19,6 +19,8 @@ __pycache__/
 .env*
 *.pem
 *.key
+*.p12
+*.pfx
 .claude/settings.local.json
 .idea/
 .vscode/

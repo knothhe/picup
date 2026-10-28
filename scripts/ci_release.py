@@ -22,6 +22,7 @@ import release
 
 
 RECORD = 'ci-release.json'
+SIGNING_MODES = ('fixed-identity', 'update-only', 'developer-id')
 require = release.require
 
 
@@ -118,7 +119,7 @@ def run_identity():
 
 
 def record(tag, directory, signing_mode):
-    require(signing_mode in ('update-only', 'developer-id'), 'Unknown CI signing mode.')
+    require(signing_mode in SIGNING_MODES, 'Unknown CI signing mode.')
     selected, repo, _ = identity(tag)
     paths = assets(directory, selected['version'])
     validate_feed(directory, repo, tag, selected['version'])
@@ -137,7 +138,7 @@ def record(tag, directory, signing_mode):
 
 
 def verify_record(tag, directory, signing_mode, build_attempt, build_job):
-    require(signing_mode in ('update-only', 'developer-id'), 'Unknown CI signing mode.')
+    require(signing_mode in SIGNING_MODES, 'Unknown CI signing mode.')
     selected, repo, prefix = identity(tag)
     paths = assets(directory, selected['version'])
     target = Path(directory) / RECORD
@@ -220,7 +221,7 @@ def main(argv=None):
             command.add_argument('--github-output', type=Path)
         else:
             command.add_argument('--directory', type=Path, default=Path('build/release'))
-            command.add_argument('--signing-mode', choices=('update-only', 'developer-id'), required=True)
+            command.add_argument('--signing-mode', choices=SIGNING_MODES, required=True)
         if name == 'publish':
             command.add_argument('--build-attempt', type=int, required=True)
             command.add_argument('--build-job', default='build')

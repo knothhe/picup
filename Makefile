@@ -8,14 +8,18 @@ RELEASE_COMMAND ?= $(PYTHON) scripts/release.py
 VERSION_BUMP ?= patch
 RELEASE_FLAGS ?=
 INSTALL_FLAGS ?=
+SIGNING_FLAGS ?=
 VERSION ?= $(shell $(PYTHON) -c 'import json; print(json.load(open("mygo.json"))["version"])')
 
-.PHONY: build dev-signing test check run package package-app package-dev package-ci package-release release release-initial release-assets release-notes install install-dev install-release uninstall uninstall-dev icons icons-dev notices verify-update
+.PHONY: build dev-signing release-signing test check run package package-app package-dev package-ci package-release release release-initial release-assets release-notes install install-dev install-release uninstall uninstall-dev icons icons-dev notices verify-update
 build:
 	$(PYTHON) scripts/build_binaries.py
 
 dev-signing:
 	$(PYTHON) scripts/dev_signing.py
+
+release-signing:
+	$(PYTHON) scripts/release_signing.py $(SIGNING_FLAGS)
 
 test:
 	$(GO) test -race ./...

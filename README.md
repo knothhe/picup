@@ -66,4 +66,4 @@ make release          # 预览 patch 升级
 
 发布默认仅预览；添加 `RELEASE_FLAGS=--apply` 后，本地完成检查、tag 和原子推送，后续升级还会更新版本并提交。版本 tag 随后触发 GitHub Actions 构建 macOS arm64 正式包，验证完整附件后公开 Release；本地命令不再构建或上传发行附件。完整命令、CI 状态与失败恢复见[发布流程](docs/release.md)，代码结构、设计稿和图标维护见[开发指南](docs/development.md)。
 
-日常 GitHub CI 对 PR 和 `main` 运行检查并构建未签名试包，手动签名试包使用独立 runner；正式发布另由 tag workflow 执行。更新沿用 MyGo 的 Ed25519 签名与完整更新包，CI 从仓库 Secret 取得更新私钥，Developer ID 与 Apple 公证需另行配置，详见[自动更新与 CI](docs/updates.md)。
+日常 GitHub CI 对 PR 和 `main` 运行检查并构建未签名试包，手动签名试包使用独立 runner；正式发布另由 tag workflow 执行，默认使用固定代码签名身份，支持复用本地自签证书。`make release-signing` 可预览并配置发行身份上传，公开证书指纹入库、私有材料保存在 GitHub Secrets。更新仍使用独立的 Ed25519 签名与完整更新包；Developer ID 与 Apple 公证可另行配置，详见[自动更新与 CI](docs/updates.md)。

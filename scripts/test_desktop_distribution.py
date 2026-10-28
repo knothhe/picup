@@ -1,4 +1,5 @@
 """Exercise channel derivation and signing failure paths without system changes."""
+import base64
 import hashlib
 import json
 import os
@@ -14,6 +15,28 @@ import macos_signing_ci
 
 
 class DesktopDistributionTests(unittest.TestCase):
+    def ci_identity(self, name='Picup Local Code Signing', pin='a' * 64):
+        return macos_signing.Signing('A' * 40, name, certificate_sha256=pin,
+                                    not_before='2026-01-01T00:00:00+00:00',
+                                    not_after='2036-01-01T00:00:00+00:00')
+
+    def ci_environment(self):
+        return {'MACOS_SIGNING_CERTIFICATE': base64.b64encode(b'fixture-p12').decode(),
+                'MACOS_SIGNING_CERTIFICATE_PASSWORD': 'fixture-password',
+                'PICUP_MACOS_CERTIFICATE_SHA256': 'a' * 64}
+
+    def ci_command(self, identity, commands):
+        def command(arguments, capture=False):
+            commands.append(arguments)
+            if arguments[1] == 'list-keychains' and '-s' not in arguments:
+                return '"/original.keychain"'
+            if arguments[1] == 'create-keychain':
+                Path(arguments[-1]).touch()
+            if arguments[1] == 'find-identity':
+                return f'1) {identity.identity_hash} "{identity.name}"'
+            return ''
+        return command
+
     def extraction_prefix(self, arguments):
         options=[argument for argument in arguments if argument.startswith('--extract-certificates')]
         if not options:
@@ -256,15 +279,86 @@ class DesktopDistributionTests(unittest.TestCase):
         environment={'MACOS_SIGNING_CERTIFICATE':base64.b64encode(b'fixture-p12').decode(),
                      'MACOS_SIGNING_CERTIFICATE_PASSWORD':'fixture-password',
                      'PICUP_MACOS_CERTIFICATE_SHA256':'a'*64,'MYGO_UPDATER_PRIVATE_KEY':'update-test-key'}
-        def command(arguments,capture=False):
-            if arguments[1]=='list-keychains' and '-s' not in arguments:return '"/original.keychain"'
-            if arguments[1]=='find-identity':return '1) '+'A'*40+' "Developer ID Application: Fixture (TEST)"'
-            return ''
-        with mock.patch.object(macos_signing_ci,'run',side_effect=command):
+        identity=self.ci_identity()
+        environment.update(PICUP_MACOS_SIGNING_IDENTITY='stale identity',
+                           PICUP_MACOS_NOTARY_PROFILE='stale profile',
+                           PICUP_MACOS_NOTARY_KEYCHAIN='/stale.keychain',
+                           PICUP_MACOS_SIGNING_KEYCHAIN='/another.keychain')
+        commands=[]
+        with mock.patch.object(macos_signing_ci,'run',side_effect=self.ci_command(identity,commands)), \
+                mock.patch.object(macos_signing,'discover_identities',return_value=[identity]) as discover:
             with macos_signing_ci.signing_environment(environment) as child:
                 self.assertEqual(child['MYGO_UPDATER_PRIVATE_KEY'],'update-test-key')
                 self.assertEqual(child['PICUP_MACOS_SIGNING_IDENTITY'],'A'*40)
+                self.assertTrue(Path(child['PICUP_MACOS_SIGNING_KEYCHAIN']).is_file())
+                self.assertEqual(set(key for key in child if key.startswith('PICUP_MACOS_')),
+                                 {'PICUP_MACOS_SIGNING_IDENTITY','PICUP_MACOS_CERTIFICATE_SHA256',
+                                  'PICUP_MACOS_SIGNING_KEYCHAIN'})
+                self.assertIn(child['PICUP_MACOS_SIGNING_KEYCHAIN'],str(discover.call_args))
                 self.assertFalse(any(name in child for name in macos_signing_ci.PRIVATE_VARIABLES))
+        self.assertNotIn('-v',next(args for args in commands if args[1]=='find-identity'))
+
+    def test_ci_fixed_identity_rejects_wrong_pin_or_unusable_certificate_before_build(self):
+        for identities,message in (([self.ci_identity(pin='b'*64)],'SHA-256 pin'),
+                                   ([], 'one valid existing')):
+            with self.subTest(message=message),tempfile.TemporaryDirectory() as temporary:
+                environment=self.ci_environment()
+                environment['RUNNER_TEMP']=temporary
+                commands=[]
+                with mock.patch.object(macos_signing_ci,'run',
+                        side_effect=self.ci_command(self.ci_identity(),commands)), \
+                        mock.patch.object(macos_signing,'discover_identities',return_value=identities):
+                    with self.assertRaisesRegex(macos_signing.SigningError,message):
+                        with macos_signing_ci.signing_environment(environment):
+                            self.fail('entered build before imported certificate validation')
+                self.assertTrue(any(args[1]=='delete-keychain' for args in commands))
+                self.assertEqual(list(Path(temporary).iterdir()),[])
+
+    def test_ci_developer_id_mode_and_notarization_require_developer_id(self):
+        for mode,notary in (('developer-id',False),('fixed-identity',True)):
+            environment=self.ci_environment()
+            if notary:
+                environment.update(MACOS_NOTARY_KEY_BASE64=base64.b64encode(b'fixture-p8').decode(),
+                                   MACOS_NOTARY_KEY_ID='fixture-id',MACOS_NOTARY_ISSUER='fixture-issuer')
+            commands=[]
+            with self.subTest(mode=mode,notary=notary), \
+                    mock.patch.object(macos_signing_ci,'run',
+                        side_effect=self.ci_command(self.ci_identity(),commands)), \
+                    mock.patch.object(macos_signing,'discover_identities') as discover:
+                with self.assertRaisesRegex(ValueError,'Developer ID Application certificate'):
+                    with macos_signing_ci.signing_environment(environment,mode=mode):
+                        self.fail('entered Developer ID build with a self-signed certificate')
+                discover.assert_not_called()
+            self.assertTrue(any(args[1]=='delete-keychain' for args in commands))
+
+    def test_ci_developer_id_and_optional_notary_use_only_temporary_credentials(self):
+        identity=self.ci_identity(name='Developer ID Application: Fixture (ABCDEFGHIJ)')
+        for notary in (False,True):
+            environment=self.ci_environment()
+            if notary:
+                environment.update(MACOS_NOTARY_KEY_BASE64=base64.b64encode(b'fixture-p8').decode(),
+                                   MACOS_NOTARY_KEY_ID='fixture-id',MACOS_NOTARY_ISSUER='fixture-issuer')
+            commands=[]
+            with self.subTest(notary=notary), \
+                    mock.patch.object(macos_signing_ci,'run',side_effect=self.ci_command(identity,commands)), \
+                    mock.patch.object(macos_signing,'discover_identities',return_value=[identity]):
+                with macos_signing_ci.signing_environment(environment,mode='developer-id') as child:
+                    self.assertEqual('PICUP_MACOS_NOTARY_PROFILE' in child,notary)
+                    self.assertFalse(any(key in child for key in macos_signing_ci.PRIVATE_VARIABLES))
+                    if notary:
+                        self.assertEqual(child['PICUP_MACOS_NOTARY_KEYCHAIN'],child['PICUP_MACOS_SIGNING_KEYCHAIN'])
+                        self.assertEqual(child['PICUP_MACOS_NOTARY_PROFILE'],'picup-ci-notary')
+            self.assertEqual(any(args[1]=='notarytool' for args in commands),notary)
+
+    def test_ci_missing_certificate_or_password_fails_before_system_operations(self):
+        for missing in ('MACOS_SIGNING_CERTIFICATE','MACOS_SIGNING_CERTIFICATE_PASSWORD'):
+            environment=self.ci_environment()
+            environment.pop(missing)
+            with self.subTest(missing=missing),mock.patch.object(macos_signing_ci,'run') as command:
+                with self.assertRaisesRegex(ValueError,'requires certificate, password'):
+                    with macos_signing_ci.signing_environment(environment):
+                        self.fail('entered build without signing material')
+                command.assert_not_called()
 
     def test_ci_cleanup_launch_failure_still_attempts_all_items_and_removes_private_files(self):
         import base64
@@ -280,6 +374,7 @@ class DesktopDistributionTests(unittest.TestCase):
                         return '"/original.keychain"'
                     if arguments[1]=='find-identity':
                         return '1) '+'A'*40+' "Developer ID Application: Fixture (TEST)"'
+                    if arguments[1]=='create-keychain':Path(arguments[-1]).touch()
                     if arguments[1]=='list-keychains' and arguments[4:]==['-s','/original.keychain']:
                         raise OSError('fixture-private-password: restore launch failure')
                     if arguments[1]=='delete-keychain' and delete_fails:
@@ -288,7 +383,8 @@ class DesktopDistributionTests(unittest.TestCase):
                 with self.subTest(build_fails=build_fails,delete_fails=delete_fails), \
                         tempfile.TemporaryDirectory() as temporary:
                     environment['RUNNER_TEMP']=temporary
-                    with mock.patch.object(macos_signing_ci,'run',side_effect=command):
+                    with mock.patch.object(macos_signing_ci,'run',side_effect=command), \
+                            mock.patch.object(macos_signing,'discover_identities',return_value=[self.ci_identity()]):
                         with self.assertRaisesRegex(ValueError,'CI signing cleanup failed') as failure:
                             with macos_signing_ci.signing_environment(environment):
                                 if build_fails:
@@ -355,6 +451,7 @@ class DesktopDistributionTests(unittest.TestCase):
                 signing.return_value.__enter__.return_value = child
                 self.assertEqual(macos_signing_ci.main(['--', 'make', 'package-release']), 0)
                 self.assertEqual(signing.call_args.args[0]['PICUP_MACOS_CERTIFICATE_SHA256'], pin)
+                self.assertEqual(signing.call_args.kwargs,{'mode':'fixed-identity'})
                 self.assertEqual(os.environ['PICUP_MACOS_CERTIFICATE_SHA256'], 'b' * 64)
                 build.assert_called_once_with(['make', 'package-release'], env=child)
 

@@ -31,7 +31,7 @@ def metadata(before='Jan  1 00:00:00 2026 GMT', after='Jan  1 00:00:00 2036 GMT'
 
 
 class SigningIdentityTests(unittest.TestCase):
-    def discover(self, certificates, listing, details=None):
+    def discover(self, certificates, listing, details=None, keychain=''):
         calls = []
         paths = []
         def command(*arguments, **options):
@@ -47,9 +47,39 @@ class SigningIdentityTests(unittest.TestCase):
             return (details or {}).get(der, metadata())
         with mock.patch.object(macos_signing, 'command', side_effect=command), mock.patch.object(
                 macos_signing, 'datetime', FrozenDateTime):
-            identities = macos_signing.discover_identities()
+            identities = macos_signing.discover_identities(keychain)
         self.assertTrue(all(not path.exists() for path in paths))
         return identities, calls
+
+    def test_explicit_keychain_limits_both_identity_and_public_certificate_discovery(self):
+        certificate = b'isolated-keychain-certificate'
+        digest = hashlib.sha1(certificate).hexdigest().upper()
+        identities, calls = self.discover([certificate], f'1) {digest} "Local"',
+                                          keychain='/temporary.keychain-db')
+        self.assertEqual(len(identities), 1)
+        self.assertEqual(calls[0][-1], '/temporary.keychain-db')
+        self.assertEqual(calls[1][-1], '/temporary.keychain-db')
+        with mock.patch.object(macos_signing, 'discover_identities', return_value=identities) as discover:
+            selected = macos_signing.configuration({'PICUP_MACOS_SIGNING_IDENTITY': digest,
+                'PICUP_MACOS_SIGNING_KEYCHAIN': '/temporary.keychain-db'})
+        discover.assert_called_once_with('/temporary.keychain-db')
+        self.assertEqual(selected.signing_keychain, '/temporary.keychain-db')
+
+    def test_security_dump_accepts_bare_cli_identifier_but_keeps_certificate_constraint_strict(self):
+        signing = macos_signing.Signing('A' * 40, 'Local')
+        def command(*arguments, **options):
+            if '--verbose=4' in arguments:
+                return 'Identifier=picup'
+            if '--requirements' in arguments:
+                return 'designated => identifier picup and certificate leaf = H"' + 'a' * 40 + '"'
+            return ''
+        with mock.patch.object(macos_signing, 'command', side_effect=command):
+            macos_signing.verify_designated_requirement(Path('picup'), signing, 'Picup', is_cli=True)
+        invalid = 'designated => identifier picup and certificate leaf = H"' + 'a' * 40 + '" or true'
+        with mock.patch.object(macos_signing, 'command', side_effect=lambda *args, **kwargs:
+                'Identifier=picup' if '--verbose=4' in args else invalid):
+            with self.assertRaisesRegex(macos_signing.SigningError, 'stable certificate identity'):
+                macos_signing.verify_designated_requirement(Path('picup'), signing, 'Picup', is_cli=True)
 
     def test_untrusted_identity_is_matched_by_der_and_gets_complete_metadata(self):
         first, second, unrelated = b'first-certificate', b'second-certificate', b'unrelated-certificate'

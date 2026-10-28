@@ -9,7 +9,7 @@
 - 本地需要 Make、Python 3.9+、Git、Go 1.27.1+；首次发布的 GitHub 只读预检还需要已登录的 `gh`。
 - 在 `main` 分支运行，工作区须干净，包括未跟踪文件；版本文件、脚本、配置及新的 release workflow 须已纳入 Git。
 - 默认推送到 `origin` 的唯一 push URL。远程 `main` 须已存在，且不能领先于本地或与本地分叉；必要时先获取远程更新并整合。
-- 仓库需允许 Actions，签名构建使用与 `mygo.json` 公钥匹配的 Secret `MYGO_UPDATER_PRIVATE_KEY`。普通 PR 检查不需要此私钥。
+- 仓库需允许 Actions，签名构建使用与 `mygo.json` 公钥匹配的 Secret `MYGO_UPDATER_PRIVATE_KEY`。正式 CI 默认还需固定代码签名身份的 `MACOS_SIGNING_CERTIFICATE`、`MACOS_SIGNING_CERTIFICATE_PASSWORD` 和已提交的 `config/macos-signing.json`；用 `make release-signing` 预览及配置，见[分发签名说明](macos-distribution.md)。普通 PR 检查不需要这些私有材料。
 - 自动发布 tag 必须包含新的 `release.yml` 和相关脚本，并位于 `main` 历史中。现有 `v0.1.2` 等未包含新流程的历史 tag 不会因配置迁移自动补发，也不能通过移动 tag 接入。
 - CI 获取完整 Git 历史及 tags 以生成 Release 正文。原生构建使用 `macos-15` arm64 runner，应用最低系统版本仍为 macOS 13；当前 CI 不覆盖 Intel macOS、Windows 或 Linux。
 
@@ -78,7 +78,9 @@ update-darwin-arm64.json
 
 ZIP 内含 `Picup.app`、附带 CLI 与第三方许可说明，不上传 DMG 或额外源码包。更新包使用同一份应用内容，Feed 指向该版本在 `knothhe/picup` 的精确附件。打包会校验版本、bundle 标识、实际架构、Feed 的 URL 与大小、更新包内容及 Ed25519 签名；策略使用完整包，不生成差分包。
 
-正式 CI 默认使用 Ed25519 更新签名，macOS 代码签名沿用 MyGo 的 ad-hoc。显式将 repository variable `PICUP_APPLE_DISTRIBUTION` 设为 `true`，或在手动运行 `release.yml` 时勾选 `apple_distribution`，才启用额外的 Developer ID 分发路径。该模式要求入库的公开证书 pin、证书和口令 Secret；公证凭据可选，但三项须完整。缺少必需材料或验签失败即停止，不降级。当前仓库尚未配置 Apple 发行身份，详见[分发签名配置](macos-distribution.md)。更新包签名不能代替 Apple 代码签名与公证。
+正式 CI 默认使用 `fixed-identity`：用已提交的公开证书 pin 固定代码签名身份，从证书和口令 Secrets 导入临时钥匙串后签名，同时生成 Ed25519 签名更新包。可复用长期保存的本地自签身份，无需为 CI 每次生成证书；缺配置或验签失败即停止，不降级。先运行 `make release-signing` 预览，以 `make release-signing SIGNING_FLAGS='--identity <SHA-1> --apply'` 导出、备份并上传，再将生成的 pin 提交后发布。
+
+repository variable `PICUP_SIGNING_MODE` 可显式选择 `fixed-identity`、`developer-id` 或兼容的 `update-only`；手动恢复的 `signing_mode` 输入优先。原有 `PICUP_APPLE_DISTRIBUTION=true` 或手动 `apple_distribution` 会优先选择 `developer-id`，该模式要求 Developer ID Application 证书；公证凭据可选，但三项须完整。`update-only` 只做更新签名，应用代码签名沿用 MyGo ad-hoc，需显式选择。固定自签代码身份不代表 Apple 受信任分发，更新包签名也不能代替 Apple 代码签名与公证，详见[分发签名配置](macos-distribution.md)。
 
 需要独立在本机生成并验证当前架构的发行附件时，仍可使用：
 
@@ -137,8 +139,11 @@ CI 恢复命令如下；执行前先确认旧运行已结束，并保持原签�
 
 ```sh
 gh run rerun <run-id> --failed
-gh workflow run release.yml --ref main -f tag=v1.2.0
-# 原发布启用了手动 Apple 分发时，恢复也传 -f apple_distribution=true
+gh workflow run release.yml --ref main -f tag=v1.2.0 -f signing_mode=fixed-identity
+# 历史 update-only 发布恢复时改用 -f signing_mode=update-only
+# 原 Developer ID 发布恢复时用 -f signing_mode=developer-id
 ```
+
+恢复时同时核对 `PICUP_SIGNING_MODE` 与兼容的 Apple 开关：`PICUP_APPLE_DISTRIBUTION=true` 或 `apple_distribution=true` 会优先选用 Developer ID 模式。历史 tag 保留其原始 workflow 和构建实现，不通过移动 tag 引入新模式。
 
 artifact 已过期、缺失、来源不明或构建输入已改变时，需要重建必要目标；重新汇总仍要核对各产物的 run、attempt、job、版本、commit、模式和 hash。不能切回本地上传绕过已选 CI 流程。仅完成配置、tag 推送或 artifact 上传都不表示 Release 已发布，需核实 workflow 成功及公开附件。

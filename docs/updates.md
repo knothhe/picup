@@ -12,7 +12,7 @@ CI 使用仓库 secret `MYGO_UPDATER_PRIVATE_KEY`。无签名试包不会读取�
 
 每个 macOS 架构有独立的 `update-darwin-<arch>.json`。清单引用同版本的完整 `.tar.gz` 更新包，MyGo 验证包大小及其 SHA-256 摘要的 Ed25519 签名后安装。当前 `updates.deltas` 为 `0`，不使用差分包。手动安装的 ZIP 与更新包包含同一份应用、CLI 和第三方许可说明。[MyGo 更新文档](https://github.com/egoist/mygo/blob/v0.5.5/docs/updates.md)
 
-版本来自 `mygo.json`。普通 `make build` / `make run` 的开发程序、默认 `make install` 安装的程序和 `make package-ci` 的 debug 试包使用 `picup_dev` 编译标签，名称为 Picup Dev、bundle ID 为 `com.knothhe.picup.dev`，默认数据目录为 `picup-dev`，系统凭据与正式通道隔离；Dev 的公开更新配置与 MyGo 包配置均不携带正式 Feed。正式 `make package`、`make install-release` 和 `make package-release` 统一编译无此标签的 CLI 与 GUI；正式包还需满足 MyGo 的安装位置写入要求。更新签名证明更新来源；Developer ID 与 Apple 公证须另按[分发签名配置](macos-distribution.md)启用和验收。
+版本来自 `mygo.json`。普通 `make build` / `make run` 的开发程序、默认 `make install` 安装的程序和 `make package-ci` 的 debug 试包使用 `picup_dev` 编译标签，名称为 Picup Dev、bundle ID 为 `com.knothhe.picup.dev`，默认数据目录为 `picup-dev`，系统凭据与正式通道隔离；Dev 的公开更新配置与 MyGo 包配置均不携带正式 Feed。正式 `make package`、`make install-release` 和 `make package-release` 统一编译无此标签的 CLI 与 GUI；正式包还需满足 MyGo 的安装位置写入要求。更新签名证明更新来源；CI 的固定代码签名、自签身份上传及 Developer ID／Apple 公证配置见[分发签名说明](macos-distribution.md)。
 
 `make package-release` 缺私钥、密钥不匹配、更新签名无效、包内版本/架构不符或 Feed 指向错误附件时都会失败，不生成可继续发布的附件集合。`make release` 保留版本与 tag 的本地入口，tag 推送后由 CI 构建；发布 job 先验证草稿全部附件，再一次公开 Feed 与更新包，并复核实际公开下载。
 
@@ -37,13 +37,15 @@ CI 使用仓库 secret `MYGO_UPDATER_PRIVATE_KEY`。无签名试包不会读取�
 
 两条流程都使用 `macos-15` 原生 arm64 runner，核对实际宿主架构，并运行 `make check`、`make test`。普通检查只有仓库只读权限，不访问生产签名密钥，不运行安装或发布命令。[GitHub 官方 runner 架构表](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
 
-手动运行 workflow 时，默认仍是无私钥试包；勾选 `signed_updates` 只允许 `main`。检查通过后，独立的 `signed-updates` job 在全新 runner 检出同一个精确提交，核对版本和架构，再使用仓库 secret `MYGO_UPDATER_PRIVATE_KEY` 生成 arm64 的正式应用 ZIP、Ed25519 签名更新包和 Feed。签名材料只注入对应构建步骤，不提供给检查或 PR job；更新签名不代表 Developer ID 代码签名或 Apple 公证。
+手动运行 workflow 时，默认仍是无私钥试包；勾选 `signed_updates` 只允许 `main`，普通 push 中该 job 按条件跳过。检查通过后，独立的 `signed-updates` job 在全新 runner 检出同一个精确提交，核对版本和架构，再生成 arm64 的正式应用 ZIP、Ed25519 签名更新包和 Feed。签名材料只注入对应构建步骤，不提供给检查或 PR job。
 
-日常工作流同时勾选 `apple_distribution` 可消费已有 Developer ID 证书、入库的公开证书指纹与可选公证 API 凭据，使用临时钥匙串签包并清理。正式 tag 流程默认只有更新签名；显式设置 repository variable `PICUP_APPLE_DISTRIBUTION=true`，或手动恢复时启用 `apple_distribution`，才选用额外的 Apple 分发模式。缺少必需配置时该模式直接失败，具体材料和边界见[分发签名配置](macos-distribution.md)。
+手动签名与正式 tag 构建默认使用 `fixed-identity`：从 `MACOS_SIGNING_CERTIFICATE`、`MACOS_SIGNING_CERTIFICATE_PASSWORD` 导入既有代码签名身份，与已提交的 `config/macos-signing.json` 指纹匹配后签包；支持固定自签证书。可先用 `make release-signing` 预览本机身份及 GitHub 配置，再显式 `--apply` 导出、备份并上传。缺配置或验签失败直接停止，不回退 ad-hoc。
+
+手动输入 `signing_mode` 可选择 `fixed-identity`、`developer-id` 或兼容用的 `update-only`；正式 tag 默认模式可通过 repository variable `PICUP_SIGNING_MODE` 指定，手动选择优先。原有 `apple_distribution` 输入与 `PICUP_APPLE_DISTRIBUTION=true` 保持兼容，并优先选择 `developer-id`。Developer ID 模式要求对应证书，公证凭据可选但须完整；`update-only` 显式保留只做更新签名、应用使用 ad-hoc 的路径。所有模式均需 `MYGO_UPDATER_PRIVATE_KEY`。固定自签、Ed25519 更新签名与 Apple 公证各有独立用途，具体材料和边界见[分发签名配置](macos-distribution.md)。
 
 自动检查与手动运行使用不同的并发组，新的 PR/`main` 检查可取消同 ref 的旧自动运行，不会取消正在签名的手动运行。相同 ref 的手动运行不会并行执行；GitHub 默认只保留一个待运行任务，新的手动请求可能替换仍在排队的旧请求。[GitHub 并发规则](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)
 
-上传前逐项确认必需文件存在且非空，并按 `mygo.json` 的精确版本列出附件，不使用版本通配符。日常 artifact 名称包含架构、构建模式、提交 SHA 与运行 attempt，重跑不会覆盖前一次 attempt 的附件，保留七天。签名模式区分 `update-only` 和 `developer-id`；日常工作流的所有模式都只上传 Actions artifact，不创建 tag、Release 或公开 Feed。
+上传前逐项确认必需文件存在且非空，并按 `mygo.json` 的精确版本列出附件，不使用版本通配符。日常 artifact 名称包含架构、构建模式、提交 SHA 与运行 attempt，重跑不会覆盖前一次 attempt 的附件，保留七天。签名模式区分 `fixed-identity`、`update-only` 和 `developer-id`；日常工作流的所有模式都只上传 Actions artifact，不创建 tag、Release 或公开 Feed。
 
 正式 tag 流程依次运行检查、独立签名构建、唯一发布 job。每个阶段检出并核对同一 tag commit，校验 tag 与版本一致、提交属于 `main` 历史。构建产物包含三份正式附件及内部 `ci-release.json` 记录，记录版本、commit、渠道、架构、签名模式、大小/hash 和 run/attempt/job 来源；该记录不作为公开附件。发布 job 仅下载成功 build 输出的确切 artifact ID，重新校验完整集合与来源，只有此 job 获得 `contents: write`。
 

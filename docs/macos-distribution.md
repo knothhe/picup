@@ -1,6 +1,6 @@
 # macOS 分发签名
 
-Picup 沿用 MyGo 的嵌套签名、hardened runtime、时间戳与公证流程。正式构建默认沿用 MyGo 的 ad-hoc；显式启用 Developer ID 分发后，缺配置或签名、公证失败都会停止，不回退其他身份。macOS 本地 Dev 构建会选择并记住已有证书。
+Picup 沿用 MyGo 的嵌套签名、hardened runtime、时间戳与公证流程。正式 CI 默认使用固定证书签名，可复用本地自签的 Code Signing 身份或既有 Developer ID 身份；缺配置或签名、公证失败都会停止，不回退其他身份。macOS 本地 Dev 构建会选择并记住已有证书，Dev 选择记录与正式发行配置分开。
 
 ## Dev 构建的本地证书选择
 
@@ -44,29 +44,60 @@ PICUP_MACOS_SIGNING_IDENTITY='Developer ID Application: Your Name (TEAMID)' \
 PICUP_MACOS_NOTARY_PROFILE='picup-notary' make package-release
 ```
 
-`PICUP_MACOS_NOTARY_PROFILE` 是已经通过 `xcrun notarytool store-credentials` 保存的 profile。可选 `PICUP_MACOS_NOTARY_KEYCHAIN` 指定保存它的钥匙串；应用不读取或记录这些发行配置。只做固定身份签名可省略 profile；公证要求 Developer ID Application 证书。脚本不生成、导出、上传证书，不修改默认钥匙串或系统信任。
+`PICUP_MACOS_NOTARY_PROFILE` 是已经通过 `xcrun notarytool store-credentials` 保存的 profile。可选 `PICUP_MACOS_NOTARY_KEYCHAIN` 指定保存它的钥匙串；应用不读取或记录这些发行配置。只做固定身份签名可省略 profile，并可将上例 identity 换为已有自签证书的精确名称或 SHA-1；公证要求 Developer ID Application 证书。普通构建不生成、导出或上传证书，不修改默认钥匙串或系统信任。独立本机 `make package-release` 未显式选择身份时仍沿用 MyGo 的 ad-hoc；正式 CI 按下文显式选择签名模式。
 
 可选 `PICUP_MACOS_CERTIFICATE_SHA256` 为叶证书 DER 字节的六十四位 SHA-256，用于额外固定公开证书。签名身份先精确解析到唯一且用途、有效期符合要求的 identity，并计算实际 SHA-256；提供的 pin 不符时在签名前停止。最终 app、主程序和附带 CLI 分别提取叶证书核对实际 SHA-1 identity 与选定证书的 SHA-256，整体运行 `codesign --verify --deep --strict`。没有证书或 profile 的机器只能验证脚本及失败分支，不能宣称完成 Developer ID 签包或公证。
 
 MyGo 需要 DMG 完成公证，因此设置 profile 时构建一个中间 DMG，提交并等待 Apple 接受，随后将票据 staple 到 app；更新归档与最终 ZIP 在此后生成。发行附件仍为 ZIP、完整更新包与 Feed，不上传中间 DMG。最终另运行 `stapler validate` 与 Gatekeeper `spctl --assess`，避免只把提交成功当作可分发验证。
 
-## CI Apple 分发构建
+## 将本地固定身份配置到 GitHub
 
-日常 [macos.yml](../.github/workflows/macos.yml) 提供可选 `apple_distribution`，与 `signed_updates` 同时勾选且仅 `main` 可执行，检查通过后由独立 runner 签包。它只产生 Actions artifact，不创建 tag 或 Release，适合分发配置的预检。
+配置入口会复用已有代码签名身份，不自动生成证书。先预览目标仓库、公开证书指纹、有效期、现有发行 pin 与两个 Secret 的存在状态：
 
-正式 [release.yml](../.github/workflows/release.yml) 在版本 tag 推送后构建并发布 Release。它默认使用 `update-only` 模式，仅生成 Ed25519 更新签名；显式将 repository variable `PICUP_APPLE_DISTRIBUTION` 设为字符串 `true`，或在从 `main` 手动运行时勾选 `apple_distribution`，才选择 `developer-id` 模式。选定模式在检查 job 输出并传递给构建、制品记录与发布 job；恢复时保留原模式及输入。两种模式都会验证更新签名，普通 PR/分支检查不会获得发行私有材料。
+```sh
+make release-signing
+make release-signing SIGNING_FLAGS='--identity <四十位SHA-1>'
+```
 
-需要以下现有材料；本工作流不会配置仓库 secrets：
+默认只读预览，不导出私钥、不写 pin，也不上传 Secrets。交互终端可从现有身份中选择；非交互运行使用 `--identity` 精确指定身份，也可传精确名称，例如 `SIGNING_FLAGS='--identity "Picup Local Code Signing"'`。没有可用身份时，按上文的 Dev 证书创建指南准备长期复用的 Code Signing 身份，再重跑配置入口。Dev 缓存不会被自动当作发行选择。
+
+确认预览中的身份与目标仓库后应用：
+
+```sh
+make release-signing SIGNING_FLAGS='--identity <四十位SHA-1> --apply'
+```
+
+脚本只重打包选中证书及配对私钥，在隔离钥匙串实测 PKCS#12 导入，再备份到仓库外，将 Base64 PKCS#12 与口令分别通过 stdin 上传至 `MACOS_SIGNING_CERTIFICATE` 和 `MACOS_SIGNING_CERTIFICATE_PASSWORD`，最后写入公开证书 pin。默认备份目录为 `~/Library/Application Support/picup-release/macos-signing/<指纹前十二位>-<随机值>/`，其中 `identity.p12` 与口令文件须一起妥善备份；目录权限为 `0700`，私有文件为 `0600`。私钥、口令和临时导出不进入仓库、日志、artifact 或安装包。
+
+可选 `--keychain <路径>` 限定导出来源；已有 PKCS#12 可用 `--p12 <路径> --password-file <口令文件路径>` 导入并重打包。`--repo owner/repo` 可明确目标仓库；默认从 `origin` 的 push URL 派生，并要求指定仓库与该 remote 一致。更换发行 pin，或覆盖无法确认对应身份的已有 Secrets 时，需要显式传 `--replace-identity`。补传同一身份应复用原证书，不因缺 Secret 重新生成。
+
+上传成功后，将 `config/macos-signing.json` 纳入版本控制，再运行签名 CI；配置入口不会提交、推送或发布。两个 Secret 名称存在只说明配置项存在，实际导入与最终产物验签才证明材料匹配。部分上传失败时按报错检查并重试同一身份，保留备份用于恢复。
+
+## CI 固定签名与 Apple 分发构建
+
+日常 [macos.yml](../.github/workflows/macos.yml) 的 `signed-updates` job 仅在手动运行、勾选 `signed_updates` 且分支为 `main` 时执行。普通 push 与 PR 只生成无私钥试包。手动签名默认选用 `signing_mode=fixed-identity`，检查通过后由独立 runner 签包；仅产生 Actions artifact，不创建 tag 或 Release，适合签名配置预检。
+
+正式 [release.yml](../.github/workflows/release.yml) 在版本 tag 推送后构建并发布 Release，默认同样使用 `fixed-identity`。可通过 repository variable `PICUP_SIGNING_MODE` 指定 tag 构建模式，手动恢复时通过 `signing_mode` 输入选择；手动选择优先于该变量。兼容原有 Apple 配置：repository variable `PICUP_APPLE_DISTRIBUTION=true` 或手动勾选 `apple_distribution` 会优先选择 `developer-id`。
+
+| 模式 | 应用代码签名 | 所需材料 |
+| --- | --- | --- |
+| `fixed-identity`（默认） | 固定的现有 Code Signing 身份，支持自签名 | 证书、口令 Secrets 与已提交的公开证书 pin |
+| `developer-id` | 固定的 Developer ID Application 身份 | 同上；如需公证，再配置完整公证凭据 |
+| `update-only` | MyGo ad-hoc，仅验证更新包来源 | 显式选择此模式；不读取代码签名材料 |
+
+所有模式仍需与 `mygo.json` 公钥匹配的 `MYGO_UPDATER_PRIVATE_KEY`，并验证 Ed25519 更新签名。固定自签身份保持代码签名证书稳定，不代表 Apple 受信任分发，也不能代替 Developer ID 与 Apple 公证。选定模式在检查 job 输出并传递给构建、制品记录与发布 job；恢复时保留原模式及输入。
+
+固定身份构建需要以下材料：
 
 | 配置 | 内容 |
 | --- | --- |
-| Secret `MACOS_SIGNING_CERTIFICATE` | 单一 Developer ID 身份的 Base64 PKCS#12 |
+| Secret `MACOS_SIGNING_CERTIFICATE` | 单一现有 Code Signing 身份的 Base64 PKCS#12，包含证书与配对私钥 |
 | Secret `MACOS_SIGNING_CERTIFICATE_PASSWORD` | 该 PKCS#12 口令 |
 | 已提交的 `config/macos-signing.json` | 严格包含 `schema`（整数 `1`）与 `certificateSHA256`（既有发行叶证书 DER 的六十四位小写 SHA-256） |
 | Secret `MYGO_UPDATER_PRIVATE_KEY` | 既有更新签名私钥 |
-| 可选三个 Secrets `MACOS_NOTARY_KEY_BASE64`、`MACOS_NOTARY_KEY_ID`、`MACOS_NOTARY_ISSUER` | 公证 API 的 Base64 P8、key ID 与 issuer；必须一起提供 |
+| 可选三个 Secrets `MACOS_NOTARY_KEY_BASE64`、`MACOS_NOTARY_KEY_ID`、`MACOS_NOTARY_ISSUER` | 公证 API 的 Base64 P8、key ID 与 issuer；必须一起提供，且要求 Developer ID 身份 |
 
-当前仓库只配置了更新签名 Secret，尚未提交发行证书 pin，也未配置 Developer ID 证书与口令 Secret；Apple 分发模式暂不可用。普通 CI、日常 `signed_updates` 试包及正式 tag 流程默认的 `update-only` 模式不受影响。配置时延续已有发行身份，不使用本机 Dev 选择记录替代，不生成新证书或变更身份。
+正式固定签名路径不按文件或 Secret 是否存在来猜测模式。未完成上述配置时，默认签名构建会在创建钥匙串及运行构建前失败，不降级为 ad-hoc。历史 `update-only` 发布的恢复应显式保留该模式，不切换为新的默认模式。
 
 从已有发行证书的公开 DER 文件计算指纹：
 
@@ -78,4 +109,4 @@ shasum -a 256 /path/to/existing-distribution-certificate.der
 
 CI 签名入口从源码中的该文件读取 pin，覆盖同名环境变量；不再使用 repository variable `MACOS_SIGNING_CERTIFICATE_SHA256`。文件缺失或无效时，在创建钥匙串和运行构建前失败，不回退 ad-hoc。本机显式发行配置与 Dev 证书选择仍沿用各自已有规则。
 
-`scripts/macos_signing_ci.py` 创建临时私有目录和临时钥匙串，精确要求一个 Developer ID identity，将它暂时加入搜索列表，仅向构建子进程提供选定 identity 与公开 pin；PKCS#12、P8 和口令不传给构建子进程。公证配置仅保存在该临时钥匙串。成功、导入失败和构建失败都会独立尝试恢复搜索列表、删除钥匙串及私有文件；清理失败会报错。缺材料、错证书或错误口令都不会生成冒充成功的发行 artifact。
+`scripts/macos_signing_ci.py` 创建临时私有目录和临时钥匙串，精确要求一个与入库 pin 匹配、用途及有效期符合要求的代码签名身份；`developer-id` 模式另要求 Developer ID Application。将临时钥匙串暂时加入搜索列表，仅向构建子进程提供选定 identity、公开 pin 与所需钥匙串路径，PKCS#12、P8 和口令不传给构建子进程。公证配置仅保存在该临时钥匙串。构建后验证最终包内应用、主程序及 CLI 的签名完整性、证书指纹和固定代码身份。成功、导入失败和构建失败都会独立尝试恢复搜索列表、删除钥匙串及私有文件；清理失败会报错。缺材料、错证书或错误口令都不会生成冒充成功的发行 artifact。

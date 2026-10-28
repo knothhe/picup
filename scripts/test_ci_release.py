@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 from types import SimpleNamespace
@@ -119,6 +120,24 @@ class CIReleaseTests(unittest.TestCase):
             self.assertEqual(item['size'], path.stat().st_size)
             self.assertEqual(item['sha256'], hashlib.sha256(path.read_bytes()).hexdigest())
         self.verify()
+
+    def test_fixed_and_compatibility_modes_are_preserved_and_cannot_be_relabelled(self):
+        for mode in ci_release.SIGNING_MODES:
+            with self.subTest(mode=mode):
+                data=ci_release.record(self.tag,self.directory,mode)
+                self.assertEqual(data['signing_mode'],mode)
+                ci_release.verify_record(self.tag,self.directory,mode,2,'build')
+                for other in set(ci_release.SIGNING_MODES)-{mode}:
+                    with self.assertRaisesRegex(ci_release.release.ReleaseError,'identity'):
+                        ci_release.verify_record(self.tag,self.directory,other,2,'build')
+        with self.assertRaisesRegex(ci_release.release.ReleaseError,'Unknown CI signing mode'):
+            ci_release.record(self.tag,self.directory,'automatic')
+
+    def test_cli_accepts_explicit_fixed_identity_mode(self):
+        with mock.patch('sys.stdout',new=io.StringIO()) as stdout:
+            self.assertEqual(ci_release.main(['record','--tag',self.tag,'--directory',str(self.directory),
+                                              '--signing-mode','fixed-identity']),0)
+        self.assertEqual(json.loads(stdout.getvalue())['signing_mode'],'fixed-identity')
 
     def test_missing_extra_empty_and_symlinked_assets_are_rejected(self):
         target = self.directory / self.names[0]
@@ -284,6 +303,83 @@ class CIReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ci_release.release.ReleaseError, 'Remote annotated tag differs'):
             ci_release.publish(self.tag, self.directory, 'update-only', 2)
         mocks['publish_github_release'].assert_not_called()
+
+
+class WorkflowSigningTests(unittest.TestCase):
+    """Keep private-material boundaries and selected modes aligned across jobs."""
+
+    def setUp(self):
+        root=Path(__file__).resolve().parent.parent
+        self.workflows={name:(root/'.github/workflows'/name).read_text()
+                        for name in ('macos.yml','release.yml')}
+
+    def jobs(self,workflow):
+        body=workflow.split('\njobs:\n',1)[1]
+        starts=list(re.finditer(r'^  ([a-z-]+):\n',body,re.MULTILINE))
+        return {match[1]:body[match.start():starts[index+1].start() if index+1<len(starts) else len(body)]
+                for index,match in enumerate(starts)}
+
+    def steps(self,job):
+        return re.split(r'^      - name: ',job,flags=re.MULTILINE)[1:]
+
+    def test_daily_private_material_is_only_in_manual_signed_main_job(self):
+        jobs=self.jobs(self.workflows['macos.yml'])
+        self.assertEqual(set(jobs),{'macos','signed-updates'})
+        self.assertNotIn('secrets.',jobs['macos'])
+        signed=jobs['signed-updates']
+        self.assertIn("    if: github.event_name == 'workflow_dispatch' && inputs.signed_updates && github.ref == 'refs/heads/main'\n",signed)
+        self.assertIn('    needs: macos\n',signed)
+        self.assertIn('SIGNING_MODE: ${{ needs.macos.outputs.signing_mode }}',signed)
+        self.assertIn('Picup-signed-updates-${{ needs.macos.outputs.signing_mode }}-',signed)
+        release=self.jobs(self.workflows['release.yml'])
+        self.assertNotIn('secrets.',release['checks'])
+        self.assertNotIn('secrets.',release['publish'])
+        self.assertIn('SIGNING_MODE: ${{ needs.checks.outputs.signing_mode }}',release['build'])
+        self.assertIn('SIGNING_MODE: ${{ needs.checks.outputs.signing_mode }}',release['publish'])
+        self.assertIn('--signing-mode "$SIGNING_MODE"',release['build'])
+        self.assertIn('--signing-mode "$SIGNING_MODE"',release['publish'])
+
+    def test_modes_inject_only_their_required_secrets_and_pass_the_same_mode_to_wrapper(self):
+        for name,source in self.workflows.items():
+            jobs=self.jobs(source)
+            job=jobs['signed-updates' if name=='macos.yml' else 'build']
+            private=[step for step in self.steps(job) if 'secrets.' in step]
+            self.assertEqual(len(private),3)
+            for mode in ci_release.SIGNING_MODES:
+                with self.subTest(workflow=name,mode=mode):
+                    selected=[step for step in private if f"if: env.SIGNING_MODE == '{mode}'" in step]
+                    self.assertEqual(len(selected),1)
+                    step=selected[0]
+                    self.assertIn('secrets.MYGO_UPDATER_PRIVATE_KEY',step)
+                    if mode=='update-only':
+                        self.assertIn('run: make package-release',step)
+                        self.assertNotIn('secrets.MACOS_',step)
+                    else:
+                        self.assertIn('secrets.MACOS_SIGNING_CERTIFICATE',step)
+                        self.assertIn('secrets.MACOS_SIGNING_CERTIFICATE_PASSWORD',step)
+                        self.assertIn(f'--mode {mode} -- make package-release',step)
+                    self.assertEqual('secrets.MACOS_NOTARY_' in step,mode=='developer-id')
+
+    def test_mode_defaults_precedence_and_unknown_value_failure(self):
+        expression="(vars.PICUP_APPLE_DISTRIBUTION == 'true' || inputs.apple_distribution == true) && 'developer-id' || inputs.signing_mode || vars.PICUP_SIGNING_MODE || 'fixed-identity'"
+        for name,source in self.workflows.items():
+            with self.subTest(workflow=name):
+                self.assertIn(expression,source)
+                self.assertIn('options: [fixed-identity, update-only, developer-id]\n        default: fixed-identity',source)
+                jobs=self.jobs(source)
+                check=jobs['macos' if name=='macos.yml' else 'checks']
+                step=next(step for step in self.steps(check) if 'id: mode' in step)
+                script=step.split('        run: |\n',1)[1]
+                for mode in (*ci_release.SIGNING_MODES,'unknown-mode'):
+                    with self.subTest(mode=mode),tempfile.TemporaryDirectory() as temporary:
+                        output=Path(temporary)/'output'
+                        output.touch()
+                        result=subprocess.run(['bash','-e','-c',script],
+                            env=dict(os.environ,SIGNING_MODE=mode,GITHUB_OUTPUT=str(output)),
+                            text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+                        expected=mode in ci_release.SIGNING_MODES
+                        self.assertEqual(result.returncode==0,expected)
+                        self.assertEqual(output.read_text(),f'signing_mode={mode}\n' if expected else '')
 
 
 if __name__ == '__main__':
