@@ -266,6 +266,98 @@ class DesktopDistributionTests(unittest.TestCase):
                 self.assertEqual(child['PICUP_MACOS_SIGNING_IDENTITY'],'A'*40)
                 self.assertFalse(any(name in child for name in macos_signing_ci.PRIVATE_VARIABLES))
 
+    def test_ci_cleanup_launch_failure_still_attempts_all_items_and_removes_private_files(self):
+        import base64
+        environment={'MACOS_SIGNING_CERTIFICATE':base64.b64encode(b'fixture-p12').decode(),
+                     'MACOS_SIGNING_CERTIFICATE_PASSWORD':'fixture-private-password',
+                     'PICUP_MACOS_CERTIFICATE_SHA256':'a'*64}
+        for build_fails in (False, True):
+            for delete_fails in (False, True):
+                commands=[]
+                def command(arguments,capture=False):
+                    commands.append(arguments)
+                    if arguments[1]=='list-keychains' and '-s' not in arguments:
+                        return '"/original.keychain"'
+                    if arguments[1]=='find-identity':
+                        return '1) '+'A'*40+' "Developer ID Application: Fixture (TEST)"'
+                    if arguments[1]=='list-keychains' and arguments[4:]==['-s','/original.keychain']:
+                        raise OSError('fixture-private-password: restore launch failure')
+                    if arguments[1]=='delete-keychain' and delete_fails:
+                        raise OSError('fixture-private-password: deletion launch failure')
+                    return ''
+                with self.subTest(build_fails=build_fails,delete_fails=delete_fails), \
+                        tempfile.TemporaryDirectory() as temporary:
+                    environment['RUNNER_TEMP']=temporary
+                    with mock.patch.object(macos_signing_ci,'run',side_effect=command):
+                        with self.assertRaisesRegex(ValueError,'CI signing cleanup failed') as failure:
+                            with macos_signing_ci.signing_environment(environment):
+                                if build_fails:
+                                    raise ValueError('fixture build failed')
+                    self.assertTrue(any(args[1]=='delete-keychain' for args in commands))
+                    self.assertEqual(list(Path(temporary).iterdir()),[])
+                    self.assertIn('restore keychain search list',str(failure.exception))
+                    self.assertEqual('delete temporary keychain' in str(failure.exception),delete_fails)
+                    self.assertNotIn('fixture-private-password',str(failure.exception))
+
+    def test_ci_repository_pin_requires_exact_schema_and_lowercase_der_hash(self):
+        pin = 'a' * 64
+        invalid = (
+            [],
+            {'schema': 1},
+            {'schema': True, 'certificateSHA256': pin},
+            {'schema': 1.0, 'certificateSHA256': pin},
+            {'schema': 2, 'certificateSHA256': pin},
+            {'schema': 1, 'certificateSHA256': pin, 'identity': 'another identity'},
+            {'schema': 1, 'certificateSHA256': 'A' * 64},
+            {'schema': 1, 'certificateSHA256': 'a' * 63},
+            {'schema': 1, 'certificateSHA256': 'g' * 64},
+            {'schema': 1, 'certificateSHA256': None},
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'macos-signing.json'
+            with mock.patch.object(macos_signing_ci, 'PIN_PATH', path):
+                for data in invalid:
+                    with self.subTest(data=data):
+                        path.write_text(json.dumps(data))
+                        with self.assertRaisesRegex(ValueError, 'Invalid config/macos-signing.json'):
+                            macos_signing_ci.repository_certificate_pin()
+                path.write_text(json.dumps({'schema': 1, 'certificateSHA256': pin}))
+                self.assertEqual(macos_signing_ci.repository_certificate_pin(), pin)
+
+    def test_ci_cli_rejects_missing_or_unreadable_pin_before_keychain_or_build(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'macos-signing.json'
+            with mock.patch.object(macos_signing_ci, 'PIN_PATH', path), \
+                    mock.patch.object(macos_signing_ci, 'signing_environment') as signing, \
+                    mock.patch.object(macos_signing_ci.subprocess, 'run') as build, \
+                    mock.patch.object(macos_signing_ci.sys, 'stderr') as stderr:
+                self.assertEqual(macos_signing_ci.main(['--', 'make', 'package-release']), 1)
+                self.assertIn('committed config/macos-signing.json', stderr.write.call_args_list[0].args[0])
+                for contents in (b'not-json', b'\xff', b'{"schema":1}'):
+                    with self.subTest(contents=contents):
+                        path.write_bytes(contents)
+                        stderr.reset_mock()
+                        self.assertEqual(macos_signing_ci.main(['--', 'make', 'package-release']), 1)
+                        self.assertIn('Invalid config/macos-signing.json', stderr.write.call_args_list[0].args[0])
+                signing.assert_not_called()
+                build.assert_not_called()
+
+    def test_ci_cli_uses_committed_pin_instead_of_environment_override(self):
+        pin = 'a' * 64
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'macos-signing.json'
+            path.write_text(json.dumps({'schema': 1, 'certificateSHA256': pin}))
+            child = {'PICUP_MACOS_CERTIFICATE_SHA256': pin}
+            with mock.patch.object(macos_signing_ci, 'PIN_PATH', path), \
+                    mock.patch.dict(os.environ, {'PICUP_MACOS_CERTIFICATE_SHA256': 'b' * 64}, clear=True), \
+                    mock.patch.object(macos_signing_ci, 'signing_environment') as signing, \
+                    mock.patch.object(macos_signing_ci.subprocess, 'run', return_value=mock.Mock(returncode=0)) as build:
+                signing.return_value.__enter__.return_value = child
+                self.assertEqual(macos_signing_ci.main(['--', 'make', 'package-release']), 0)
+                self.assertEqual(signing.call_args.args[0]['PICUP_MACOS_CERTIFICATE_SHA256'], pin)
+                self.assertEqual(os.environ['PICUP_MACOS_CERTIFICATE_SHA256'], 'b' * 64)
+                build.assert_called_once_with(['make', 'package-release'], env=child)
+
 
 if __name__=='__main__':
     unittest.main()

@@ -1,31 +1,32 @@
 # 版本发布
 
-`make release-initial` 发布当前版本，`make release` 升级后发布。两者默认预览，添加 `RELEASE_FLAGS=--apply` 后完成检查、构建安装包、版本提交（仅升级）、附注 tag、原子推送及 GitHub Release 附件上传。版本统一来自 `mygo.json`；本地开发安装独立使用 `make install`，正式本地安装显式使用 `make install-release`，见[安装说明](install-local.md)。
+正式发布由 GitHub Actions 执行：本地 `make release-initial` 发布当前版本，`make release` 升级版本；两者完成检查、版本提交（仅升级）、附注 tag 和原子推送后，由 [release.yml](../.github/workflows/release.yml) 检出该 tag、构建并发布 GitHub Release。默认仅预览，添加 `RELEASE_FLAGS=--apply` 才执行本地 Git 阶段。本地命令不再构建或上传发行附件。
+
+版本统一来自 `mygo.json`，当前正式 CI 目标只有 macOS Apple Silicon（arm64）。本地 Dev 安装继续使用 `make install`，正式本地安装显式使用 `make install-release`，见[安装说明](install-local.md)。
 
 ## 发布前准备
 
-- 需要 Make、Python 3.9+、Git、Go 1.27.1+，以及已登录且有仓库发布权限的 `gh`。
-- 正式打包需要与 `mygo.json` 公钥匹配的发行私钥：显式 `MYGO_UPDATER_PRIVATE_KEY` 优先，未设置时自动读取默认本机文件；显式空值会失败。无私钥的验证使用 `make package-ci`。
-- 本机私钥默认保存在 `~/Library/Application Support/picup-release/mygo-update.key`（当前用户所有的 `0600` 普通文件，拒绝符号链接）。保存好此文件后可直接运行 `make package-release` 或现有 `make release`，脚本只向 MyGo 签名子进程注入私钥。共享 `mygo.json` 只记录公钥，详见[密钥说明](updates.md)。
-- 当前附件只支持本机 macOS 架构，要求 macOS 13+；目前已验证 macOS arm64。发布时不跨编译，其他平台包尚未验证。
-- 在 `main` 分支运行，工作区须干净，包括未跟踪文件；版本文件、脚本和配置须已纳入 Git。
+- 本地需要 Make、Python 3.9+、Git、Go 1.27.1+；首次发布的 GitHub 只读预检还需要已登录的 `gh`。
+- 在 `main` 分支运行，工作区须干净，包括未跟踪文件；版本文件、脚本、配置及新的 release workflow 须已纳入 Git。
 - 默认推送到 `origin` 的唯一 push URL。远程 `main` 须已存在，且不能领先于本地或与本地分叉；必要时先获取远程更新并整合。
-- 生成 Release 正文需要完整 Git 历史和 tags，脚本不会自动补全浅克隆或获取 tags。
+- 仓库需允许 Actions，签名构建使用与 `mygo.json` 公钥匹配的 Secret `MYGO_UPDATER_PRIVATE_KEY`。普通 PR 检查不需要此私钥。
+- 自动发布 tag 必须包含新的 `release.yml` 和相关脚本，并位于 `main` 历史中。现有 `v0.1.2` 等未包含新流程的历史 tag 不会因配置迁移自动补发，也不能通过移动 tag 接入。
+- CI 获取完整 Git 历史及 tags 以生成 Release 正文。原生构建使用 `macos-15` arm64 runner，应用最低系统版本仍为 macOS 13；当前 CI 不覆盖 Intel macOS、Windows 或 Linux。
 
-默认推送会包含本地 `main` 上尚未推送的已有提交。执行前检查预览中的目标版本、分支、remote、文件、检查顺序、Release 正文与附件路径。GitHub 仓库从 push URL 推导，支持标准 `github.com` HTTPS / SSH 地址；Enterprise 或 SSH host alias 需要额外适配。
+默认推送会包含本地 `main` 上尚未推送的已有提交。执行前检查预览中的执行端、目标版本、分支、remote、版本文件与检查顺序。GitHub 仓库从 push URL 推导，支持标准 `github.com` HTTPS / SSH 地址；Enterprise 或 SSH host alias 需要额外适配。
 
 ## 首次发布当前版本
 
-例如 `mygo.json` 已经是 `0.1.0`：
+例如一个尚未发布的版本已经写入 `mygo.json`：
 
 ```sh
-make release-initial                         # 预览
-make release-initial RELEASE_FLAGS=--apply    # 构建、tag、推送并上传安装包
+make release-initial                         # 预览当前版本
+make release-initial RELEASE_FLAGS=--apply    # 检查、tag、推送，交给 CI
 ```
 
-先确认本地、目标远程不存在 `v0.1.0` tag，并查询 GitHub 的同名 Release（包括凭据可见的草稿）；查询失败即停止。关闭 Release 创建也会做首次 GitHub 查询。
+先确认本地、目标远程不存在同名 tag，并查询 GitHub 的同名 Release（包括凭据可见的草稿）；查询失败即停止。Actions 模式关闭了本地 Release 创建，仍保留此首次发布预检。
 
-通过 `make check` 后，构建并验证当前版本的安装包，再直接为当前 HEAD 创建 `v0.1.0` 附注 tag，正文包含 `Release-Type: initial`。首次发布不改写版本文件、不创建版本提交。随后原子推送分支与 tag，创建 GitHub Release 并上传安装包。已存在的 tag 不能再次用首次命令发布，补包请使用下文的 `make release-assets`。
+通过 `make check` 后，直接为当前 HEAD 创建附注 tag，正文包含 `Release-Type: initial`。首次发布不改写版本文件、不创建版本提交。随后原子推送分支与 tag，触发与后续升级相同的 CI 发布流程。已经发布的当前版本不能再次使用首次命令。
 
 ## 后续版本升级
 
@@ -34,96 +35,110 @@ make release                            # 预览 patch 升级
 make release VERSION_BUMP=minor          # 预览 minor 升级
 make release VERSION_BUMP=major          # 预览 major 升级
 make release VERSION_BUMP=1.2.0          # 预览精确目标版本
-make release RELEASE_FLAGS=--apply       # 发布 patch 版本及安装包
+make release RELEASE_FLAGS=--apply       # 检查、升级、tag、推送，交给 CI
 make release VERSION_BUMP=minor RELEASE_FLAGS=--apply
 make release VERSION_BUMP=1.2.0-rc.1 RELEASE_FLAGS=--apply
 ```
 
 兼容修复升 patch，兼容的新功能升 minor，不兼容的公共接口变更升 major。项目处于 `0.x` 阶段时，按实际接口约定判断兼容性。目标版本必须具有更高的 SemVer 优先级；相同版本、版本倒退或仅改变 build metadata 都会被拒绝。当前版本为预发布时，必须指定精确目标版本。
 
-升级顺序为：检查工作区和远程状态 → `make check` → 更新 `mygo.json` → 构建并验证目标版本安装包 → 创建 `chore(release): vX.Y.Z` 提交 → 创建附注 tag → 原子推送分支和本次 tag → 创建 GitHub Release → 上传附件。
+本地升级顺序为：检查工作区和远程状态 → `make check` → 更新 `mygo.json` → 创建 `chore(release): vX.Y.Z` 提交 → 创建附注 tag → 原子推送分支和本次 tag。CI 随后检查并构建目标版本，不再执行版本 bump 或创建 tag。
 
 无 `--apply` 时只预览：不运行检查或构建，不修改文件，不创建提交、tag 或 Release。预览仍会读取远程状态；首次 GitHub 发布还会查询现有 Release。
 
-## 安装包与 GitHub Release
+## CI 构建与发布
 
-发布附件统一为：
+[release.yml](../.github/workflows/release.yml) 由 `v*` tag 的 push 触发，也提供输入精确 `tag` 的手动恢复入口。tag 必须是符合配置前缀的有效 SemVer 附注 tag，`mygo.json` 版本须与 tag 一致，检出的 HEAD 须与 tag commit 一致，且该提交须属于 `main` 历史。发布按 tag 串行执行，后来的运行不会主动取消正在发布的同版本。
 
-```text
-build/release/Picup-<version>-darwin-<arch>.zip
+流程依次为：
+
+1. 在 macOS arm64 runner 检出精确 tag，校验来源和版本，运行 `make check` 与 `make test`。
+2. 检查成功后，在全新 macOS arm64 runner 重新检出同一提交，构建正式 ZIP、完整更新包和 Feed；仅对应签名步骤取得发行私钥。
+3. 记录制品的版本、tag、commit、正式渠道、OS/arch、签名模式、大小和 SHA-256，以及构建 run、attempt 和 job 来源。只上传精确的预期文件集合，缺包、空文件或身份不一致即失败。
+4. 唯一发布 job 按确切 artifact ID 获取构建产物，重新核对来源与文件 hash，生成正文，再创建草稿并上传附件。构建和检查 job 只有只读权限，发布 job 才有 `contents: write`。
+5. 草稿内全部附件的大小与 SHA-256 验证通过后才公开；公开后从实际下载地址下载并复核三类附件，成功后才报告发布完成。
+
+CI 内部的制品记录用于汇总与重跑校验，不作为公开附件，也不代替更新包的 Ed25519 签名。Actions artifact 与 GitHub Release 附件分开；本地推送成功只表示 Git 阶段完成。可用以下命令查看后续状态：
+
+```sh
+gh run list --workflow release.yml
+gh run view <run-id>
+gh release view vX.Y.Z
 ```
 
-同一目录还生成 MyGo 原生更新附件：
+## 安装包、更新附件与签名
+
+当前正式 CI 上传以下 arm64 附件：
 
 ```text
-picup-<version>-darwin-<arch>.tar.gz
-update-darwin-<arch>.json
+Picup-<version>-darwin-arm64.zip
+picup-<version>-darwin-arm64.tar.gz
+update-darwin-arm64.json
 ```
 
-ZIP 内含 `Picup.app`、附带 CLI 与第三方许可说明，不上传 DMG 或额外源码包。更新包使用相同应用内容，Feed 指向该版本在 `knothhe/picup` 的精确附件。打包会校验版本、bundle 标识、本机架构、Feed 的 URL 与大小、更新包内容及 Ed25519 签名；策略使用完整包，不生成差分包。需要只构建安装包和更新附件时运行：
+ZIP 内含 `Picup.app`、附带 CLI 与第三方许可说明，不上传 DMG 或额外源码包。更新包使用同一份应用内容，Feed 指向该版本在 `knothhe/picup` 的精确附件。打包会校验版本、bundle 标识、实际架构、Feed 的 URL 与大小、更新包内容及 Ed25519 签名；策略使用完整包，不生成差分包。
+
+正式 CI 默认使用 Ed25519 更新签名，macOS 代码签名沿用 MyGo 的 ad-hoc。显式将 repository variable `PICUP_APPLE_DISTRIBUTION` 设为 `true`，或在手动运行 `release.yml` 时勾选 `apple_distribution`，才启用额外的 Developer ID 分发路径。该模式要求入库的公开证书 pin、证书和口令 Secret；公证凭据可选，但三项须完整。缺少必需材料或验签失败即停止，不降级。当前仓库尚未配置 Apple 发行身份，详见[分发签名配置](macos-distribution.md)。更新包签名不能代替 Apple 代码签名与公证。
+
+需要独立在本机生成并验证当前架构的发行附件时，仍可使用：
 
 ```sh
 make package-release
-make package-release VERSION=0.1.0    # 校验源码版本为 0.1.0
+make package-release VERSION=0.1.2    # 校验源码版本，不更新版本
 ```
 
-`VERSION` 用于校验预期版本，不改写源码版本。原有 `make package` 仍使用 MyGo 向 `build/dist/` 打包；发布流程使用上述统一 ZIP。
+该独立构建入口会读取显式 `MYGO_UPDATER_PRIVATE_KEY` 或安全保存的本机发行私钥，输出位于 `build/release/`，不会上传 Release。无私钥的验证使用 `make package-ci`。它不参与 Actions 模式下 `make release` 的发布执行。
 
-未显式选择身份时，macOS 代码签名沿用 MyGo 的 ad-hoc 签名。[Developer ID 与 Apple 公证入口](macos-distribution.md)支持发行者提供已有签名身份和 notarytool profile；选择后缺身份、签名、证书匹配或公证失败都会停止，不回退 ad-hoc。更新包的 Ed25519 签名是独立来源校验，不能代替 Apple 的代码签名与公证。
-
-Release 标题使用 tag，正文包含 Full Changelog 链接，以及上一个可达的较低 SemVer tag 以来的非 merge commit 标题和短 hash，排除版本提交；没有此前 tag 时列出全部历史。预发布会标记为 prerelease。新 Release 先创建草稿，收齐本次全部安装包、更新包和 Feed，并核对 GitHub 返回的 SHA-256 与大小后才公开。已有 Release 保留正文与同名附件；同名内容不一致时停止，不静默覆盖。补传时先完成更新包上传，再上传 Feed。
-
-此处仍由本地 `make release` 执行发布。GitHub CI 只验证 Apple Silicon（arm64），运行检查和构建 artifact，不在 tag 推送后另启发布引擎。CI 中手动选择签名构建也不会上传 Release，见[自动更新与 CI](updates.md)。本地发布只构建本机架构，安装包和 Feed 的架构必须与实际产物一致。
-
-## 为已有 tag 补建 Release 和安装包
-
-例如补上当前 `v0.1.0` 的安装包：
+Release 标题使用 tag，正文包含 Full Changelog 链接，以及上一个可达的较低 SemVer tag 以来的非 merge commit 标题和短 hash，排除版本提交；没有此前 tag 时列出全部历史。预发布会标记为 prerelease。独立生成指定 tag 的正文可使用：
 
 ```sh
-make release-assets VERSION=0.1.0                         # 预览
-make release-assets VERSION=0.1.0 RELEASE_FLAGS=--apply    # 构建并上传缺失附件
+make --silent release-notes RELEASE_REPO=knothhe/picup RELEASE_TAG=vX.Y.Z
 ```
 
-该命令要求本地与远程的同名 tag 对象完全一致，并验证 tag 源码中的版本。它从该精确 tag 的源码在临时目录构建，不使用当前工作区源码；因此工作区可以有未提交改动，HEAD 也可已前进。它不修改版本、提交或 tag，不推送分支；缺少 Release 时创建，有 Release 时保留正文与同名附件。
+## 项目配置与本地 Git 行为
 
-此入口适用于 tag 已发布但未上传安装包，以及发布后已有新提交的补包场景。不要移动既有 tag 来适配当前源码。
+`.release.json` 使用 `release_executor: "github-actions"`，关闭本地 `github_release` 和 `release_assets`。发布分支为 `main`，remote 为 `origin`，tag 前缀为 `v`，检查入口为 `make check`，`check_phase` 为 `before-bump`。Actions 模式拒绝再启用本地构建上传，避免两个执行端竞争同一个 Release；`make release-assets` 在此模式下也会拒绝执行，补发走精确 tag 的 CI 恢复入口。
 
-## 关闭远程 Release 或推送
-
-```sh
-make release RELEASE_FLAGS="--apply --no-github-release"
-make release RELEASE_FLAGS="--apply --no-push --no-github-release"
-make release-initial RELEASE_FLAGS="--apply --no-push --no-github-release"
-```
-
-`--no-github-release` 跳过 GitHub Release 创建和附件上传，仍构建本地安装包并按选项提交、打 tag 和推送。`--no-push` 必须同时关闭 GitHub Release；它不查询远程，不能用于判断版本尚未远程发布。去掉 `--apply` 可先预览这些命令。
-
-## 项目配置与检查
-
-`.release.json` 中启用了 `github_release: true` 和 `release_assets: true`，发布分支为 `main`，remote 为 `origin`，tag 前缀为 `v`，检查入口为 `make check`，`check_phase` 为 `before-bump`。
-
-`make check` 包含 Go 静态检查、Go 测试及 Python 脚本测试，默认在升级版本前执行。每条检查后核对 HEAD、分支、本地分支和 tags、暂存区、版本文件及未忽略的工作区变化；发现副作用即停止并保留现场。首次发布检查当前版本；后续升级另外在写入目标版本后构建并验证安装包。
+`make check` 包含 Go 静态检查、Go 测试及 Python 脚本测试。每条检查后核对 HEAD、分支、本地分支和 tags、暂存区、版本文件及未忽略的工作区变化；发现副作用即停止并保留现场。首次发布检查当前版本，升级默认在写入目标版本前检查；CI 另对目标 tag 执行检查和构建。
 
 推送使用一次 atomic 操作，只推送当前分支和本次 tag。远程不支持 atomic 或保护规则拒绝时整体失败，不会退回分开推送。脚本不会强制推送、移动已发布 tag 或自动回滚。
 
+需要只执行本地 Git 阶段、不推送远程时：
+
+```sh
+make release RELEASE_FLAGS="--apply --no-push"
+make release-initial RELEASE_FLAGS="--apply --no-push"
+```
+
+`--no-push` 不查询远程，也不会触发 Actions，不能用于证明版本尚未远程发布。`--no-github-release` 只控制本地选项，不能阻止已推送 tag 触发 CI 发布。
+
 ## 失败恢复与续推
 
-先检查工作区、最近提交、本地 tag 和远程分支 / tag，确认失败阶段：
+先检查工作区、最近提交、本地与远程 tag，以及目标 tag 对应的 workflow run、attempt、job 和 Release 附件，确认失败阶段：
 
-- 检查失败或产生副作用：审核留下的修改，恢复干净工作区后重跑原命令。默认尚未写入目标版本，首次发布也尚未创建 tag。
-- 目标版本打包失败：升级会保留版本修改，但尚未提交、打 tag 或推送。修复原因后，仅处理本次版本修改及审核后的其他变化，使工作区干净再重跑；首次发布不留下脚本版本修改。
-- 提交或 hook 失败：检查版本文件、暂存区和提交结果，按仓库规则处理，不跳过 hook。若已有版本提交但缺少 tag，先核验提交内容和检查结果，再单独处理缺失的附注 tag。
+- 本地检查失败或产生副作用：审核留下的修改，恢复干净工作区后重跑原命令。默认尚未写入目标版本，首次发布也尚未创建 tag。
+- 提交或 hook 失败：检查版本文件、暂存区和提交结果，按仓库规则处理，不跳过 hook。若已有版本提交但缺少 tag，先核验提交内容和检查结果，再处理缺失的附注 tag。
 - 正确 tag 已创建但推送失败：解决网络或权限问题后，用精确版本续推，不再次升级版本。
-- 推送成功但创建 Release 或上传附件失败：解决 `gh` 权限或网络问题后，续推；若 HEAD 已前进，使用 `make release-assets VERSION=<version>` 补包。
-- 草稿缺少附件或校验失败：草稿保持未公开。重建文件与已有同名附件的 SHA-256 不一致时会停止；先核对原始构建产物与草稿，不删除或覆盖已有正式资产来绕过检查。
+- tag 已推送而 CI 失败：保留 tag，检查失败 job 与已有制品。来源、版本、commit、构建输入一致，且成功 job 的完整 artifact 仍可获取时，优先重跑失败 job 及其必要依赖。
+- 运行卡住：先请求取消并确认旧 run 与发布 job 已进入终态，再恢复；不能在旧发布仍运行或状态不明时发起竞争运行。
+- 草稿缺少附件或校验失败：草稿保持未公开。已有同名文件只有大小和 SHA-256 一致时才复用，补传确切缺失项；不自动覆盖、删除或移动 tag。重建文件与已有资产不一致时停止并核查原始产物。
+- 同一原因重跑仍失败时，先修复或报告具体阻塞，不无限取消、重跑，也不再次 bump 来掩盖失败。
 
-例如失败版本为 `1.2.0`：
+例如本地推送失败的版本为 `1.2.0`：
 
 ```sh
 make release VERSION_BUMP=1.2.0 RELEASE_FLAGS=--resume
 make release VERSION_BUMP=1.2.0 RELEASE_FLAGS="--resume --apply"
 ```
 
-首次发布与后续升级都用精确版本续推，不能把 `VERSION_BUMP` 写成 `initial`。续推要求工作区干净、当前版本一致、对应附注 tag 指向 HEAD：首次 tag 须有初始发布标记，升级的 HEAD 提交标题须为 `chore(release): vX.Y.Z`。远程已有同名 tag 时，tag 对象须与本地完全一致。
+首次发布与后续升级都用精确版本续推，不能把 `VERSION_BUMP` 写成 `initial`。续推要求工作区干净、当前版本一致、对应附注 tag 指向 HEAD：首次 tag 须有初始发布标记，升级的 HEAD 提交标题须为 `chore(release): vX.Y.Z`。远程已有同名 tag 时，tag 对象须与本地完全一致。续推不更新版本、不创建新提交或 tag、不重跑 `make check`，也不本地构建上传；再次推送同一 tag 通常不会触发新的 push 事件。
 
-续推不更新版本、不创建新提交或 tag，也不重跑 `make check`，但会从 tag 源码重建并校验安装包，再上传缺失附件。已有后续提交时使用 `make release-assets`，保留原 tag。
+CI 恢复命令如下；执行前先确认旧运行已结束，并保持原签名模式和构建输入：
+
+```sh
+gh run rerun <run-id> --failed
+gh workflow run release.yml --ref main -f tag=v1.2.0
+# 原发布启用了手动 Apple 分发时，恢复也传 -f apple_distribution=true
+```
+
+artifact 已过期、缺失、来源不明或构建输入已改变时，需要重建必要目标；重新汇总仍要核对各产物的 run、attempt、job、版本、commit、模式和 hash。不能切回本地上传绕过已选 CI 流程。仅完成配置、tag 推送或 artifact 上传都不表示 Release 已发布，需核实 workflow 成功及公开附件。

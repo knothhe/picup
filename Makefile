@@ -10,7 +10,7 @@ RELEASE_FLAGS ?=
 INSTALL_FLAGS ?=
 VERSION ?= $(shell $(PYTHON) -c 'import json; print(json.load(open("mygo.json"))["version"])')
 
-.PHONY: build dev-signing test check run package package-app package-dev package-ci package-release release release-initial release-assets install install-dev install-release uninstall uninstall-dev icons icons-dev notices verify-update
+.PHONY: build dev-signing test check run package package-app package-dev package-ci package-release release release-initial release-assets release-notes install install-dev install-release uninstall uninstall-dev icons icons-dev notices verify-update
 build:
 	$(PYTHON) scripts/build_binaries.py
 
@@ -54,6 +54,9 @@ release-initial:
 
 release-assets:
 	GO="$(GO)" $(RELEASE_COMMAND) "$(VERSION)" --assets-only $(RELEASE_FLAGS)
+
+release-notes:
+	@$(PYTHON) scripts/release_notes.py "$(RELEASE_REPO)" "$(RELEASE_TAG)"
 
 install:
 	GO="$(GO)" $(GO) run ./cmd/install-local -dev $(INSTALL_FLAGS)

@@ -19,21 +19,19 @@ permissions:
   contents: read
 
 concurrency:
-  group: macos-${{ github.workflow }}-${{ github.ref }}
+  # A push must not cancel a manual build while it is using signing material.
+  group: macos-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && 'manual' || 'checks' }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 jobs:
   macos:
-    name: macOS ${{ matrix.arch }}
-    runs-on: ${{ matrix.runner }}
+    name: macOS arm64
+    runs-on: macos-15
     timeout-minutes: 40
+    outputs:
+      version: ${{ steps.package-version.outputs.version }}
     env:
       CGO_ENABLED: '1'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - {runner: macos-15, arch: arm64}
     steps:
       - name: Reject signing requests outside main
         if: github.event_name == 'workflow_dispatch' && inputs.signed_updates
@@ -46,58 +44,111 @@ jobs:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
       - name: Set up pinned Go toolchain
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
-      - name: Verify native runner architecture
-        env:
-          EXPECTED_ARCH: ${{ matrix.arch }}
-        run: test "$(go env GOHOSTOS)/$(go env GOHOSTARCH)" = "darwin/$EXPECTED_ARCH"
+      - name: Verify source commit and native runner architecture
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(go env GOHOSTOS)/$(go env GOHOSTARCH)" = darwin/arm64
+      - name: Read and validate package version
+        id: package-version
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          import sys
+          sys.path.insert(0, 'scripts')
+          from package_release import manifest
+          root = Path.cwd()
+          version = json.loads((root / 'mygo.json').read_text())['version']
+          manifest(root, version)
+          print(f'version={version}')
+          PY
       - name: Checks and race tests
         run: |
           make check
           make test
       - name: Build unsigned CI application
         if: github.event_name != 'workflow_dispatch' || !inputs.signed_updates
+        env:
+          VERSION: ${{ steps.package-version.outputs.version }}
         run: make package-ci
+      - name: Verify required unsigned CI package
+        if: github.event_name != 'workflow_dispatch' || !inputs.signed_updates
+        env:
+          VERSION: ${{ steps.package-version.outputs.version }}
+        run: test -s "build/ci/Picup-${VERSION}-darwin-arm64-ci-unsigned.zip"
       - name: Upload unsigned CI package
         if: github.event_name != 'workflow_dispatch' || !inputs.signed_updates
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: Picup-ci-unsigned-darwin-${{ matrix.arch }}-${{ github.sha }}
-          path: build/ci/Picup-*-darwin-${{ matrix.arch }}-ci-unsigned.zip
+          name: Picup-ci-unsigned-darwin-arm64-${{ github.sha }}-attempt-${{ github.run_attempt }}
+          path: build/ci/Picup-${{ steps.package-version.outputs.version }}-darwin-arm64-ci-unsigned.zip
           if-no-files-found: error
-          overwrite: true
+          compression-level: 0
           retention-days: 7
+
+  signed-updates:
+    name: Signed updates arm64
+    needs: macos
+    if: github.event_name == 'workflow_dispatch' && inputs.signed_updates && github.ref == 'refs/heads/main'
+    runs-on: macos-15
+    timeout-minutes: 40
+    env:
+      CGO_ENABLED: '1'
+      VERSION: ${{ needs.macos.outputs.version }}
+    steps:
+      - name: Check out the exact source commit that passed checks
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Set up pinned Go toolchain
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify source commit, version and native runner architecture
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(go env GOHOSTOS)/$(go env GOHOSTARCH)" = darwin/arm64
+          test "$(python3 -c 'import json; print(json.load(open("mygo.json"))["version"])')" = "$VERSION"
       - name: Build signed update artifacts from protected source
-        if: github.event_name == 'workflow_dispatch' && inputs.signed_updates && !inputs.apple_distribution && github.ref == 'refs/heads/main'
+        if: '!inputs.apple_distribution'
         env:
           MYGO_UPDATER_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY }}
-        run: |
-          make package-release
+        run: make package-release
       - name: Build Developer ID distribution in temporary keychain
-        if: github.event_name == 'workflow_dispatch' && inputs.signed_updates && inputs.apple_distribution && github.ref == 'refs/heads/main'
+        if: inputs.apple_distribution
         env:
           MYGO_UPDATER_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY }}
           MACOS_SIGNING_CERTIFICATE: ${{ secrets.MACOS_SIGNING_CERTIFICATE }}
           MACOS_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_SIGNING_CERTIFICATE_PASSWORD }}
-          PICUP_MACOS_CERTIFICATE_SHA256: ${{ vars.MACOS_SIGNING_CERTIFICATE_SHA256 }}
           MACOS_NOTARY_KEY_BASE64: ${{ secrets.MACOS_NOTARY_KEY_BASE64 }}
           MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
           MACOS_NOTARY_ISSUER: ${{ secrets.MACOS_NOTARY_ISSUER }}
         run: python3 scripts/macos_signing_ci.py -- make package-release
+      - name: Verify every required signed update artifact
+        run: |
+          for path in \
+            "build/release/Picup-${VERSION}-darwin-arm64.zip" \
+            "build/release/picup-${VERSION}-darwin-arm64.tar.gz" \
+            build/release/update-darwin-arm64.json; do
+            test -s "$path" || { echo "::error::Missing or empty required artifact: $path"; exit 1; }
+          done
       - name: Upload signed update artifacts
-        if: github.event_name == 'workflow_dispatch' && inputs.signed_updates && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: Picup-signed-updates-darwin-${{ matrix.arch }}-${{ github.sha }}
+          name: Picup-signed-updates-${{ inputs.apple_distribution && 'developer-id' || 'update-only' }}-darwin-arm64-${{ github.sha }}-attempt-${{ github.run_attempt }}
           path: |
-            build/release/Picup-*-darwin-${{ matrix.arch }}.zip
-            build/release/picup-*-darwin-${{ matrix.arch }}.tar.gz
-            build/release/update-darwin-${{ matrix.arch }}.json
+            build/release/Picup-${{ needs.macos.outputs.version }}-darwin-arm64.zip
+            build/release/picup-${{ needs.macos.outputs.version }}-darwin-arm64.tar.gz
+            build/release/update-darwin-arm64.json
           if-no-files-found: error
-          overwrite: true
+          compression-level: 0
           retention-days: 7

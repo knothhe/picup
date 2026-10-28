@@ -5,6 +5,7 @@
   "tag_prefix": "v",
   "checks": [["make", "check"]],
   "check_phase": "before-bump",
-  "github_release": true,
-  "release_assets": true
+  "release_executor": "github-actions",
+  "github_release": false,
+  "release_assets": false
 }

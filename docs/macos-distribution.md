@@ -1,6 +1,6 @@
 # macOS 分发签名
 
-Picup 沿用 MyGo 的嵌套签名、hardened runtime、时间戳与公证流程。正式构建未配置签名身份时仍可使用 ad-hoc；macOS 本地 Dev 构建会选择并记住已有证书。选择身份后任何失败都会停止，不回退其他身份。
+Picup 沿用 MyGo 的嵌套签名、hardened runtime、时间戳与公证流程。正式构建默认沿用 MyGo 的 ad-hoc；显式启用 Developer ID 分发后，缺配置或签名、公证失败都会停止，不回退其他身份。macOS 本地 Dev 构建会选择并记住已有证书。
 
 ## Dev 构建的本地证书选择
 
@@ -50,9 +50,11 @@ PICUP_MACOS_NOTARY_PROFILE='picup-notary' make package-release
 
 MyGo 需要 DMG 完成公证，因此设置 profile 时构建一个中间 DMG，提交并等待 Apple 接受，随后将票据 staple 到 app；更新归档与最终 ZIP 在此后生成。发行附件仍为 ZIP、完整更新包与 Feed，不上传中间 DMG。最终另运行 `stapler validate` 与 Gatekeeper `spctl --assess`，避免只把提交成功当作可分发验证。
 
-## 手动 CI Apple 分发构建
+## CI Apple 分发构建
 
-现有 macOS workflow 增加可选 `apple_distribution`，与 `signed_updates` 同时勾选且仅 `main` 可执行。它只产生 artifact，不创建 tag 或 Release。普通 PR/分支构建不会获得这些私有材料。
+日常 [macos.yml](../.github/workflows/macos.yml) 提供可选 `apple_distribution`，与 `signed_updates` 同时勾选且仅 `main` 可执行，检查通过后由独立 runner 签包。它只产生 Actions artifact，不创建 tag 或 Release，适合分发配置的预检。
+
+正式 [release.yml](../.github/workflows/release.yml) 在版本 tag 推送后构建并发布 Release。它默认使用 `update-only` 模式，仅生成 Ed25519 更新签名；显式将 repository variable `PICUP_APPLE_DISTRIBUTION` 设为字符串 `true`，或在从 `main` 手动运行时勾选 `apple_distribution`，才选择 `developer-id` 模式。选定模式在检查 job 输出并传递给构建、制品记录与发布 job；恢复时保留原模式及输入。两种模式都会验证更新签名，普通 PR/分支检查不会获得发行私有材料。
 
 需要以下现有材料；本工作流不会配置仓库 secrets：
 
@@ -60,8 +62,20 @@ MyGo 需要 DMG 完成公证，因此设置 profile 时构建一个中间 DMG，
 | --- | --- |
 | Secret `MACOS_SIGNING_CERTIFICATE` | 单一 Developer ID 身份的 Base64 PKCS#12 |
 | Secret `MACOS_SIGNING_CERTIFICATE_PASSWORD` | 该 PKCS#12 口令 |
-| Repository variable `MACOS_SIGNING_CERTIFICATE_SHA256` | 叶证书 DER 的公开 SHA-256 |
+| 已提交的 `config/macos-signing.json` | 严格包含 `schema`（整数 `1`）与 `certificateSHA256`（既有发行叶证书 DER 的六十四位小写 SHA-256） |
 | Secret `MYGO_UPDATER_PRIVATE_KEY` | 既有更新签名私钥 |
 | 可选三个 Secrets `MACOS_NOTARY_KEY_BASE64`、`MACOS_NOTARY_KEY_ID`、`MACOS_NOTARY_ISSUER` | 公证 API 的 Base64 P8、key ID 与 issuer；必须一起提供 |
+
+当前仓库只配置了更新签名 Secret，尚未提交发行证书 pin，也未配置 Developer ID 证书与口令 Secret；Apple 分发模式暂不可用。普通 CI、日常 `signed_updates` 试包及正式 tag 流程默认的 `update-only` 模式不受影响。配置时延续已有发行身份，不使用本机 Dev 选择记录替代，不生成新证书或变更身份。
+
+从已有发行证书的公开 DER 文件计算指纹：
+
+```sh
+shasum -a 256 /path/to/existing-distribution-certificate.der
+```
+
+将输出的六十四位小写十六进制值写入 `config/macos-signing.json` 的 `certificateSHA256`，同时写入整数 `schema: 1`，并将该文件纳入版本控制。只允许这两个字段；大写、错误长度、错误 schema 或额外字段都会失败。公开 pin 可以入库，PKCS#12、私钥、口令与公证凭据继续保存在仓库外及上述 Secrets 中。这里的操作只读取既有公开证书，不创建证书或上传材料。
+
+CI 签名入口从源码中的该文件读取 pin，覆盖同名环境变量；不再使用 repository variable `MACOS_SIGNING_CERTIFICATE_SHA256`。文件缺失或无效时，在创建钥匙串和运行构建前失败，不回退 ad-hoc。本机显式发行配置与 Dev 证书选择仍沿用各自已有规则。
 
 `scripts/macos_signing_ci.py` 创建临时私有目录和临时钥匙串，精确要求一个 Developer ID identity，将它暂时加入搜索列表，仅向构建子进程提供选定 identity 与公开 pin；PKCS#12、P8 和口令不传给构建子进程。公证配置仅保存在该临时钥匙串。成功、导入失败和构建失败都会独立尝试恢复搜索列表、删除钥匙串及私有文件；清理失败会报错。缺材料、错证书或错误口令都不会生成冒充成功的发行 artifact。

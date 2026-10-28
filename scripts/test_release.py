@@ -13,6 +13,7 @@ from unittest import mock
 
 
 SCRIPT = Path(__file__).with_name('release.py')
+NOTES_SCRIPT = Path(__file__).with_name('release_notes.py')
 SPEC = importlib.util.spec_from_file_location('picup_release', SCRIPT)
 release_module = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(release_module)
@@ -162,6 +163,7 @@ class ReleaseTests(unittest.TestCase):
         self.git('config', 'commit.gpgsign', 'false')
         self.git('config', 'tag.gpgsign', 'false')
         shutil.copyfile(SCRIPT, self.root / 'release.py')
+        shutil.copyfile(NOTES_SCRIPT, self.root / 'release_notes.py')
         self.manifest = {'name': 'Picup', 'version': '0.1.0', 'resources': ['build/bin/picup'],
                          'macos': {'minimumSystemVersion': '13.0'}}
         (self.root / 'mygo.json').write_text(json.dumps(self.manifest, indent=2) + '\n')
@@ -169,7 +171,7 @@ class ReleaseTests(unittest.TestCase):
                        'tag_prefix': 'v', 'checks': [], 'github_release': False,
                        'release_assets': False}
         self.save_config()
-        self.git('add', 'release.py', 'mygo.json', '.release.json')
+        self.git('add', 'release.py', 'release_notes.py', 'mygo.json', '.release.json')
         self.git('commit', '-m', 'Initial project')
 
     def git(self, *args):
@@ -214,6 +216,21 @@ class ReleaseTests(unittest.TestCase):
         self.git('add', '.release.json', '.gitignore', 'package_release.py', 'source.txt')
         self.git('commit', '-m', 'Configure release packages')
         self.git('push', str(self.remote), 'main')
+
+    def configure_actions(self, checks=None):
+        self.configure_assets()
+        self.config.update({'release_executor': 'github-actions', 'github_release': False,
+                            'release_assets': False, 'checks': checks or []})
+        self.save_config()
+        self.git('add', '.release.json')
+        self.git('commit', '-m', 'Move release builds and publication to Actions')
+        self.git('push', str(self.remote), 'main')
+
+    def notes(self, tag, success=True):
+        result = subprocess.run([sys.executable, 'release_notes.py', 'example/picup', tag],
+                                cwd=self.root, text=True, capture_output=True, env=self.env)
+        self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
+        return result
 
     def events(self, tool=None, command=None):
         events = [json.loads(line) for line in self.events_path.read_text().splitlines()]
@@ -287,6 +304,139 @@ class ReleaseTests(unittest.TestCase):
             self.release(target, '--no-push', success=False)
         (self.root / 'untracked').write_text('user work')
         self.assertIn('Working tree must be clean', self.release('patch', '--no-push', success=False).stderr)
+
+    def test_actions_initial_and_upgrade_previews_are_read_only_and_identify_executor(self):
+        self.configure_actions()
+        before = {command: self.git(*command.split()) for command in
+                  ('rev-parse HEAD', 'status --porcelain', 'show-ref')}
+        original = (self.root / 'mygo.json').read_bytes()
+        for mode, target in (('initial', '0.1.0'), ('patch', '0.1.1')):
+            plan = json.loads(self.release(mode).stdout)
+            self.assertEqual(plan['release_executor'], 'github-actions')
+            self.assertEqual(plan['target'], target)
+            self.assertEqual(plan['github_repo'], 'example/picup')
+            self.assertFalse(plan['github_release'])
+            self.assertIsNone(plan['package'])
+            self.assertEqual(plan['package_source'], 'v' + target)
+            self.assertEqual(plan['create_version_commit'], mode != 'initial')
+        self.assertEqual(self.events('package'), [])
+        self.assertEqual(self.events('git', ['push']), [])
+        self.assertEqual(self.events('gh', ['release']), [])
+        self.assertEqual((self.root / 'mygo.json').read_bytes(), original)
+        for command, expected in before.items():
+            self.assertEqual(self.git(*command.split()), expected)
+
+    def test_actions_initial_and_upgrade_only_check_version_tag_and_atomic_push(self):
+        check = ('import json, os; from pathlib import Path; '
+                 'event = {"tool": "check", "version": json.loads(Path("mygo.json").read_text())["version"]}; '
+                 'stream = open(os.environ["TEST_RELEASE_EVENTS"], "a"); '
+                 'stream.write(json.dumps(event) + "\\n"); stream.close()')
+        self.configure_actions([[sys.executable, '-c', check]])
+        head = self.git('rev-parse', 'HEAD')
+        initial = self.release('initial', '--apply')
+        self.assertEqual(self.git('rev-parse', 'HEAD'), head)
+        self.assertIn('Git phase complete', initial.stdout)
+        self.assertNotIn('Release complete:', initial.stdout)
+        self.release('patch', '--apply')
+        self.assertEqual(self.git('log', '-1', '--format=%s'), 'chore(release): v0.1.1')
+        self.assertEqual(json.loads((self.root / 'mygo.json').read_text())['version'], '0.1.1')
+        self.assertEqual(len(self.events('check')), 2)
+        for tag in ('v0.1.0', 'v0.1.1'):
+            self.assertEqual(self.git('cat-file', '-t', 'refs/tags/' + tag), 'tag')
+            self.assertEqual(self.git('rev-parse', tag),
+                             self.git('--git-dir', str(self.remote), 'rev-parse', tag))
+        self.assertTrue(all('--atomic' in event['args'] for event in self.events('git', ['push'])))
+        self.assertEqual(self.events('package'), [])
+        self.assertEqual(self.events('gh', ['release']), [])
+        self.assertEqual(self.release_state(), {})
+        self.assertFalse((self.root / 'build').exists())
+
+    def test_actions_resume_does_not_bump_build_publish_or_dispatch(self):
+        self.configure_actions()
+        self.release('initial', '--apply')
+        head = self.git('rev-parse', 'HEAD')
+        original = (self.root / 'mygo.json').read_bytes()
+        self.events_path.write_text('')
+        result = self.release('0.1.0', '--resume', '--apply')
+        self.assertIn('does not trigger a new workflow run', result.stdout)
+        self.assertIn('no workflow was dispatched', result.stdout)
+        self.assertEqual(self.git('rev-parse', 'HEAD'), head)
+        self.assertEqual((self.root / 'mygo.json').read_bytes(), original)
+        self.assertEqual(self.events('package'), [])
+        self.assertEqual(self.events('gh'), [])
+        self.assertEqual(self.release_state(), {})
+
+    def test_actions_rejects_local_publication_and_backfill_configuration(self):
+        self.configure_actions()
+        for field in ('github_release', 'release_assets'):
+            self.config[field] = True
+            self.save_config()
+            result = self.release('patch', '--no-push', success=False)
+            self.assertIn('github-actions requires', result.stderr)
+            self.config[field] = False
+        self.save_config()
+        result = self.release('patch', '--github-release', success=False)
+        self.assertIn('github-actions requires', result.stderr)
+        result = self.release('0.1.0', '--assets-only', success=False)
+        self.assertIn('workflow_dispatch with the exact existing tag', result.stderr)
+        self.assertEqual(self.events('package'), [])
+        self.assertEqual(self.events('git', ['push']), [])
+        self.assertEqual(self.events('gh'), [])
+
+    def test_actions_initial_release_listing_failure_prevents_tag_and_push(self):
+        self.configure_actions()
+        self.env['TEST_GH_FAIL_LISTING'] = '1'
+        self.release('initial', '--apply', success=False)
+        self.assertEqual(self.git('tag'), '')
+        self.assertEqual(self.events('package'), [])
+        self.assertEqual(self.events('git', ['push']), [])
+        self.assertEqual(self.events('gh', ['release']), [])
+
+    def test_actions_check_failure_stops_before_version_commit_tag_or_push(self):
+        self.configure_actions([[sys.executable, '-c', 'raise SystemExit(1)']])
+        head = self.git('rev-parse', 'HEAD')
+        result = self.release('patch', '--apply', success=False)
+        self.assertIn('Stopped before updating the version', result.stderr)
+        self.assertEqual(self.git('rev-parse', 'HEAD'), head)
+        self.assertEqual(json.loads((self.root / 'mygo.json').read_text()), self.manifest)
+        self.assertEqual(self.git('tag'), '')
+        self.assertEqual(self.events('package'), [])
+        self.assertEqual(self.events('git', ['push']), [])
+
+    def test_standalone_notes_use_exact_tag_history_and_preserve_dirty_working_tree(self):
+        self.release('initial', '--no-push', '--apply')
+        (self.root / 'feature.txt').write_text('new feature')
+        self.git('add', 'feature.txt')
+        self.git('commit', '-m', 'feat: Add tagged feature')
+        feature = self.git('rev-parse', '--short', 'HEAD')
+        self.release('patch', '--no-push', '--apply')
+        (self.root / 'feature.txt').write_text('later feature')
+        self.git('add', 'feature.txt')
+        self.git('commit', '-m', 'Unreleased work after target tag')
+        (self.root / 'mygo.json').write_text(json.dumps(dict(self.manifest, version='0.9.0')))
+        (self.root / 'untracked').write_text('user work')
+        before = {command: self.git(*command.split()) for command in
+                  ('rev-parse HEAD', 'status --porcelain', 'show-ref')}
+        result = self.notes('v0.1.1')
+        self.assertIn('https://github.com/example/picup/compare/v0.1.0...v0.1.1', result.stdout)
+        self.assertIn(f'- feat: Add tagged feature (`{feature}`)', result.stdout)
+        self.assertNotIn('chore(release)', result.stdout)
+        self.assertNotIn('Unreleased work', result.stdout)
+        for command, expected in before.items():
+            self.assertEqual(self.git(*command.split()), expected)
+
+    def test_standalone_notes_reject_tag_version_mismatch_and_shallow_history(self):
+        self.git('tag', '-a', 'v0.2.0', '-m', 'Wrong version')
+        self.assertIn('Tagged source version differs', self.notes('v0.2.0', success=False).stderr)
+        self.release('initial', '--no-push', '--apply')
+        with tempfile.TemporaryDirectory() as temporary:
+            clone = Path(temporary) / 'clone'
+            subprocess.run(['git', 'clone', '--depth=1', self.root.as_uri(), str(clone)],
+                           check=True, text=True, capture_output=True)
+            result = subprocess.run([sys.executable, 'release_notes.py', 'example/picup', 'v0.1.0'],
+                                    cwd=clone, text=True, capture_output=True, env=self.env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('complete Git history and tags', result.stderr)
 
     def test_asset_preview_does_not_build_or_publish(self):
         self.configure_assets()

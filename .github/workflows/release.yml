@@ -1,0 +1,171 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Exact existing release tag to build or recover
+        required: true
+        type: string
+      apple_distribution:
+        description: Use the configured Developer ID certificate and optional notarization credentials
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: picup-release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+  SIGNING_MODE: ${{ (vars.PICUP_APPLE_DISTRIBUTION == 'true' || inputs.apple_distribution == true) && 'developer-id' || 'update-only' }}
+
+jobs:
+  checks:
+    name: Check release tag on macOS arm64
+    runs-on: macos-15
+    timeout-minutes: 40
+    outputs:
+      tag: ${{ steps.source.outputs.tag }}
+      version: ${{ steps.source.outputs.version }}
+      commit: ${{ steps.source.outputs.commit }}
+      signing_mode: ${{ steps.mode.outputs.signing_mode }}
+    env:
+      CGO_ENABLED: '1'
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - name: Require manual recovery to use the main workflow
+        if: github.event_name == 'workflow_dispatch'
+        run: test "$GITHUB_REF" = refs/heads/main
+      - name: Check out the event commit or requested recovery tag and complete history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'push' && github.sha || format('refs/tags/{0}', inputs.tag) }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate tag, source version and main ancestry
+        id: source
+        run: python3 scripts/ci_release.py validate --tag "$RELEASE_TAG" --github-output "$GITHUB_OUTPUT"
+      - name: Record explicit distribution mode
+        id: mode
+        run: printf 'signing_mode=%s\n' "$SIGNING_MODE" >> "$GITHUB_OUTPUT"
+      - name: Set up pinned Go toolchain
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify native runner architecture
+        run: test "$(go env GOHOSTOS)/$(go env GOHOSTARCH)" = darwin/arm64
+      - name: Checks and race tests
+        run: |
+          make check
+          make test
+
+  build:
+    name: Build signed release on macOS arm64
+    needs: checks
+    runs-on: macos-15
+    timeout-minutes: 40
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      attempt: ${{ steps.provenance.outputs.attempt }}
+    env:
+      CGO_ENABLED: '1'
+      RELEASE_TAG: ${{ needs.checks.outputs.tag }}
+      VERSION: ${{ needs.checks.outputs.version }}
+      RELEASE_COMMIT: ${{ needs.checks.outputs.commit }}
+      SIGNING_MODE: ${{ needs.checks.outputs.signing_mode }}
+    steps:
+      - name: Check out the exact release commit that passed checks
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.checks.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate release source before accessing signing keys
+        run: |
+          test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
+          python3 scripts/ci_release.py validate --tag "$RELEASE_TAG"
+      - name: Set up pinned Go toolchain
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify native runner architecture
+        run: test "$(go env GOHOSTOS)/$(go env GOHOSTARCH)" = darwin/arm64
+      - name: Build signed update artifacts
+        if: env.SIGNING_MODE == 'update-only'
+        env:
+          MYGO_UPDATER_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY }}
+        run: make package-release
+      - name: Build Developer ID distribution in temporary keychain
+        if: env.SIGNING_MODE == 'developer-id'
+        env:
+          MYGO_UPDATER_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY }}
+          MACOS_SIGNING_CERTIFICATE: ${{ secrets.MACOS_SIGNING_CERTIFICATE }}
+          MACOS_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_SIGNING_CERTIFICATE_PASSWORD }}
+          MACOS_NOTARY_KEY_BASE64: ${{ secrets.MACOS_NOTARY_KEY_BASE64 }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER: ${{ secrets.MACOS_NOTARY_ISSUER }}
+        run: python3 scripts/macos_signing_ci.py -- make package-release
+      - name: Verify exact artifact set and record build provenance
+        id: provenance
+        run: |
+          python3 scripts/ci_release.py record --tag "$RELEASE_TAG" --directory build/release --signing-mode "$SIGNING_MODE"
+          printf 'attempt=%s\n' "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+      - name: Upload verified release artifacts
+        id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Picup-release-darwin-arm64-${{ needs.checks.outputs.commit }}-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: |
+            build/release/Picup-${{ needs.checks.outputs.version }}-darwin-arm64.zip
+            build/release/picup-${{ needs.checks.outputs.version }}-darwin-arm64.tar.gz
+            build/release/update-darwin-arm64.json
+            build/release/ci-release.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  publish:
+    name: Verify and publish GitHub Release
+    needs: [checks, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ needs.checks.outputs.tag }}
+      RELEASE_COMMIT: ${{ needs.checks.outputs.commit }}
+      SIGNING_MODE: ${{ needs.checks.outputs.signing_mode }}
+      BUILD_ATTEMPT: ${{ needs.build.outputs.attempt }}
+    steps:
+      - name: Check out the exact release commit and complete history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.checks.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate release source
+        run: |
+          test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
+          python3 scripts/ci_release.py validate --tag "$RELEASE_TAG"
+      - name: Download only the successful build artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          path: build/release
+      - name: Generate release notes from the exact tag
+        run: make --silent release-notes RELEASE_REPO="$GITHUB_REPOSITORY" RELEASE_TAG="$RELEASE_TAG" > "$RUNNER_TEMP/release-notes.md"
+      - name: Verify complete artifacts, publish draft and verify public downloads
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/ci_release.py publish --tag "$RELEASE_TAG" --directory build/release \
+            --signing-mode "$SIGNING_MODE" --build-attempt "$BUILD_ATTEMPT" --build-job build \
+            --notes-file "$RUNNER_TEMP/release-notes.md"

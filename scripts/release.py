@@ -394,17 +394,29 @@ def main():
     os.chdir(root)
     config = json.loads(Path('.release.json').read_text()) if Path('.release.json').exists() else {}
     require(isinstance(config, dict), '.release.json must contain an object.')
-    require(not set(config) - {'version_file', 'branch', 'remote', 'tag_prefix', 'checks', 'check_phase', 'github_release', 'release_assets'}, 'Unknown .release.json field.')
+    require(not set(config) - {'version_file', 'branch', 'remote', 'tag_prefix', 'checks', 'check_phase', 'github_release', 'release_assets', 'release_executor'}, 'Unknown .release.json field.')
+    executor = config.get('release_executor', 'local')
+    require(executor in ('local', 'github-actions'), 'release_executor must be local or github-actions.')
     branch = config.get('branch', 'main')
     remote = config.get('remote', 'origin')
     prefix = config.get('tag_prefix', 'v')
     for name, value in [('branch', branch), ('remote', remote), ('tag_prefix', prefix)]:
         require(isinstance(value, str) and (value or name == 'tag_prefix') and not value.startswith('-'), f'Invalid {name}.')
-    github = args.github if args.github is not None else config.get('github_release', False)
+    configured_github = config.get('github_release', False)
+    require(isinstance(configured_github, bool), 'github_release must be boolean.')
+    github = args.github if args.github is not None else configured_github
     require(isinstance(github, bool), 'github_release must be boolean.')
-    require(not (github and args.no_push), 'GitHub Release requires pushing. Use --no-github-release with --no-push.')
     with_assets = config.get('release_assets', False)
     require(isinstance(with_assets, bool), 'release_assets must be boolean.')
+    if executor == 'github-actions':
+        require(not configured_github and not github and not with_assets,
+                'github-actions requires github_release: false and release_assets: false; '
+                'local builds/uploads and --github-release cannot be enabled.')
+        require(not args.assets_only,
+                '--assets-only is unavailable with github-actions. Recover the existing '
+                'release workflow or use workflow_dispatch with the exact existing tag; '
+                'do not bump the version or move the tag.')
+    require(not (github and args.no_push), 'GitHub Release requires pushing. Use --no-github-release with --no-push.')
     if args.assets_only:
         publish_existing_assets(args, config, github, with_assets, remote, prefix)
         return
@@ -448,20 +460,20 @@ def main():
         remote_tag = refs.get('refs/tags/' + tag)
         if remote_tag:
             require(args.resume and remote_tag == git('rev-parse', 'refs/tags/' + tag), 'Remote tag already exists with a different release; never overwrite it.')
-    repo = github_repo(url) if github else None
+    repo = github_repo(url) if github or (executor == 'github-actions' and url) else None
     initial_repo = github_repo(url, required=False) if initial and not args.no_push else None
     if initial_repo and not args.resume:
         require_unpublished_release(initial_repo, tag)
     phase = 'current-version' if initial else check_phase
     notes = release_notes(repo, prefix, target, f'{head}^' if args.resume and not initial else head, tag) if github else None
     print(json.dumps({'mode': 'execute' if args.apply else 'preview', 'release_type': 'initial' if initial else 'upgrade',
-                      'current': current, 'target': target,
+                      'current': current, 'target': target, 'release_executor': executor,
                       'branch': branch, 'remote': remote, 'tag': tag, 'files': [] if initial else list(files),
                       'create_version_commit': not initial and not args.resume,
                       'checks': [] if args.resume else checks, 'check_phase': None if args.resume else phase, 'push': not args.no_push,
                       'github_release': github, 'github_repo': repo, 'release_notes': notes,
                       'package': package_command(target, Path.cwd() / 'build' / 'release') if with_assets else None,
-                      'package_source': tag if args.resume else 'working-tree',
+                      'package_source': tag if args.resume or executor == 'github-actions' else 'working-tree',
                       'resume': args.resume}, indent=2), flush=True)
     if not args.apply:
         return
@@ -500,7 +512,18 @@ def main():
         git('push', '--atomic', remote, f'HEAD:refs/heads/{branch}', f'refs/tags/{tag}:refs/tags/{tag}')
     if github:
         publish_github_release(repo, tag, target, notes, assets)
-    print(f'Release complete: {tag}' + (' (local only)' if args.no_push else ''))
+    if executor == 'github-actions':
+        if args.no_push:
+            print(f'Git phase complete: {tag} (local only; GitHub Actions was not triggered).')
+        else:
+            print(f'Git phase complete: {tag} pushed. GitHub Actions handles the build and '
+                  'publication; verify its run and Release assets before reporting release success.')
+        if args.resume:
+            print('Re-pushing a tag already on the remote does not trigger a new workflow run. '
+                  'Recover the existing run or use workflow_dispatch with this exact tag; '
+                  'no workflow was dispatched by this command.')
+    else:
+        print(f'Release complete: {tag}' + (' (local only)' if args.no_push else ''))
 
 
 if __name__ == '__main__':

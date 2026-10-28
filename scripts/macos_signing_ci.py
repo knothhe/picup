@@ -5,6 +5,7 @@ This entry point never creates certificates or changes the default keychain.
 import argparse
 import base64
 from contextlib import contextmanager
+import json
 import os
 from pathlib import Path
 import re
@@ -17,6 +18,26 @@ import tempfile
 
 PRIVATE_VARIABLES = ('MACOS_SIGNING_CERTIFICATE', 'MACOS_SIGNING_CERTIFICATE_PASSWORD',
                      'MACOS_NOTARY_KEY_BASE64', 'MACOS_NOTARY_KEY_ID', 'MACOS_NOTARY_ISSUER')
+PIN_PATH = Path(__file__).resolve().parent.parent / 'config/macos-signing.json'
+
+
+def repository_certificate_pin():
+    """Read the distribution identity from reviewed source, never runner variables."""
+    try:
+        data = json.loads(PIN_PATH.read_text(encoding='utf-8'))
+    except OSError:
+        raise ValueError('CI Apple signing requires a readable, committed '
+                         'config/macos-signing.json with the existing distribution '
+                         'certificate SHA-256 pin.') from None
+    except ValueError:
+        raise ValueError('Invalid config/macos-signing.json: expected a JSON object.') from None
+    if (not isinstance(data, dict) or set(data) != {'schema', 'certificateSHA256'}
+            or type(data.get('schema')) is not int or data['schema'] != 1
+            or not isinstance(data.get('certificateSHA256'), str)
+            or not re.fullmatch(r'[a-f0-9]{64}', data['certificateSHA256'])):
+        raise ValueError('Invalid config/macos-signing.json: expected only schema: 1 '
+                         'and certificateSHA256 as 64 lowercase hexadecimal characters.')
+    return data['certificateSHA256']
 
 
 def run(arguments, capture=False):
@@ -91,24 +112,26 @@ def signing_environment(environment=None):
             yield child
         finally:
             try:run(['/usr/bin/security','list-keychains','-d','user','-s',*original])
-            except ValueError:cleanup_errors.append('restore keychain search list')
+            except (ValueError,OSError):cleanup_errors.append('restore keychain search list')
             if created or keychain.exists():
                 try:run(['/usr/bin/security','delete-keychain',str(keychain)])
-                except ValueError:cleanup_errors.append('delete temporary keychain')
+                except (ValueError,OSError):cleanup_errors.append('delete temporary keychain')
             # TemporaryDirectory independently removes P12/P8 and private files.
             if cleanup_errors:
                 raise ValueError('CI signing cleanup failed: '+', '.join(cleanup_errors))
 
 
-def main():
+def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('command',nargs=argparse.REMAINDER)
-    arguments=parser.parse_args().command
+    arguments=parser.parse_args(argv).command
     if arguments[:1]==['--']:arguments=arguments[1:]
     if not arguments:parser.error('a build command is required after --')
     try:
-        with signing_environment() as environment:
-            return subprocess.run(arguments,env=environment).returncode
+        environment = dict(os.environ)
+        environment['PICUP_MACOS_CERTIFICATE_SHA256'] = repository_certificate_pin()
+        with signing_environment(environment) as child:
+            return subprocess.run(arguments,env=child).returncode
     except (ValueError,OSError) as error:
         print(f'CI signing: {error}',file=sys.stderr)
         return 1
