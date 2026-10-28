@@ -1,7 +1,7 @@
 {
   "name": "Picup",
   "identifier": "com.knothhe.picup",
-  "version": "0.1.3-rc.1",
+  "version": "0.1.3",
   "main": "./cmd/picup-gui",
   "icon": "assets/icon.png",
   "out": "build/dist",
