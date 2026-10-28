@@ -73,6 +73,8 @@ func (a *application) handleMainWindowClose(e *mygo.CloseEvent) {
 		a.showWindow()
 		return
 	}
+	a.mobileTransfer.open = false
+	a.stopMobileTransfer()
 	if a.config.CloseToTray && a.tray != nil {
 		a.win.Hide()
 		return
@@ -200,6 +202,7 @@ func (a *application) scheduleLightweightCheck(delay time.Duration) {
 
 func (a *application) lightweightSuspensionReady(now time.Time) bool {
 	return a.config.LightweightMode && !a.quitting && !a.lifecycle.suspended &&
+		!a.mobileReceiving() &&
 		!a.lifecycle.mainVisible && !a.quickUpload.visible && !a.lifecycle.hiddenAt.IsZero() &&
 		now.Sub(a.lifecycle.hiddenAt) >= lightweightIdleDelay &&
 		!a.busy && !a.uploading && !a.fileDialogOpen && !a.quickUpload.active && !a.gallery.operation && !a.r2.active && !a.r2.working &&

@@ -188,6 +188,23 @@ func TestQueueWriterFlushPersistsLatestMutationAndRestoresWithoutUploading(t *te
 	}
 }
 
+func TestQueueWriterStopDrainsAcceptedSnapshots(t *testing.T) {
+	a := &application{path: filepath.Join(t.TempDir(), "config.json"), config: config.Default()}
+	if err := a.initUploadQueue(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(a.stopUploadQueue)
+	for id := 1; id <= 12; id++ {
+		a.jobs = append(a.jobs, &job{id: id, path: filepath.Join(filepath.Dir(a.path), "source.png"), name: "source.png", status: "等待上传"})
+		a.persistUploadQueue()
+	}
+	a.stopUploadQueue()
+	rows, err := service.NewQueueStore(a.path).Load()
+	if err != nil || len(rows) != 12 {
+		t.Fatal("stopped writer returned before the final accepted snapshot reached disk", len(rows), err)
+	}
+}
+
 func TestUnreadableQueueIsNotOverwrittenUntilExplicitReset(t *testing.T) {
 	root := t.TempDir()
 	directory := filepath.Join(root, "upload-queue-v1")

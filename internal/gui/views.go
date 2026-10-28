@@ -241,6 +241,7 @@ func (a *application) uploadDropZone(c *ui.Context, compact bool) {
 					a.choose()
 				}
 				a.pasteButton(c, components.ButtonOutline)
+				a.mobileTransferButton(c, "upload")
 			})
 			return
 		}
@@ -257,6 +258,7 @@ func (a *application) uploadDropZone(c *ui.Context, compact bool) {
 					a.choose()
 				}
 				a.pasteButton(c, components.ButtonOutline)
+				a.mobileTransferButton(c, "upload")
 			})
 			components.Text(c, "PNG · JPEG · WebP · GIF · HEIC / AVIF · TIFF").FontSize(11.5).TextColor(t.TextMuted)
 		})

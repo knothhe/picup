@@ -254,7 +254,16 @@ func (a *application) removeImageTool(j *imageToolJob) {
 	}
 	if i := slices.Index(a.imageTools.jobs, j); i >= 0 {
 		a.imageTools.jobs = slices.Delete(a.imageTools.jobs, i, i+1)
+		_ = a.cleanupMobileInbox(true)
 	}
+}
+
+func (a *application) clearImageTools() {
+	if a.busy || a.imageTools.running {
+		return
+	}
+	a.imageTools.jobs = nil
+	_ = a.cleanupMobileInbox(true)
 }
 
 func (a *application) openImageToolOutput(path string) {

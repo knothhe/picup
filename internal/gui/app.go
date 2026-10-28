@@ -40,6 +40,7 @@ type application struct {
 	lifecycle                             lifecycleState
 	gallery                               galleryState
 	imageTools                            imageToolsState
+	mobileTransfer                        mobileTransferState
 	processingEditorFocused               bool
 	uploadProcessing                      processingDisclosureState
 	path                                  string
@@ -101,6 +102,7 @@ func Run() error {
 	if !mygo.App.RequestSingleInstanceLock() {
 		return nil
 	}
+	mobileInboxErr := a.initMobileInbox()
 	control, controlErr := devcontrol.Start(mygo.RunOnMain, mygo.App.Quit)
 	mygo.Theme.SetSource(mygo.ThemeSource(cfg.Appearance))
 	mygo.App.OnBeforeQuit(func(e *mygo.QuitEvent) {
@@ -158,6 +160,8 @@ func Run() error {
 		}
 		a.flushGalleryPreferences()
 		a.quitting = true
+		a.stopMobileTransfer()
+		_ = a.cleanupMobileInbox(false)
 		a.stopLightweightTimer()
 		a.gallery.stop()
 		if a.uploadPreviewCancel != nil {
@@ -220,6 +224,9 @@ func Run() error {
 		}
 		if imageToolsPreferencesErr != nil {
 			a.feedback("读取图片工具参数失败，原记录已保留", imageToolsPreferencesErr)
+		}
+		if mobileInboxErr != nil {
+			a.feedback("清理手机图片缓存失败", mobileInboxErr)
 		}
 		mygo.App.OnLocaleChanged(func(string) { a.refreshSystemLanguage() })
 		a.newMainWindow()

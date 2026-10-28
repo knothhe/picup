@@ -340,7 +340,7 @@ func (a *application) cancelUpdateOperation() {
 	}
 }
 func (a *application) updateInstallReady(restart bool) bool {
-	if a.quitting || a.updates.preferencesSaving || a.busy || a.uploading || a.fileDialogOpen || a.quickUpload.active || a.gallery.operation || a.gallery.busy || a.gallery.thumbLoading || a.gallery.fullCancel != nil || a.r2.active || a.r2.working || a.settingsSave.pending || a.settingsSave.failed || a.profiles.editOpen || a.profiles.deleteOpen || a.gallery.renameOpen || a.gallery.deleteOpen || a.shortcutEditing != "" {
+	if a.quitting || a.mobileReceiving() || a.updates.preferencesSaving || a.busy || a.uploading || a.fileDialogOpen || a.quickUpload.active || a.gallery.operation || a.gallery.busy || a.gallery.thumbLoading || a.gallery.fullCancel != nil || a.r2.active || a.r2.working || a.settingsSave.pending || a.settingsSave.failed || a.profiles.editOpen || a.profiles.deleteOpen || a.gallery.renameOpen || a.gallery.deleteOpen || a.shortcutEditing != "" {
 		return false
 	}
 	if a.settingsSave.initialized && !reflect.DeepEqual(a.currentSettings(), a.settingsSave.persisted) {

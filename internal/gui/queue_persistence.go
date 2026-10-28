@@ -17,6 +17,7 @@ type queuePersistence struct {
 	mu      sync.Mutex
 	pending []queueWrite
 	wake    chan struct{}
+	done    chan struct{}
 	blocked bool
 	stopped bool
 }
@@ -55,23 +56,27 @@ func (a *application) stopUploadQueue() {
 	}
 	p := a.queuePersistence
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if !p.stopped {
 		p.stopped = true
 		close(p.wake)
+	}
+	p.mu.Unlock()
+	if p.done != nil {
+		<-p.done
 	}
 }
 
 func (a *application) initUploadQueue() error {
 	store := service.NewQueueStore(a.path)
 	records, err := store.Load()
-	a.queuePersistence = &queuePersistence{wake: make(chan struct{}, 1), blocked: err != nil}
+	a.queuePersistence = &queuePersistence{wake: make(chan struct{}, 1), done: make(chan struct{}), blocked: err != nil}
 	for _, record := range records {
 		a.jobs = append(a.jobs, &job{id: record.ID, path: record.Path, name: record.Name, status: record.Status, detail: record.Detail, data: record.Data, result: record.Result})
 		a.nextID = max(a.nextID, record.ID)
 	}
 	writer := a.queuePersistence
 	go func() {
+		defer close(writer.done)
 		for range writer.wake {
 			for {
 				writer.mu.Lock()
@@ -148,6 +153,20 @@ func (a *application) flushUploadQueue() error {
 	}
 }
 
+// A phone receipt transfers ownership of its source. Unlike the quit barrier,
+// this must await the final write result: timing out and deleting the source
+// could race with a writer that later commits a manifest referencing it.
+func (a *application) saveMobileUploadQueue() error {
+	if a.queuePersistence == nil || a.uploadQueueBlocked() {
+		return errors.New("upload queue writer is unavailable")
+	}
+	request := queueWrite{records: a.queueSnapshot(), done: make(chan error, 1)}
+	if !a.queuePersistence.enqueue(request) {
+		return errors.New("upload queue writer has stopped")
+	}
+	return <-request.done
+}
+
 func (a *application) clearUploadQueue() {
 	if a.busy {
 		return
@@ -157,4 +176,5 @@ func (a *application) clearUploadQueue() {
 		a.queuePersistence.blocked = false
 	}
 	a.persistUploadQueue()
+	_ = a.cleanupMobileInbox(true)
 }

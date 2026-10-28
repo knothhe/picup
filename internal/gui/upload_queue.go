@@ -84,6 +84,7 @@ func (a *application) clearUploadedJobs() {
 	}
 	a.jobs = slices.DeleteFunc(a.jobs, func(j *job) bool { return j.result != nil })
 	a.persistUploadQueue()
+	_ = a.cleanupMobileInbox(true)
 }
 
 func (a *application) removeUploadJob(j *job) {
@@ -93,6 +94,7 @@ func (a *application) removeUploadJob(j *job) {
 	if index := slices.Index(a.jobs, j); index >= 0 {
 		a.jobs = slices.Delete(a.jobs, index, index+1)
 		a.persistUploadQueue()
+		_ = a.cleanupMobileInbox(true)
 	}
 }
 

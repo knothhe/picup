@@ -84,7 +84,7 @@ func (a *application) imageToolsView(c *ui.Context) {
 						a.exportImageTools(true)
 					}
 					if components.Button(c, tr("清空"), components.ButtonGhost).Disabled(a.busy).Clicked() {
-						s.jobs = nil
+						a.clearImageTools()
 					}
 				})
 				ui.Column(c).FillWidth().MinWidth(0).Radius(10).Border(1, c.Theme().Border).Clip().Children(func() {
@@ -125,6 +125,7 @@ func (a *application) imageToolsDropZone(c *ui.Context, compact bool) {
 				if components.Button(c, tr("粘贴图片"), components.ButtonOutline).Disabled(a.busy).Clicked() {
 					a.pasteImageTool()
 				}
+				a.mobileTransferButton(c, "image-tools")
 			})
 			return
 		}
@@ -137,6 +138,7 @@ func (a *application) imageToolsDropZone(c *ui.Context, compact bool) {
 			if components.Button(c, tr("粘贴图片"), components.ButtonOutline).Clicked() {
 				a.pasteImageTool()
 			}
+			a.mobileTransferButton(c, "image-tools")
 		})
 		components.Text(c, "PNG · JPEG · WebP · GIF · HEIC / AVIF · TIFF").FontSize(11).TextColor(t.TextMuted).Wrap()
 	})

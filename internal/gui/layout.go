@@ -379,6 +379,7 @@ func (a *application) view(c *ui.Context) {
 	})
 	a.galleryDialogs(c)
 	a.profileDialogs(c)
+	a.mobileTransferDialog(c)
 	a.registerShortcuts(c)
 	a.watchSettingsAutosave(c)
 	a.notificationView(c)

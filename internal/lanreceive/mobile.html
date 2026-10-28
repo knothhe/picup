@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="referrer" content="no-referrer">
+  <title>Picup · 手机传图</title>
+  <style>
+    :root { color-scheme: light dark; --bg:#f5f6f8; --surface:#fff; --text:#20252d; --muted:#6b7480; --line:#e4e8ed; --accent:#2676af; --soft:#edf5fb; --good:#27875a; --bad:#b64c42; --shadow:0 16px 48px #1f405309; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; -webkit-text-size-adjust:100%; }
+    button,input { font:inherit; }
+    button { -webkit-tap-highlight-color:transparent; cursor:pointer; }
+    button:disabled { cursor:default; opacity:.45; }
+    button:focus-visible,label:focus-within { outline:3px solid #6aa8d8; outline-offset:4px; }
+    [hidden] { display:none !important; }
+    svg { width:24px; height:24px; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; flex-shrink:0; }
+    .shell { width:min(100%,540px); margin:0 auto; padding:24px 22px calc(28px + env(safe-area-inset-bottom)); }
+    header { display:flex; align-items:center; justify-content:space-between; gap:14px; margin:2px 0 36px; }
+    .brand { display:flex; align-items:center; gap:9px; font-size:20px; font-weight:700; letter-spacing:-.5px; }
+    .brand-mark { display:grid; place-items:center; color:var(--accent); background:var(--soft); border:1px solid var(--line); border-radius:11px; width:36px; height:36px; }
+    .brand-mark svg { width:22px; height:22px; }
+    .local { color:var(--muted); font-size:12px; display:flex; align-items:center; gap:6px; }
+    .local svg { width:14px; height:14px; }
+    .eyebrow { margin:0 0 8px; font-size:12px; font-weight:600; color:var(--accent); letter-spacing:.04em; }
+    h1 { margin:0; font-size:31px; letter-spacing:-1px; line-height:1.25; font-weight:700; }
+    .intro { color:var(--muted); margin:12px 0 24px; font-size:14px; }
+    .connection { border:1px solid var(--line); border-radius:13px; padding:14px 16px; background:var(--surface); display:flex; gap:12px; align-items:center; }
+    .computer { color:var(--accent); width:38px; height:38px; display:grid; place-items:center; background:var(--soft); border-radius:9px; flex-shrink:0; }
+    .connection-copy { flex:1; min-width:0; }
+    .target-label { color:var(--muted); font-size:11px; margin-bottom:2px; }
+    #target { font-weight:600; font-size:14px; }
+    .session { color:var(--muted); font-size:11px; text-align:right; white-space:nowrap; }
+    #connection-state { display:flex; gap:5px; align-items:center; justify-content:flex-end; }
+    .dot { width:6px; height:6px; border-radius:50%; background:var(--muted); }
+    .connection.ready .dot { background:var(--good); }
+    .connection.ended .dot { background:var(--bad); }
+    #countdown { display:block; margin-top:3px; font-variant-numeric:tabular-nums; }
+    .picker { margin:18px 0 0; width:100%; border:1.5px dashed #b8c9d8; border-radius:16px; padding:30px 20px 25px; display:flex; flex-direction:column; align-items:center; background:var(--surface); text-align:center; box-shadow:var(--shadow); }
+    .picker-symbol { width:54px; height:54px; display:grid; place-items:center; border-radius:15px; background:var(--soft); color:var(--accent); margin-bottom:16px; }
+    .picker-symbol svg { width:28px; height:28px; }
+    .choose { border:0; min-height:46px; display:flex; align-items:center; justify-content:center; gap:8px; background:var(--accent); color:#fff; padding:10px 25px; border-radius:9px; font-size:15px; font-weight:600; }
+    .choose svg { width:18px; height:18px; }
+    .picker-hint { color:var(--muted); font-size:12px; margin:12px 0 0; }
+    .formats { color:var(--muted); font-size:10px; margin:6px 0 0; opacity:.8; }
+    #files { position:absolute; width:1px; height:1px; overflow:hidden; opacity:0; }
+    .notice { display:flex; gap:9px; align-items:flex-start; color:var(--muted); font-size:12px; line-height:1.65; margin:16px 1px 0; }
+    .notice svg { width:16px; height:16px; margin-top:2px; }
+    .notice p { margin:0; }
+    .alert { margin-top:16px; padding:12px 14px; background:var(--surface); border:1px solid var(--line); border-left:3px solid var(--bad); border-radius:8px; color:var(--bad); font-size:13px; overflow-wrap:anywhere; }
+    .alert button { display:block; border:0; background:none; padding:8px 0 0; color:var(--accent); font-size:13px; font-weight:600; }
+    .queue { margin:27px 0 0; }
+    .queue-heading { display:flex; align-items:center; gap:8px; margin-bottom:12px; }
+    h2 { margin:0; font-size:14px; font-weight:650; }
+    #summary { flex:1; min-width:0; color:var(--muted); font-size:12px; }
+    .text-button { border:0; background:transparent; color:var(--muted); font-size:12px; padding:8px 0 8px 10px; min-height:34px; }
+    #list { padding:0; margin:0; list-style:none; display:grid; gap:8px; }
+    .file { background:var(--surface); border:1px solid var(--line); border-radius:11px; padding:12px; display:grid; grid-template-columns:44px minmax(0,1fr) auto; gap:11px; align-items:center; }
+    .thumbnail { width:44px; height:48px; border:1px solid var(--line); border-radius:7px; display:grid; place-items:center; overflow:hidden; color:var(--muted); background:var(--bg); }
+    .thumbnail img { width:100%; height:100%; object-fit:cover; }
+    .thumbnail svg { width:20px; height:20px; }
+    .filename { font-size:13px; font-weight:550; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+    .file-meta { margin-top:3px; font-size:11px; color:var(--muted); display:flex; flex-wrap:wrap; gap:3px 7px; }
+    .file-status { color:var(--muted); }
+    .file.success .file-status { color:var(--good); }
+    .file.error .file-status { color:var(--bad); }
+    .file.sending .file-status { color:var(--accent); }
+    .file-error { color:var(--bad); font-size:11px; line-height:1.5; overflow-wrap:anywhere; margin-top:5px; }
+    .file-action { border:0; background:none; color:var(--accent); font-size:12px; min-width:32px; min-height:36px; padding:5px; }
+    .file-action svg { width:17px; height:17px; }
+    .file-actions { display:flex; align-items:center; }
+    .progress { width:100%; height:3px; overflow:hidden; margin-top:8px; background:var(--soft); border-radius:9px; }
+    .progress span { display:block; height:100%; background:var(--accent); transition:width .16s linear; }
+    .send-bar { display:flex; gap:12px; align-items:center; margin:15px 0 0; }
+    #send { min-height:46px; flex:1; border:0; border-radius:9px; color:#fff; background:var(--accent); font-size:14px; font-weight:600; padding:11px 15px; }
+    #stop { min-height:44px; border:1px solid var(--line); border-radius:9px; padding:9px 16px; background:var(--surface); color:var(--muted); font-size:13px; }
+    footer { margin:29px 1px 0; padding-top:18px; border-top:1px solid var(--line); color:var(--muted); font-size:11px; line-height:1.7; }
+    footer p { margin:0 0 6px; }
+    .no-script { padding:16px; margin:16px 0; border:1px solid var(--line); border-radius:10px; background:var(--surface); }
+    @media (prefers-color-scheme:dark) { :root { --bg:#191d23; --surface:#232831; --text:#edf0f4; --muted:#a3adbb; --line:#343d49; --accent:#6caddd; --soft:#263a4a; --good:#7bcba3; --bad:#ee9c91; --shadow:none; } .choose,#send { color:#142737; } .picker { border-color:#465b6e; } }
+    @media (max-width:360px) { .shell { padding-left:16px; padding-right:16px; } h1 { font-size:28px; } .connection { padding:12px; gap:9px; } .session { font-size:10px; } .file { gap:8px; padding:10px; } }
+    @media (min-width:600px) { .shell { padding-top:38px; } header { margin-bottom:44px; } }
+    @media (prefers-reduced-motion:reduce) { .progress span { transition:none; } }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div class="brand"><span class="brand-mark"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m-4 4 4-4 4 4M4 16v4h16v-4"/></svg></span>Picup</div>
+      <span class="local"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9a15 15 0 0 1 18 0M6 12a10 10 0 0 1 12 0M9 15a5 5 0 0 1 6 0M12 19h.01"/></svg><span data-text="local">局域网传输</span></span>
+    </header>
+    <p class="eyebrow" data-text="eyebrow">手机传图</p>
+    <h1 data-text="title">把照片传到电脑</h1>
+    <p class="intro" data-text="intro">选图后发送即可。</p>
+    <section class="connection" id="connection" aria-label="接收会话">
+      <span class="computer"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="13" rx="2"/><path d="M8 21h8m-4-5v5"/></svg></span>
+      <div class="connection-copy"><div class="target-label" data-text="destination">接收位置</div><div id="target">Picup</div></div>
+      <div class="session"><span id="connection-state"><span class="dot"></span><span id="state-text">连接中…</span></span><span id="countdown"></span></div>
+    </section>
+    <div id="alert" class="alert" role="alert" hidden><span id="alert-text"></span><button id="reconnect" type="button" data-text="reconnect" hidden>重新连接</button></div>
+    <section class="picker">
+      <span class="picker-symbol"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m3 16 5-5 5 5 3-3 5 5"/></svg></span>
+      <button id="choose" type="button" class="choose" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span data-text="choose">选择照片</span></button>
+      <input id="files" type="file" accept="image/*,.heic,.heif,.avif,.tif,.tiff" multiple aria-label="选择照片" disabled>
+      <p class="picker-hint" id="picker-hint">可多选 · 单张 100 MiB · 最多 40MP</p>
+      <p class="formats">JPEG · PNG · HEIC · WebP · GIF · AVIF · TIFF</p>
+    </section>
+    <div class="notice"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5m0-9h.01"/></svg><p id="next-step">接收后，在电脑开始上传。</p></div>
+    <section id="queue" class="queue" hidden>
+      <div class="queue-heading"><h2 data-text="photos">已选照片</h2><span id="summary" aria-live="polite"></span><button id="clear" class="text-button" type="button" data-text="clear">清除已完成</button></div>
+      <ol id="list"></ol>
+      <div class="send-bar"><button id="send" type="button" disabled>发送到电脑</button><button id="stop" type="button" data-text="stop" hidden>暂停</button></div>
+    </section>
+    <noscript><p class="no-script">启用 JavaScript 后重新扫码。 / Enable JavaScript, then scan again.</p></noscript>
+    <footer><p data-text="network">同一网络 · 发送时保持页面打开</p><p data-text="privacy">可信网络使用 · 传输未加密</p></footer>
+  </main>
+  <script>
+    (() => {
+      "use strict";
+      const strings = {
+        "zh-CN": {
+          local:"局域网传输",eyebrow:"手机传图",title:"把照片传到电脑",intro:"选图后发送即可。",destination:"接收位置",upload:"Upload Image",tools:"图片工具",connecting:"连接中…",connected:"已连接",ended:"会话已结束",expires:"后到期",choose:"选择照片",photos:"已选照片",clear:"清除已完成",reconnect:"重新连接",stop:"暂停",retry:"重试",remove:"移除",waiting:"待发送",sending:"正在发送",saving:"正在保存到电脑…",success:"已传到电脑",failed:"发送失败",paused:"已暂停，可重试",allSent:"照片已传到电脑",send:"发送到电脑",sendCount:n=>"发送 "+n+" 张照片",retryCount:n=>"重试 "+n+" 张照片",sendingCount:(n,total)=>"正在发送 "+n+" / "+total,summary:(ok,total)=>ok+" / "+total+" 已传到电脑",pickerHint:n=>"可多选 · 单张 "+n+" MiB",nextUpload:"接收后，在电脑开始上传。",nextTools:"接收后，在电脑处理导出。",network:"同一网络 · 发送时保持页面打开",privacy:"可信网络使用 · 传输未加密",missingToken:"请扫描 Picup 中的二维码。",expired:"会话已结束，请重新扫码。已传照片保留在电脑。",connectError:"无法连接电脑。检查网络和 Picup 接收状态后重试。",networkError:"连接中断，检查网络后重试。",timeout:"发送超时。请检查网络后重试。",offline:"网络已断开，恢复后可重试。",tooLarge:n=>"照片超过单张 "+n+" MiB 限制。",empty:"无法发送空文件。",unsupported:"请选择受支持的图片文件。",serverError:"电脑暂时无法接收，请重试。",tooMany:"最多 1000 张，请先清除已完成项。",invalidSession:"会话无效，请重新扫码。"
+        },
+        en: {
+          local:"Local transfer",eyebrow:"PHONE TO COMPUTER",title:"Send photos to Picup",intro:"Choose photos, then send.",destination:"Receiving in",upload:"Upload Image",tools:"Image Tools",connecting:"Connecting…",connected:"Connected",ended:"Session ended",expires:"remaining",choose:"Choose photos",photos:"Selected photos",clear:"Clear completed",reconnect:"Reconnect",stop:"Pause",retry:"Retry",remove:"Remove",waiting:"Ready to send",sending:"Sending",saving:"Saving on your computer…",success:"Sent to computer",failed:"Could not send",paused:"Paused. You can retry.",allSent:"Photos sent to your computer",send:"Send to computer",sendCount:n=>"Send "+n+" photo"+(n===1?"":"s"),retryCount:n=>"Retry "+n+" photo"+(n===1?"":"s"),sendingCount:(n,total)=>"Sending "+n+" / "+total,summary:(ok,total)=>ok+" / "+total+" sent",pickerHint:n=>"Multiple photos · "+n+" MiB each",nextUpload:"Start the upload in Picup after sending.",nextTools:"Process and export in Picup after sending.",network:"Same network · Keep this page open",privacy:"Trusted networks only · Unencrypted transfer",missingToken:"Scan the QR code in Picup.",expired:"Session ended. Scan a new QR code. Sent photos are kept on your computer.",connectError:"Cannot connect. Check your network and the receiver in Picup, then retry.",networkError:"Connection interrupted. Check your network and retry.",timeout:"Sending timed out. Check your network and retry.",offline:"Offline. Reconnect, then retry unfinished photos.",tooLarge:n=>"This photo exceeds the "+n+" MiB limit.",empty:"Empty files cannot be sent.",unsupported:"Choose a supported image file.",serverError:"Could not receive this photo. Retry.",tooMany:"Up to 1,000 photos. Clear completed photos to add more.",invalidSession:"Invalid session. Scan the QR code again."
+        }
+      };
+      const serverErrors = {
+        "This receiver only accepts requests from its own page.":"请重新扫描 Picup 二维码。",
+        "This receiving session has ended. Scan a new QR code in Picup.":"会话已结束，请重新生成二维码。",
+        "This receiving session has ended.":"会话已结束，请重新生成二维码。",
+        "Scan the QR code in Picup to open this receiver.":"会话无效，请重新扫码。",
+        "Another image is being received. Please retry shortly.":"正在接收其他照片，请稍后重试。",
+        "This session has received 1,000 images. Start a new session.":"已接收 1000 张，请开启新会话。",
+        "The phone image inbox is full. Remove received images in Picup before trying again.":"缓存已满，请在 Picup 中移除图片后重试。",
+        "The phone image inbox would exceed 1 GiB. Remove received images in Picup and retry.":"缓存将超过 1 GiB，请在 Picup 中移除图片。",
+        "Could not save this image on the computer.":"无法保存，检查电脑磁盘空间后重试。",
+        "Each image must be at most 100 MiB.":"每张照片不能超过 100 MiB。",
+        "The image was not completely received. Please retry.":"照片没有传输完整，请重试。",
+        "Images must be at most 40 megapixels. Choose a smaller version of this photo.":"最多 4000 万像素，请选择较小版本。",
+        "This image format is not supported.":"暂不支持这种图片格式。",
+        "Choose a valid PNG, JPEG, WebP, GIF, HEIC, AVIF or TIFF image.":"图片无效，请选择其他照片。",
+        "Invalid image container.":"图片无效，请选择其他版本。"
+      };
+      const $ = id => document.getElementById(id);
+      let language = /^zh(?:-|$)/i.test(navigator.language || "") ? "zh-CN" : "en";
+      let session = null, ended = false, ready = false, running = false, connecting = false, pauseRequested = false, activeXHR = null, sessionDeadline = 0;
+      let sequence = 0;
+      const items = [];
+      const token = location.hash.slice(1);
+      const iconMarkup = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8" cy="8" r="1"/><path d="m3 17 6-6 4 4 3-3 5 5"/></svg>';
+      const removeMarkup = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M6 18 18 6"/></svg>';
+      const text = (key, ...args) => typeof strings[language][key] === "function" ? strings[language][key](...args) : strings[language][key];
+      const maxBytes = () => session ? session.maxBytes : 100 * 1024 * 1024;
+      const maxMiB = () => Math.floor(maxBytes() / 1024 / 1024);
+      const monotonicNow = () => performance.now();
+      const formatBytes = n => n < 1024 * 1024 ? Math.max(1,Math.round(n / 1024)) + " KiB" : (n / 1024 / 1024).toFixed(1) + " MiB";
+      function translateServerError(message) { return language === "zh-CN" && serverErrors[message] ? serverErrors[message] : message || text("serverError"); }
+      function newID() {
+        try {
+          if (globalThis.crypto && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+          const bytes = new Uint8Array(16);
+          if (globalThis.crypto && typeof crypto.getRandomValues === "function") {
+            crypto.getRandomValues(bytes);
+            return Array.from(bytes, n => n.toString(16).padStart(2,"0")).join("");
+          }
+        } catch (_) { /* HTTP contexts may expose fewer crypto helpers. */ }
+        return "picup-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2) + "-" + (++sequence).toString(36);
+      }
+      function applyLanguage() {
+        document.documentElement.lang = language;
+        document.title = "Picup · " + (language === "zh-CN" ? "手机传图" : "Phone transfer");
+        document.querySelectorAll("[data-text]").forEach(el => { el.textContent = text(el.dataset.text); });
+        $("files").setAttribute("aria-label",text("choose"));
+        $("connection").setAttribute("aria-label",text("destination"));
+        const pixelLimit = session && Number.isFinite(session.maxPixels) ? Math.floor(session.maxPixels / 1000000) : 40;
+        $("picker-hint").textContent = text("pickerHint",maxMiB()) + " · " + (language === "zh-CN" ? "最多 " + pixelLimit + "MP" : "Up to " + pixelLimit + "MP");
+        $("target").textContent = session ? text(session.target === "image-tools" ? "tools" : "upload") : "Picup";
+        $("next-step").textContent = text(session && session.target === "image-tools" ? "nextTools" : "nextUpload");
+        render();
+      }
+      function alertMessage(message, retryConnection = false) {
+        $("alert-text").textContent = message;
+        $("alert").hidden = !message;
+        $("reconnect").hidden = !retryConnection;
+      }
+      function expire() {
+        if (ended) return;
+        ended = true;
+        ready = false;
+        pauseRequested = true;
+        if (activeXHR) activeXHR.abort();
+        $("connection").className = "connection ended";
+        $("state-text").textContent = text("ended");
+        $("countdown").textContent = "";
+        alertMessage(text("expired"));
+        render();
+      }
+      function updateCountdown() {
+        if (!session || ended) return;
+        const remaining = Math.ceil((sessionDeadline - monotonicNow()) / 1000);
+        if (remaining <= 0) { expire(); return; }
+        $("countdown").textContent = Math.floor(remaining / 60) + ":" + String(remaining % 60).padStart(2,"0") + " " + text("expires");
+      }
+      async function connect() {
+        if (connecting || running) return;
+        if (!token || token.length > 256) {
+          ready = false;
+          ended = true;
+          $("state-text").textContent = text("ended");
+          $("connection").className = "connection ended";
+          alertMessage(text("missingToken"));
+          render();
+          return;
+        }
+        connecting = true;
+        ready = false;
+        $("state-text").textContent = text("connecting");
+        $("reconnect").disabled = true;
+        alertMessage("");
+        let controller = null, timeout = null;
+        try {
+          if (typeof AbortController !== "undefined") {
+            controller = new AbortController();
+            timeout = setTimeout(() => controller.abort(),12000);
+          }
+          const response = await fetch("/api/session",{headers:{Authorization:"Bearer " + token},cache:"no-store",signal:controller ? controller.signal : undefined});
+          if (response.status === 401 || response.status === 410) { expire(); return; }
+          if (!response.ok) throw new Error("connection");
+          const value = await response.json();
+          if (!value || !["upload","image-tools"].includes(value.target) || !Number.isFinite(Date.parse(value.expiresAt)) || !Number.isFinite(value.maxBytes) || value.maxBytes <= 0) throw new Error("session");
+          session = value;
+          // Server timestamps define the duration; the phone clock may be
+          // minutes ahead or behind. Keep counting with a monotonic clock.
+          const serverNow = Date.parse(value.serverNow);
+          sessionDeadline = monotonicNow() + Math.max(0,Date.parse(value.expiresAt) - (Number.isFinite(serverNow) ? serverNow : Date.now()));
+          if (value.language === "en" || value.language === "zh-CN") language = value.language;
+          ready = true;
+          ended = false;
+          $("connection").className = "connection ready";
+          applyLanguage();
+          $("state-text").textContent = text("connected");
+          updateCountdown();
+        } catch (error) {
+          $("connection").className = "connection ended";
+          $("state-text").textContent = text("ended");
+          alertMessage(text(error.message === "session" ? "invalidSession" : "connectError"),true);
+        } finally {
+          if (timeout !== null) clearTimeout(timeout);
+          connecting = false;
+          $("reconnect").disabled = false;
+          render();
+        }
+      }
+      function createItem(file, error) {
+        const item = {file,name:file.name,size:file.size,id:newID(),state:error ? "error" : "waiting",error,invalid:!!error,progress:0,previewURL:null};
+        const row = document.createElement("li");
+        row.className = "file";
+        const thumb = document.createElement("span");
+        thumb.className = "thumbnail";
+        thumb.innerHTML = iconMarkup;
+        if (/^image\/(jpeg|png|webp|gif|avif)$/i.test(file.type) || /\.(jpe?g|png|webp|gif|avif)$/i.test(file.name)) {
+          const img = document.createElement("img");
+          img.alt = "";
+          img.decoding = "async";
+          img.loading = "lazy";
+          try {
+            item.previewURL = URL.createObjectURL(file);
+            img.onload = () => { if (item.previewURL) URL.revokeObjectURL(item.previewURL); item.previewURL = null; };
+            img.onerror = () => { img.remove(); if (item.previewURL) URL.revokeObjectURL(item.previewURL); item.previewURL = null; thumb.innerHTML = iconMarkup; };
+            img.src = item.previewURL;
+            thumb.replaceChildren(img);
+          } catch (_) { /* A preview is optional, including for HEIC files. */ }
+        }
+        const copy = document.createElement("div"), name = document.createElement("div"), meta = document.createElement("div"), size = document.createElement("span"), status = document.createElement("span"), detail = document.createElement("div"), progress = document.createElement("div"), fill = document.createElement("span"), action = document.createElement("button");
+        name.className = "filename";
+        name.textContent = file.name;
+        name.title = file.name;
+        meta.className = "file-meta";
+        size.textContent = formatBytes(file.size);
+        status.className = "file-status";
+        detail.className = "file-error";
+        progress.className = "progress";
+        progress.setAttribute("role","progressbar");
+        progress.setAttribute("aria-valuemin","0");
+        progress.setAttribute("aria-valuemax","100");
+        progress.append(fill);
+        meta.append(size,status);
+        copy.append(name,meta,detail,progress);
+        action.type = "button";
+        action.className = "file-action";
+        action.addEventListener("click",() => {
+          if (running) return;
+          if (item.state === "error" && !item.invalid && ready && !ended) { item.state = "waiting"; item.error = ""; render(); void sendItems([item]); }
+          else { removeItem(item); render(); }
+        });
+        const actions = document.createElement("div"), removeAction = document.createElement("button");
+        actions.className = "file-actions";
+        removeAction.type = "button";
+        removeAction.className = "file-action";
+        removeAction.innerHTML = removeMarkup;
+        removeAction.addEventListener("click",() => { if (!running) { removeItem(item); render(); } });
+        actions.append(action,removeAction);
+        row.append(thumb,copy,actions);
+        item.elements = {row,status,detail,progress,fill,action,removeAction};
+        return item;
+      }
+      function removeItem(item) {
+        const index = items.indexOf(item);
+        if (index < 0) return;
+        if (item.previewURL) URL.revokeObjectURL(item.previewURL);
+        item.elements.row.remove();
+        item.file = null;
+        items.splice(index,1);
+      }
+      function selectFiles(files) {
+        if (!ready || ended) return;
+        for (const file of files) {
+          if (items.length >= 1000) { alertMessage(text("tooMany")); break; }
+          let error = "";
+          if (file.size <= 0) error = text("empty");
+          else if (file.size > maxBytes()) error = text("tooLarge",maxMiB());
+          else if (!/^image\//i.test(file.type) && !/\.(png|jpe?g|webp|gif|heic|heif|avif|tiff?)$/i.test(file.name)) error = text("unsupported");
+          const item = createItem(file,error);
+          items.push(item);
+          $("list").append(item.elements.row);
+        }
+        render();
+      }
+      function renderItem(item) {
+        const el = item.elements;
+        el.row.className = "file " + item.state;
+        el.status.textContent = item.state === "sending" ? (item.progress < 100 ? text("sending") + " " + item.progress + "%" : text("saving")) : text(item.state === "error" ? "failed" : item.state);
+        el.detail.textContent = item.error || "";
+        el.detail.hidden = !item.error;
+        el.progress.hidden = item.state !== "sending";
+        el.progress.setAttribute("aria-valuenow",String(item.progress));
+        el.fill.style.width = item.progress + "%";
+        const canRetry = item.state === "error" && !item.invalid && ready && !ended;
+        el.action.disabled = running;
+        el.action.hidden = item.state === "sending";
+        if (canRetry) el.action.textContent = text("retry");
+        else el.action.innerHTML = removeMarkup;
+        el.action.setAttribute("aria-label",(canRetry ? text("retry") : text("remove")) + " " + item.name);
+        el.removeAction.hidden = !canRetry;
+        el.removeAction.disabled = running;
+        el.removeAction.setAttribute("aria-label",text("remove") + " " + item.name);
+      }
+      function render() {
+        const completed = items.filter(item => item.state === "success").length;
+        const pending = items.filter(item => !item.invalid && item.state !== "success" && item.state !== "sending");
+        $("queue").hidden = items.length === 0;
+        $("choose").disabled = !ready || ended;
+        $("files").disabled = !ready || ended;
+        $("summary").textContent = text("summary",completed,items.length);
+        $("clear").disabled = running || completed === 0;
+        $("send").disabled = !ready || ended || running || pending.length === 0;
+        if (!running) $("send").textContent = pending.length ? text(pending.some(item => item.state === "waiting") ? "sendCount" : "retryCount",pending.length) : text(completed > 0 ? "allSent" : "send");
+        $("stop").hidden = !running;
+        items.forEach(renderItem);
+      }
+      function sendOne(item) {
+        return new Promise(resolve => {
+          const xhr = new XMLHttpRequest();
+          activeXHR = xhr;
+          item.state = "sending";
+          item.progress = 0;
+          item.error = "";
+          renderItem(item);
+          xhr.open("POST","/api/upload");
+          xhr.timeout = 5 * 60 * 1000;
+          xhr.setRequestHeader("Authorization","Bearer " + token);
+          xhr.setRequestHeader("X-Upload-ID",item.id);
+          xhr.upload.onprogress = event => {
+            if (event.lengthComputable) { item.progress = Math.min(100,Math.round(event.loaded / event.total * 100)); renderItem(item); }
+          };
+          const finish = error => {
+            activeXHR = null;
+            if (error) { item.state = "error"; item.error = error; }
+            else { item.state = "success"; item.progress = 100; item.file = null; }
+            renderItem(item);
+            resolve();
+          };
+          xhr.onload = () => {
+            let response = null;
+            try { response = JSON.parse(xhr.responseText); } catch (_) { /* Show a readable fallback for unexpected responses. */ }
+            if (xhr.status >= 200 && xhr.status < 300 && response && typeof response.name === "string" && Number.isFinite(response.size)) { finish(""); return; }
+            if (xhr.status === 401 || xhr.status === 410) { finish(text("expired")); expire(); return; }
+            if ([413,415,422].includes(xhr.status)) item.invalid = true;
+            finish(translateServerError(response && response.error));
+          };
+          xhr.onerror = () => finish(text("networkError"));
+          xhr.ontimeout = () => finish(text("timeout"));
+          xhr.onabort = () => finish(text(ended ? "expired" : "paused"));
+          const body = new FormData();
+          body.append("image",item.file,item.name);
+          try { xhr.send(body); } catch (_) { finish(text("networkError")); }
+        });
+      }
+      async function sendItems(selected) {
+        if (!ready || ended || running) return;
+        updateCountdown();
+        if (ended) return;
+        const batch = selected || items.filter(item => !item.invalid && (item.state === "waiting" || item.state === "error"));
+        if (batch.length === 0) return;
+        pauseRequested = false;
+        running = true;
+        alertMessage("");
+        render();
+        for (let index = 0; index < batch.length; index++) {
+          if (pauseRequested || ended) break;
+          $("send").textContent = text("sendingCount",index + 1,batch.length);
+          await sendOne(batch[index]);
+          $("summary").textContent = text("summary",items.filter(item => item.state === "success").length,items.length);
+          // A broken connection is likely to affect later files too; preserve
+          // the remaining queue until the user is ready to retry.
+          if (batch[index].state === "error" && (!navigator.onLine || batch[index].error === text("networkError") || batch[index].error === text("timeout"))) break;
+        }
+        running = false;
+        render();
+      }
+      $("choose").addEventListener("click",() => $("files").click());
+      $("files").addEventListener("change",event => { selectFiles(Array.from(event.target.files || [])); event.target.value = ""; });
+      $("send").addEventListener("click",() => { void sendItems(); });
+      $("stop").addEventListener("click",() => { pauseRequested = true; if (activeXHR) activeXHR.abort(); });
+      $("clear").addEventListener("click",() => { if (!running) items.slice().filter(item => item.state === "success").forEach(removeItem); render(); });
+      $("reconnect").addEventListener("click",() => { void connect(); });
+      window.addEventListener("offline",() => { if (!ended) alertMessage(text("offline")); });
+      window.addEventListener("online",() => { if (!ended && ready) alertMessage(""); });
+      document.addEventListener("visibilitychange",() => { if (document.visibilityState === "visible") updateCountdown(); });
+      window.addEventListener("beforeunload",event => { if (running || items.some(item => item.state !== "success")) { event.preventDefault(); event.returnValue = ""; } });
+      setInterval(updateCountdown,1000);
+      applyLanguage();
+      void connect();
+    })();
+  </script>
+</body>
+</html>
