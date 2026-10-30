@@ -1,66 +1,52 @@
-# 自动更新与 macOS CI
+# 自动更新与发布 CI
 
 [返回 README](../README.md) · [发布流程](release.md) · [开发指南](development.md)
 
-## 更新包与信任
+## 统一 Feed 与 ZIP
 
-Picup 沿用锁定的 MyGo `v0.5.5` 更新引擎，更新源为公开仓库 `knothhe/picup` 的 GitHub Releases。`mygo.json` 固定公开验证密钥，私钥由发行者保存，打包脚本仅将它注入 MyGo 签名子进程的环境。私钥不进入源码、普通 CI、日志或应用包。
+所有平台共用 GitHub Release 附件 `update-feed.json`。目前发布 macOS arm64 与 Linux amd64；Windows 后续接入同一格式，当前不生成 Windows 包或占位更新条目。客户端读取 `https://github.com/knothhe/picup/releases/latest/download/update-feed.json`，按运行系统和架构选择 `platforms` 中对应条目。
 
-本机发行私钥保存在 `~/Library/Application Support/picup-release/mygo-update.key`，权限为 `0600`；公钥在同目录的 `mygo-update.pub`，其公开值已写入 `mygo.json`。独立本地构建 `make package-release` 在未设置 `MYGO_UPDATER_PRIVATE_KEY` 时自动读取该文件，拒绝符号链接、其他用户所有或权限不为 `0600` 的文件。显式设置的环境变量优先；显式空值会报错，不回退本机文件。Actions 发布模式下 `make release` 只执行本地 Git 阶段，不读取发行私钥或打包上传。
+清单格式为 `schema: 1`，包含 `version`、RFC 3339 格式的 `date`、可选 `notes`，以及 `platforms` 对象。平台键使用 Go 的 OS/arch 名称，例如 `darwin-arm64`、`linux-amd64`。每个平台条目包含 `url`、`size`、小写十六进制 `sha256` 和 Base64 `signature`。URL 固定指向当前版本 tag 下的 `Picup-<version>-<os>-<arch>.zip`；未来 Windows 使用相同命名规则。
 
-CI 使用仓库 secret `MYGO_UPDATER_PRIVATE_KEY`。无签名试包不会读取本机私钥，普通构建和验证子进程也不会继承此签名变量。私钥不展开为命令参数、不打印到日志，共享 manifest 不记录本机私钥路径。备份并延续同一密钥，不在普通构建时重新生成。
+手动安装和自动更新共用同一份完整 ZIP，不生成差分包、`.tar.gz` 或分平台 Feed。macOS ZIP 内为 `Picup.app`，包括 CLI 和第三方许可；Linux ZIP 内为独立的 `Picup/` 目录，包含 `picup-gui`、`picup`、图标、第三方许可和 `picup-release.json` 身份信息。
 
-每个 macOS 架构有独立的 `update-darwin-<arch>.json`。清单引用同版本的完整 `.tar.gz` 更新包，MyGo 验证包大小及其 SHA-256 摘要的 Ed25519 签名后安装。当前 `updates.deltas` 为 `0`，不使用差分包。手动安装的 ZIP 与更新包包含同一份应用、CLI 和第三方许可说明。[MyGo 更新文档](https://github.com/egoist/mygo/blob/v0.5.5/docs/updates.md)
+MyGo v0.5.5 的原生更新器只接受旧的 tar.gz 格式，因此新客户端使用 `internal/updatefeed` 读取统一清单和 ZIP；UI 调度、取消、空闲检查及重启确认沿用现有流程。打包时仅在临时 MyGo 配置中关闭旧更新产物生成，权威版本和公开信任配置仍来自 `mygo.json`。
 
-版本来自 `mygo.json`。普通 `make build` / `make run` 的开发程序、默认 `make install` 安装的程序和 `make package-ci` 的 debug 试包使用 `picup_dev` 编译标签，名称为 Picup Dev、bundle ID 为 `com.knothhe.picup.dev`，默认数据目录为 `picup-dev`，系统凭据与正式通道隔离；Dev 的公开更新配置与 MyGo 包配置均不携带正式 Feed。正式 `make package`、`make install-release` 和 `make package-release` 统一编译无此标签的 CLI 与 GUI；正式包还需满足 MyGo 的安装位置写入要求。更新签名证明更新来源；CI 的固定代码签名、自签身份上传及 Developer ID／Apple 公证配置见[分发签名说明](macos-distribution.md)。
+## 信任与迁移
 
-`make package-release` 缺私钥、密钥不匹配、更新签名无效、包内版本/架构不符或 Feed 指向错误附件时都会失败，不生成可继续发布的附件集合。`make release` 保留版本与 tag 的本地入口，tag 推送后由 CI 构建；发布 job 先验证草稿全部附件，再一次公开 Feed 与更新包，并复核实际公开下载。
+更新继续沿用 `mygo.json` 中固定的 Ed25519 公钥，不更换信任根。签名覆盖最终 ZIP 的 SHA-256 摘要；安装前校验大小、hash、签名、版本、系统、架构、包路径与应用身份。解包只发生在隔离的相邻暂存目录，拒绝越界路径和不受支持的文件；替换失败时恢复原安装。
 
-如果添加 `CHANGELOG.md`，应提供当前版本的 `## <version>` 小节，MyGo 会将该段写入更新清单；文件存在但缺少当前版本时构建失败。GitHub Release 正文继续由现有发布脚本从 Git 历史生成。
+CI 私钥来自仓库 Secret `MYGO_UPDATER_PRIVATE_KEY`。打包脚本先以不含私钥的环境构建签名工具，再只将私钥交给签名工具进程；普通编译、校验、日志和安装包不携带私钥。更新签名与 macOS 代码签名、公证分别校验，详见[分发签名说明](macos-distribution.md)。
+
+独立本地 `make package-release` 优先读取显式环境变量；未设置时沿用 `~/Library/Application Support/picup-release/mygo-update.key`。本地密钥必须为当前用户拥有、权限 `0600` 的普通文件，拒绝符号链接。Linux 构建通常通过环境变量提供同一发行密钥。显式空值会失败，不回退本机文件。无私钥试包使用 `make package-ci`。
+
+旧版客户端读取 `update-darwin-<arch>.json` 和 tar.gz，不能自动识别新的统一 Feed。首次迁移需要从 Release 手动安装一次新 ZIP，之后使用统一更新链路。历史 Release 附件不删除，也不移动历史 tag。GitHub `latest` 排除草稿和预发布；预发布仍可从对应 Release 手动下载。
 
 ## 在应用中更新
 
 「设置 → 关于 → 软件更新」和菜单「检查更新…」可手动检查。每天自动检查默认开启：启动或唤醒后等待十秒，距离上次成功检查满二十四小时才再次请求；失败后退避一小时。手动检查不受自动退避限制，已有候选更新会保留。
 
-「自动下载并准备更新」默认关闭。开启后只在应用空闲时下载并验证更新，通过 MyGo 替换应用包，在下次启动生效。手动操作使用「下载并准备更新」，下载期间可取消；「版本说明」打开该版本的 Release 页面。点击「重新启动」需再次确认，存在上传、图库操作、待上传队列、OAuth 授权或未保存编辑时会阻止重启。
+「自动下载并准备更新」默认关闭。开启后只在应用空闲时下载、验证并替换应用，下次启动生效；手动操作使用「下载并准备更新」，下载期间可取消。「版本说明」打开候选版本的固定 Release 页面。点击「重新启动」需确认，存在上传、图库操作、待上传队列、OAuth 授权或未保存编辑时会阻止重启。
 
-更新不会自动重新启动。开发程序、非 `.app` 运行方式、配置缺失、不可写安装位置以及已识别的 Homebrew 管理安装会显示不可用原因，继续使用对应安装渠道更新。更新偏好和检查状态保存在配置旁的 `updates-state.json`，不包含云凭据；更换应用版本、更新源、架构或安装位置后会重新判断检查资格。
+macOS 需从可写安装位置的正式 `Picup.app` 运行；Linux 需从用户可写的独立正式包目录运行。开发程序、配置缺失、身份不符、不可写位置和已识别的外部管理安装不参与自动替换。Windows 当前不支持内置更新。用户配置、图库和凭据均保存在应用目录外，更新不清除它们。
+
+更新偏好及成功检查状态保存在配置旁的 `updates-state.json`；更换版本、更新源、架构或安装位置后会重新判断检查资格。
 
 ## GitHub CI
 
-[macos.yml](../.github/workflows/macos.yml) 执行日常检查，[release.yml](../.github/workflows/release.yml) 执行正式发布。当前均只覆盖 macOS Apple Silicon（arm64）：
+只保留 [release.yml](../.github/workflows/release.yml)，仅由 `v*` tag push 触发。PR 和普通分支 push 不运行 CI，也没有手动触发入口。macOS arm64 与 Linux amd64 各自在原生 runner 检查、运行测试并构建 ZIP，任何一个目标失败都不发布 Release。
 
-| 工作流 | 触发 | 产物与去向 |
-| --- | --- | --- |
-| `macos.yml` | PR、`main` push、手动运行 | 默认 `ci-unsigned` ZIP；可选签名试包，均只上传 Actions artifact |
-| `release.yml` | `v*` tag push、输入精确 tag 的手动恢复 | 正式 ZIP、签名完整更新包与 Feed，验证后发布 GitHub Release |
+构建 job 只有仓库读取权限，签名材料仅提供给必要步骤。各平台的内部制品记录绑定 tag、版本、源 commit、目标、签名模式、run/attempt/job 及最终文件 hash。唯一的发布 job 下载确切 artifact ID，验证来源和字节，收齐两个 ZIP 后合并为一份 `update-feed.json`。内部记录不作为公开附件。
 
-两条流程都使用 `macos-15` 原生 arm64 runner，核对实际宿主架构，并运行 `make check`、`make test`。普通检查只有仓库只读权限，不访问生产签名密钥，不运行安装或发布命令。[GitHub 官方 runner 架构表](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
+新 Release 先创建草稿，确认两个 ZIP 和统一 Feed 全部上传且大小/hash 正确后才公开，再下载实际公开附件复核。已有同名附件仅在大小与 SHA-256 一致时复用，不覆盖。失败恢复使用原运行的 Re-run failed jobs 或 `gh run rerun <run-id> --failed`，不重新 bump 或移动 tag，详见[发布流程](release.md)。
 
-手动运行 workflow 时，默认仍是无私钥试包；勾选 `signed_updates` 只允许 `main`，普通 push 中该 job 按条件跳过。检查通过后，独立的 `signed-updates` job 在全新 runner 检出同一个精确提交，核对版本和架构，再生成 arm64 的正式应用 ZIP、Ed25519 签名更新包和 Feed。签名材料只注入对应构建步骤，不提供给检查或 PR job。
-
-手动签名与正式 tag 构建默认使用 `fixed-identity`：从 `MACOS_SIGNING_CERTIFICATE`、`MACOS_SIGNING_CERTIFICATE_PASSWORD` 导入既有代码签名身份，与已提交的 `config/macos-signing.json` 指纹匹配后签包；支持固定自签证书。可先用 `make release-signing` 预览本机身份及 GitHub 配置，再显式 `--apply` 导出、备份并上传。缺配置或验签失败直接停止，不回退 ad-hoc。
-
-手动输入 `signing_mode` 可选择 `fixed-identity`、`developer-id` 或兼容用的 `update-only`；正式 tag 默认模式可通过 repository variable `PICUP_SIGNING_MODE` 指定，手动选择优先。原有 `apple_distribution` 输入与 `PICUP_APPLE_DISTRIBUTION=true` 保持兼容，并优先选择 `developer-id`。Developer ID 模式要求对应证书，公证凭据可选但须完整；`update-only` 显式保留只做更新签名、应用使用 ad-hoc 的路径。所有模式均需 `MYGO_UPDATER_PRIVATE_KEY`。固定自签、Ed25519 更新签名与 Apple 公证各有独立用途，具体材料和边界见[分发签名配置](macos-distribution.md)。
-
-自动检查与手动运行使用不同的并发组，新的 PR/`main` 检查可取消同 ref 的旧自动运行，不会取消正在签名的手动运行。相同 ref 的手动运行不会并行执行；GitHub 默认只保留一个待运行任务，新的手动请求可能替换仍在排队的旧请求。[GitHub 并发规则](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)
-
-上传前逐项确认必需文件存在且非空，并按 `mygo.json` 的精确版本列出附件，不使用版本通配符。日常 artifact 名称包含架构、构建模式、提交 SHA 与运行 attempt，重跑不会覆盖前一次 attempt 的附件，保留七天。签名模式区分 `fixed-identity`、`update-only` 和 `developer-id`；日常工作流的所有模式都只上传 Actions artifact，不创建 tag、Release 或公开 Feed。
-
-正式 tag 流程依次运行检查、独立签名构建、唯一发布 job。每个阶段检出并核对同一 tag commit，校验 tag 与版本一致、提交属于 `main` 历史。构建产物包含三份正式附件及内部 `ci-release.json` 记录，记录版本、commit、渠道、架构、签名模式、大小/hash 和 run/attempt/job 来源；该记录不作为公开附件。发布 job 仅下载成功 build 输出的确切 artifact ID，重新校验完整集合与来源，只有此 job 获得 `contents: write`。
-
-同一 tag 的自动和手动发布共用不主动取消运行的并发组。重跑可复用同 run 内仍完整可获取的成功 build artifact，但必须与其实际 build attempt 和输入一致；缺包、错身份、hash 不符或来源不明时停止。新 Release 先创建草稿，全部附件核对后公开，再从实际 URL 下载复核；已有同名附件只在大小与 SHA-256 一致时复用，不覆盖。手动恢复须从 `main` workflow 输入精确 tag，保留原签名模式，见[发布与恢复命令](release.md)。
-
-新的 release workflow 必须已提交并包含在将发布的 tag 内；本次配置修改不自动创建版本、补发历史 Release 或移动旧 tag。
-
-Actions 固定为核对过的提交 SHA，版本与 Go 工具链分别来自 `mygo.json`、`go.mod`。CI 的原生构建覆盖不能替代真实窗口、安装、系统钥匙串、不同 macOS 版本或更新重启链路的验收；当前本地验证系统为 macOS arm64，远程 CI 成功状态需在工作流实际运行后核实。
-
-## 独立更新制品验收
+## 独立制品验收
 
 ```sh
-make verify-update VERIFY_FLAGS='-feed /path/update-darwin-arm64.json -archive /path/picup-0.1.1-darwin-arm64.tar.gz -version 0.1.1 -arch arm64'
+make verify-update VERIFY_FLAGS='-feed /path/update-feed.json -archive /path/Picup-0.1.3-darwin-arm64.zip -version 0.1.3 -os darwin -arch arm64'
+make verify-update VERIFY_FLAGS='-feed /path/update-feed.json -archive /path/Picup-0.1.3-linux-amd64.zip -version 0.1.3 -os linux -arch amd64'
 ```
 
-工具默认使用源码固定的发行公钥，先核对明确版本、架构、精确 GitHub Release URL、包名与大小，再验 Ed25519 签名、归档路径与链接范围、Info.plist 身份/版本以及 GUI/CLI 的 Mach-O 架构和执行权限。隔离 fixture 可显式传 `-public-key` 测试公钥；它不能替代真实发行公钥验收。旧的三个位置参数仍可仅验证归档签名。
+工具默认使用源码固定公钥，验证明确版本、平台、精确 GitHub Release URL、大小/hash、Ed25519 签名、归档路径及包内身份和可执行架构。隔离 fixture 可显式传 `-public-key` 测试公钥；旧的三个位置参数仍可仅验证归档签名。
 
-成功输出 `signature-and-archive-verified`，表示本地制品通过静态验证；不会解压、安装、启动应用或修改数据。它不证明公开附件可下载、旧客户端升级、真实文件替换、启动健康或回滚。发布后仍须用对应版本客户端与真实默认 Feed，在隔离安装中验证实际链路。
+输出 `signature-and-archive-verified` 仅表示本地制品通过静态验证，不会安装、启动或修改用户数据。公开下载、目标系统窗口、真实安装替换及重启链路仍需分别验证。

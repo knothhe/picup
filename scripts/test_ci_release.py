@@ -1,4 +1,4 @@
-"""Exercise CI source/provenance gates in temporary repositories, without publishing."""
+"""Exercise release source, native provenance and all-or-nothing feed publication."""
 import base64
 import copy
 import hashlib
@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tempfile
 from types import SimpleNamespace
@@ -25,7 +26,7 @@ class CIReleaseTests(unittest.TestCase):
         os.chdir(self.root)
         self.addCleanup(os.chdir, original)
         environment = mock.patch.dict(os.environ, {'GITHUB_REPOSITORY': 'example/picup',
-            'GITHUB_RUN_ID': '12345', 'GITHUB_RUN_ATTEMPT': '2', 'GITHUB_JOB': 'build'})
+            'GITHUB_RUN_ID': '12345', 'GITHUB_RUN_ATTEMPT': '2', 'GITHUB_JOB': 'macos'})
         environment.start()
         self.addCleanup(environment.stop)
         self.git('init', '-b', 'main')
@@ -34,10 +35,9 @@ class CIReleaseTests(unittest.TestCase):
         self.git('config', 'commit.gpgsign', 'false')
         self.git('config', 'tag.gpgsign', 'false')
         self.git('remote', 'add', 'origin', 'https://github.com/example/picup.git')
-        self.version = '1.2.3'
-        self.tag = 'v' + self.version
+        self.version, self.tag = '1.2.3', 'v1.2.3'
         self.manifest = {'name': 'Picup', 'version': self.version,
-                         'updates': {'github': 'example/picup', 'publicKey': base64.b64encode(bytes(32)).decode()}}
+            'updates': {'github': 'example/picup', 'publicKey': base64.b64encode(bytes(32)).decode()}}
         (self.root / 'mygo.json').write_text(json.dumps(self.manifest))
         (self.root / '.release.json').write_text(json.dumps({'version_file': 'mygo.json',
             'branch': 'main', 'remote': 'origin', 'tag_prefix': 'v'}))
@@ -47,56 +47,68 @@ class CIReleaseTests(unittest.TestCase):
         self.commit = self.git('rev-parse', 'HEAD')
         self.git('tag', '-a', self.tag, '-m', 'Release ' + self.tag)
         self.git('update-ref', 'refs/remotes/origin/main', self.commit)
+        self.inputs = self.root / 'build/downloads'
         self.directory = self.root / 'build/release'
-        self.directory.mkdir(parents=True)
-        self.create_assets()
+        self.names = ci_release.expected_names(self.version)
+        self.attempts = {target: 2 for target in ci_release.TARGETS}
+        for target in ci_release.TARGETS:
+            directory = self.inputs / target
+            directory.mkdir(parents=True)
+            name = ci_release.expected_names(self.version, (target,))[0]
+            content = ('native package fixture for ' + target).encode()
+            (directory / name).write_bytes(content)
+            feed = {'schema': 1, 'version': self.version, 'date': '2026-10-28T12:00:00Z',
+                'platforms': {target: {'url': f'https://github.com/example/picup/releases/download/{self.tag}/{name}',
+                    'size': len(content), 'sha256': hashlib.sha256(content).hexdigest(),
+                    'signature': base64.b64encode(bytes(64)).decode()}}}
+            (directory / ci_release.FEED).write_text(json.dumps(feed))
+        # These tests isolate provenance/aggregation; real ZIP cryptographic and
+        # executable identity verification is exercised by the Go updater tests.
+        verifier = mock.patch.object(ci_release, 'verify_archives')
+        self.archive_verifier = verifier.start()
+        self.addCleanup(verifier.stop)
 
     def git(self, *args):
         return subprocess.check_output(['git', *args], cwd=self.root, text=True,
                                        stderr=subprocess.STDOUT).strip()
 
-    def create_assets(self):
-        self.names = ci_release.expected_names(self.version)
-        (self.directory / self.names[0]).write_bytes(b'formal app fixture, validated by package_release')
-        (self.directory / self.names[1]).write_bytes(b'full signed update archive fixture')
-        self.feed = {'version': self.version, 'size': (self.directory / self.names[1]).stat().st_size,
-                     'url': f'https://github.com/example/picup/releases/download/{self.tag}/{self.names[1]}',
-                     'signature': base64.b64encode(bytes(64)).decode(), 'date': '2026-10-28T12:00:00Z'}
-        self.save_feed()
+    def record(self, target='darwin-arm64', mode='update-only'):
+        with mock.patch.dict(os.environ, {'GITHUB_JOB': ci_release.BUILD_JOBS[target]}):
+            return ci_release.record(self.tag, self.inputs / target, target, mode)
 
-    def save_feed(self):
-        (self.directory / self.names[2]).write_text(json.dumps(self.feed))
+    def record_both(self, mode='update-only'):
+        for target in ci_release.TARGETS:
+            self.record(target, mode if target.startswith('darwin-') else 'update-only')
 
-    def record(self):
-        return ci_release.record(self.tag, self.directory, 'update-only')
+    def verify(self, attempt=2, mode='update-only'):
+        return ci_release.verify_record(self.tag, self.inputs / 'darwin-arm64', 'darwin-arm64', mode, attempt)
 
-    def verify(self, attempt=2):
-        return ci_release.verify_record(self.tag, self.directory, 'update-only', attempt, 'build')
+    def aggregate(self, mode='update-only'):
+        return ci_release.aggregate(self.tag, self.inputs, self.directory, mode, self.attempts)
 
-    def test_validate_emits_exact_tag_version_and_commit_without_mutation(self):
+    def feed(self, target='darwin-arm64'):
+        return json.loads((self.inputs / target / ci_release.FEED).read_text())
+
+    def save_feed(self, feed, target='darwin-arm64'):
+        (self.inputs / target / ci_release.FEED).write_text(json.dumps(feed))
+
+    def test_validate_emits_exact_source_without_mutation(self):
         output = self.root / 'build/output.txt'
         output.write_text('previous=value\n')
         with mock.patch('sys.stdout', new=io.StringIO()) as stdout:
             self.assertEqual(ci_release.main(['validate', '--tag', self.tag, '--github-output', str(output)]), 0)
         expected = {'tag': self.tag, 'version': self.version, 'commit': self.commit}
         self.assertEqual(json.loads(stdout.getvalue()), expected)
-        self.assertEqual(output.read_text(), 'previous=value\n' + ''.join(f'{key}={value}\n' for key, value in expected.items()))
+        self.assertEqual(output.read_text(), 'previous=value\n' + ''.join(f'{k}={v}\n' for k, v in expected.items()))
         self.assertEqual(self.git('status', '--porcelain'), '')
 
-    def test_validate_rejects_non_semver_lightweight_and_wrong_head(self):
+    def test_invalid_tag_wrong_head_main_ancestry_and_repository_are_rejected(self):
         for tag in ('v01.2.3', 'other1.2.3'):
             with self.subTest(tag=tag), self.assertRaises(ci_release.release.ReleaseError):
                 ci_release.identity(tag)
         self.git('tag', 'v1.2.4')
         with self.assertRaisesRegex(ci_release.release.ReleaseError, 'annotated'):
             ci_release.identity('v1.2.4')
-        (self.root / 'source.txt').write_text('another commit')
-        self.git('add', 'source.txt')
-        self.git('commit', '-m', 'Change source')
-        with self.assertRaisesRegex(ci_release.release.ReleaseError, 'HEAD'):
-            ci_release.identity(self.tag)
-
-    def test_validate_rejects_tag_outside_main_and_changed_version_or_repository(self):
         with mock.patch.dict(os.environ, {'GITHUB_REPOSITORY': 'another/picup'}):
             with self.assertRaisesRegex(ci_release.release.ReleaseError, 'repository'):
                 ci_release.identity(self.tag)
@@ -105,42 +117,35 @@ class CIReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ci_release.release.ReleaseError, 'version or identity'):
             ci_release.identity(self.tag)
         self.git('add', 'mygo.json')
-        self.git('commit', '-m', 'Change version on another branch')
-        self.git('tag', '-a', 'v1.2.4', '-m', 'Release v1.2.4')
+        self.git('commit', '-m', 'Another source commit')
+        with self.assertRaisesRegex(ci_release.release.ReleaseError, 'HEAD'):
+            ci_release.identity(self.tag)
+        self.git('tag', '-a', 'v1.2.4-new', '-m', 'Release outside main')
         with self.assertRaisesRegex(ci_release.release.ReleaseError, 'ancestor'):
-            ci_release.identity('v1.2.4')
+            ci_release.identity('v1.2.4-new')
 
-    def test_record_binds_exact_bytes_identity_and_ci_source(self):
-        data = self.record()
-        self.assertEqual(data['commit'], self.commit)
-        self.assertEqual(data['source'], {'run_id': '12345', 'run_attempt': 2, 'job': 'build'})
-        self.assertEqual([item['name'] for item in data['files']], list(self.names))
-        for item in data['files']:
-            path = self.directory / item['name']
-            self.assertEqual(item['size'], path.stat().st_size)
-            self.assertEqual(item['sha256'], hashlib.sha256(path.read_bytes()).hexdigest())
-        self.verify()
+    def test_record_binds_native_identity_and_bytes(self):
+        for target in ci_release.TARGETS:
+            data = self.record(target)
+            self.assertEqual(data['os'] + '-' + data['arch'], target)
+            self.assertEqual(data['source'], {'run_id': '12345', 'run_attempt': 2, 'job': ci_release.BUILD_JOBS[target]})
+            self.assertEqual([item['name'] for item in data['files']], list(ci_release.expected_names(self.version, (target,))))
+            ci_release.verify_record(self.tag, self.inputs / target, target, 'update-only', 2)
 
-    def test_fixed_and_compatibility_modes_are_preserved_and_cannot_be_relabelled(self):
+    def test_macos_signing_mode_cannot_be_relabelled(self):
         for mode in ci_release.SIGNING_MODES:
-            with self.subTest(mode=mode):
-                data=ci_release.record(self.tag,self.directory,mode)
-                self.assertEqual(data['signing_mode'],mode)
-                ci_release.verify_record(self.tag,self.directory,mode,2,'build')
-                for other in set(ci_release.SIGNING_MODES)-{mode}:
-                    with self.assertRaisesRegex(ci_release.release.ReleaseError,'identity'):
-                        ci_release.verify_record(self.tag,self.directory,other,2,'build')
-        with self.assertRaisesRegex(ci_release.release.ReleaseError,'Unknown CI signing mode'):
-            ci_release.record(self.tag,self.directory,'automatic')
-
-    def test_cli_accepts_explicit_fixed_identity_mode(self):
-        with mock.patch('sys.stdout',new=io.StringIO()) as stdout:
-            self.assertEqual(ci_release.main(['record','--tag',self.tag,'--directory',str(self.directory),
-                                              '--signing-mode','fixed-identity']),0)
-        self.assertEqual(json.loads(stdout.getvalue())['signing_mode'],'fixed-identity')
+            self.record(mode=mode)
+            self.verify(mode=mode)
+            for other in set(ci_release.SIGNING_MODES) - {mode}:
+                with self.assertRaisesRegex(ci_release.release.ReleaseError, 'identity'):
+                    self.verify(mode=other)
+        with self.assertRaisesRegex(ci_release.release.ReleaseError, 'Linux uses'):
+            self.record('linux-amd64', 'fixed-identity')
+        with self.assertRaisesRegex(ci_release.release.ReleaseError, 'job does not match'):
+            ci_release.record(self.tag, self.inputs / 'linux-amd64', 'linux-amd64', 'update-only')
 
     def test_missing_extra_empty_and_symlinked_assets_are_rejected(self):
-        target = self.directory / self.names[0]
+        target = self.inputs / 'darwin-arm64' / self.names[0]
         content = target.read_bytes()
         target.unlink()
         with self.assertRaisesRegex(ci_release.release.ReleaseError, 'missing or unexpected'):
@@ -156,74 +161,105 @@ class CIReleaseTests(unittest.TestCase):
             self.record()
         target.unlink()
         target.write_bytes(content)
-        extra = self.directory / 'old-darwin-amd64.zip'
-        extra.write_bytes(content)
+        (target.parent / 'legacy.tar.gz').write_bytes(content)
         with self.assertRaisesRegex(ci_release.release.ReleaseError, 'unexpected'):
             self.record()
 
-    def test_feed_must_reference_this_full_release_archive(self):
-        original = copy.deepcopy(self.feed)
-        for change in ({'version': '1.2.4'}, {'size': 1}, {'deltas': [{'url': 'delta'}]},
-                       {'url': self.feed['url'].replace('example/picup', 'another/picup')},
-                       {'url': self.feed['url'] + '?token=unexpected'}, {'signature': 'invalid'},
-                       {'date': '2026-10-28'}):
-            with self.subTest(change=change):
-                self.feed = {**original, **change}
-                self.save_feed()
-                with self.assertRaises(ci_release.release.ReleaseError):
-                    self.record()
+    def test_feed_target_version_date_hash_size_signature_and_url_are_checked(self):
+        original = self.feed()
+        for change in ({'version': '1.2.4'}, {'schema': True}, {'date': '2026-10-28'},
+                       {'platforms': {}}, {'deltas': []}):
+            self.save_feed({**original, **change})
+            with self.subTest(change=change), self.assertRaises(ci_release.release.ReleaseError):
+                self.record()
+        for change in ({'size': True}, {'size': 1}, {'sha256': 'f' * 64}, {'signature': 'invalid'},
+                       {'url': original['platforms']['darwin-arm64']['url'] + '?token=bad'},
+                       {'url': original['platforms']['darwin-arm64']['url'].replace('example/picup', 'other/picup')}):
+            feed = copy.deepcopy(original)
+            feed['platforms']['darwin-arm64'].update(change)
+            self.save_feed(feed)
+            with self.subTest(change=change), self.assertRaises(ci_release.release.ReleaseError):
+                self.record()
 
-    def test_record_tampering_wrong_arch_commit_version_signing_and_source_are_rejected(self):
+    def test_record_replay_tampering_and_wrong_attempt_are_rejected(self):
         original = self.record()
-        changes = ({'arch': 'amd64'}, {'channel': 'dev'}, {'os': 'linux'}, {'commit': 'a' * 40},
-                   {'tag': 'v1.2.4'}, {'version': '1.2.4'}, {'signing_mode': 'developer-id'}, {'schema': True},
-                   {'source': {'run_id': 'another-run', 'run_attempt': 2, 'job': 'build'}},
-                   {'source': {'run_id': '12345', 'run_attempt': 1, 'job': 'build'}},
-                   {'source': {'run_id': '12345', 'run_attempt': 2, 'job': 'checks'}},
-                   {'files': original['files'] + [original['files'][0]]})
-        for change in changes:
-            with self.subTest(change=change):
-                (self.directory / ci_release.RECORD).write_text(json.dumps({**original, **change}))
-                with self.assertRaises(ci_release.release.ReleaseError):
-                    self.verify()
-
-    def test_content_tampering_and_future_build_attempt_are_rejected(self):
+        for change in ({'arch': 'amd64'}, {'channel': 'dev'}, {'commit': 'a' * 40}, {'schema': True},
+                       {'source': {'run_id': 'another-run', 'run_attempt': 2, 'job': 'macos'}},
+                       {'source': {'run_id': '12345', 'run_attempt': 2, 'job': 'linux'}},
+                       {'files': original['files'] + [original['files'][0]]}):
+            (self.inputs / 'darwin-arm64' / ci_release.RECORD).write_text(json.dumps({**original, **change}))
+            with self.subTest(change=change), self.assertRaises(ci_release.release.ReleaseError):
+                self.verify()
         self.record()
-        path = self.directory / self.names[0]
-        content = path.read_bytes()
-        path.write_bytes(bytes([content[0] ^ 1]) + content[1:])
-        with self.assertRaisesRegex(ci_release.release.ReleaseError, 'hashes differ'):
-            self.verify()
         with self.assertRaisesRegex(ci_release.release.ReleaseError, 'Invalid build attempt'):
             self.verify(attempt=3)
+        path = self.inputs / 'darwin-arm64' / self.names[0]
+        path.write_bytes(b'tampered native ZIP')
+        with self.assertRaisesRegex(ci_release.release.ReleaseError, 'hashes differ'):
+            self.verify()
 
-    def test_prior_build_attempt_is_reusable_in_same_run_with_explicit_attempt(self):
+    def test_prior_successful_build_attempt_is_reusable_in_the_same_run(self):
         with mock.patch.dict(os.environ, {'GITHUB_RUN_ATTEMPT': '1'}):
             self.record()
         self.verify(attempt=1)
         with self.assertRaises(ci_release.release.ReleaseError):
             self.verify(attempt=2)
 
+    def test_aggregate_produces_only_two_zips_and_one_feed(self):
+        self.record_both('fixed-identity')
+        selected, _, _, paths = self.aggregate('fixed-identity')
+        self.assertEqual(selected['commit'], self.commit)
+        self.assertEqual([path.name for path in paths], list(self.names))
+        feed = ci_release.validate_feed(self.directory, 'example/picup', self.tag, self.version)
+        self.assertEqual(set(feed['platforms']), set(ci_release.TARGETS))
+        self.assertEqual(feed['notes'], ci_release.release.release_notes('example/picup', 'v', self.version, self.commit, self.tag))
+        self.archive_verifier.assert_called_once_with(self.directory, self.version)
+
+    def test_missing_platform_or_changed_feed_stops_before_aggregation(self):
+        self.record_both()
+        shutil.rmtree(self.inputs / 'linux-amd64')
+        with self.assertRaisesRegex(ci_release.release.ReleaseError, 'missing or unexpected platforms'):
+            self.aggregate()
+        self.assertFalse(self.directory.exists())
+        self.archive_verifier.assert_not_called()
+
+    def test_other_platform_record_cannot_substitute_for_a_missing_build(self):
+        self.record_both()
+        mac_record = self.inputs / 'darwin-arm64' / ci_release.RECORD
+        shutil.copyfile(mac_record, self.inputs / 'linux-amd64' / ci_release.RECORD)
+        with self.assertRaisesRegex(ci_release.release.ReleaseError, 'identity'):
+            self.aggregate()
+        self.assertFalse(self.directory.exists())
+
+    def test_merged_feed_does_not_bypass_final_archive_verification(self):
+        self.record_both()
+        self.archive_verifier.side_effect = ci_release.release.ReleaseError('invalid Ed25519 signature')
+        with self.assertRaisesRegex(ci_release.release.ReleaseError, 'Ed25519'):
+            self.aggregate()
+
     def public_release(self):
         return {'url': f'https://github.com/example/picup/releases/tag/{self.tag}', 'isDraft': False,
                 'assets': [{'name': item['name'], 'size': item['size'], 'digest': 'sha256:' + item['sha256']}
-                           for item in ci_release.file_records([self.directory / name for name in self.names])]}
+                    for item in ci_release.file_records([self.directory / name for name in self.names])]}
 
-    def mock_publish(self, remote=None, corrupt=None):
-        self.record()
-        result = remote or self.public_release()
+    def mock_publish(self, mutate_remote=None, corrupt=None):
+        self.record_both()
+        # Build the expected immutable output, then let publish aggregate fresh.
+        self.aggregate()
+        result = self.public_release()
+        if mutate_remote:
+            mutate_remote(result)
+        shutil.rmtree(self.directory)
         original_run = ci_release.release.run
         def run(*args, **kwargs):
             if args[0] != 'gh':
                 return original_run(*args, **kwargs)
             if args[1] == 'api':
                 return SimpleNamespace(stdout=json.dumps({'object': {'type': 'tag', 'sha': self.git('rev-parse', 'refs/tags/' + self.tag)}}))
-            self.assertEqual(args[1:3], ('release', 'view'))
             return SimpleNamespace(stdout=json.dumps(result))
         def download(request, timeout):
             self.assertEqual(timeout, 30)
             self.assertFalse(any(name.lower() == 'authorization' for name, _ in request.header_items()))
-            self.assertTrue(request.full_url.startswith(f'https://github.com/example/picup/releases/download/{self.tag}/'))
             name = request.full_url.rsplit('/', 1)[1]
             data = (self.directory / name).read_bytes()
             if name == corrupt:
@@ -232,7 +268,7 @@ class CIReleaseTests(unittest.TestCase):
             stream.geturl = lambda: 'https://release-assets.githubusercontent.com/verified-test'
             return stream
         stack = mock.patch.multiple(ci_release.release, published_tags=mock.DEFAULT,
-                                    publish_github_release=mock.DEFAULT, run=mock.DEFAULT)
+            publish_github_release=mock.DEFAULT, run=mock.DEFAULT)
         mocks = stack.start()
         self.addCleanup(stack.stop)
         mocks['published_tags'].return_value = []
@@ -242,144 +278,104 @@ class CIReleaseTests(unittest.TestCase):
         self.addCleanup(downloader.stop)
         return mocks, opened
 
+    def publish(self, notes=None):
+        return ci_release.publish(self.tag, self.inputs, self.directory, 'update-only', self.attempts, notes)
+
     def test_publish_reuses_canonical_notes_and_verifies_all_public_files(self):
         mocks, opened = self.mock_publish()
         notes = self.root / 'build/notes.md'
         notes.write_text(ci_release.release.release_notes('example/picup', 'v', self.version, self.commit, self.tag))
         with mock.patch('sys.stdout', new=io.StringIO()) as stdout:
-            ci_release.publish(self.tag, self.directory, 'update-only', 2, notes_file=notes)
-        self.assertIn('all three arm64 assets verified', stdout.getvalue())
+            self.publish(notes)
+        self.assertIn('both platform ZIPs and unified feed verified', stdout.getvalue())
         self.assertEqual(opened.call_count, 3)
         args = mocks['publish_github_release'].call_args.args
         self.assertEqual(args[:4], ('example/picup', self.tag, self.version, notes.read_text()))
         self.assertEqual([path.name for path in args[4]], list(self.names))
 
-    def test_public_byte_corruption_is_failure(self):
-        mocks, opened = self.mock_publish(corrupt=self.names[1])
+    def test_public_byte_corruption_and_remote_digest_are_failures(self):
+        _, opened = self.mock_publish(corrupt=self.names[1])
         with self.assertRaisesRegex(ci_release.release.ReleaseError, 'Public asset differs'):
-            ci_release.publish(self.tag, self.directory, 'update-only', 2)
-        self.assertEqual(mocks['publish_github_release'].call_count, 1)
+            self.publish()
         self.assertEqual(opened.call_count, 2)
 
-    def test_wrong_remote_digest_is_not_a_completed_release(self):
-        remote = self.public_release()
-        remote['assets'][0]['digest'] = 'sha256:' + 'f' * 64
-        _, opened = self.mock_publish(remote=remote)
+    def test_wrong_remote_digest_prevents_public_verification(self):
+        _, opened = self.mock_publish(lambda remote: remote['assets'][0].update(digest='sha256:' + 'f' * 64))
         with self.assertRaisesRegex(ci_release.release.ReleaseError, 'differs from the verified local file'):
-            ci_release.publish(self.tag, self.directory, 'update-only', 2)
+            self.publish()
         opened.assert_not_called()
 
-    def test_existing_release_extra_asset_blocks_mutation(self):
-        remote = self.public_release()
-        remote['assets'].append({'name': 'old-darwin-amd64.zip', 'size': 1, 'digest': 'sha256:' + 'a' * 64})
-        mocks, opened = self.mock_publish(remote=remote)
+    def test_existing_extra_asset_blocks_mutation(self):
+        mocks, opened = self.mock_publish(lambda remote: remote['assets'].append({'name': 'legacy.tar.gz', 'size': 1}))
         mocks['published_tags'].return_value = [self.tag]
         with self.assertRaisesRegex(ci_release.release.ReleaseError, 'unexpected assets'):
-            ci_release.publish(self.tag, self.directory, 'update-only', 2)
+            self.publish()
         mocks['publish_github_release'].assert_not_called()
         opened.assert_not_called()
 
-    def test_still_draft_is_not_reported_as_a_completed_release(self):
-        remote = self.public_release()
-        remote['isDraft'] = True
-        _, opened = self.mock_publish(remote=remote)
+    def test_still_draft_is_not_reported_as_completed(self):
+        _, opened = self.mock_publish(lambda remote: remote.update(isDraft=True))
         with self.assertRaisesRegex(ci_release.release.ReleaseError, 'still a draft'):
-            ci_release.publish(self.tag, self.directory, 'update-only', 2)
+            self.publish()
         opened.assert_not_called()
 
-    def test_mismatched_notes_or_remote_tag_stops_before_publish(self):
+    def test_mismatched_notes_stop_before_publish(self):
         mocks, _ = self.mock_publish()
         notes = self.root / 'build/notes.md'
         notes.write_text('invented notes')
         with self.assertRaisesRegex(ci_release.release.ReleaseError, 'canonical'):
-            ci_release.publish(self.tag, self.directory, 'update-only', 2, notes_file=notes)
-        mocks['publish_github_release'].assert_not_called()
-        original = mocks['run'].side_effect
-        def changed_tag(*args, **kwargs):
-            if args[:2] == ('gh', 'api'):
-                return SimpleNamespace(stdout=json.dumps({'object': {'type': 'tag', 'sha': 'f' * 40}}))
-            return original(*args, **kwargs)
-        mocks['run'].side_effect = changed_tag
-        with self.assertRaisesRegex(ci_release.release.ReleaseError, 'Remote annotated tag differs'):
-            ci_release.publish(self.tag, self.directory, 'update-only', 2)
+            self.publish(notes)
         mocks['publish_github_release'].assert_not_called()
 
 
-class WorkflowSigningTests(unittest.TestCase):
-    """Keep private-material boundaries and selected modes aligned across jobs."""
-
+class WorkflowTests(unittest.TestCase):
     def setUp(self):
-        root=Path(__file__).resolve().parent.parent
-        self.workflows={name:(root/'.github/workflows'/name).read_text()
-                        for name in ('macos.yml','release.yml')}
+        self.root = Path(__file__).resolve().parent.parent
+        self.source = (self.root / '.github/workflows/release.yml').read_text()
+        body = self.source.split('\njobs:\n', 1)[1]
+        starts = list(re.finditer(r'^  ([a-z-]+):\n', body, re.MULTILINE))
+        self.jobs = {match[1]: body[match.start(): starts[index + 1].start() if index + 1 < len(starts) else len(body)]
+                     for index, match in enumerate(starts)}
 
-    def jobs(self,workflow):
-        body=workflow.split('\njobs:\n',1)[1]
-        starts=list(re.finditer(r'^  ([a-z-]+):\n',body,re.MULTILINE))
-        return {match[1]:body[match.start():starts[index+1].start() if index+1<len(starts) else len(body)]
-                for index,match in enumerate(starts)}
+    def test_only_tag_push_release_workflow_remains(self):
+        self.assertEqual([path.name for path in (self.root / '.github/workflows').glob('*.yml')], ['release.yml'])
+        events = self.source.split('\non:\n', 1)[1].split('\npermissions:', 1)[0]
+        self.assertEqual(events.strip(), "push:\n    tags: ['v*']")
+        self.assertEqual(set(self.jobs), {'source', 'macos', 'linux', 'publish'})
+        self.assertIn('needs: [source, macos, linux]', self.jobs['publish'])
+        self.assertNotIn('.tar.gz', self.source)
+        self.assertNotIn('update-darwin-', self.source)
 
-    def steps(self,job):
-        return re.split(r'^      - name: ',job,flags=re.MULTILINE)[1:]
+    def test_secrets_only_enter_native_packaging_after_checks(self):
+        self.assertNotIn('secrets.', self.jobs['source'])
+        self.assertNotIn('secrets.', self.jobs['publish'])
+        for target in ('macos', 'linux'):
+            job = self.jobs[target]
+            self.assertLess(job.index('make test'), job.index('secrets.'))
+            self.assertIn('go-version-file: go.mod', job)
+        self.assertNotIn('secrets.MACOS_', self.jobs['linux'])
+        self.assertEqual(self.source.count('contents: write'), 1)
+        for action in re.findall(r'uses: (\S+)', self.source):
+            self.assertRegex(action, r'@[a-f0-9]{40}$')
 
-    def test_daily_private_material_is_only_in_manual_signed_main_job(self):
-        jobs=self.jobs(self.workflows['macos.yml'])
-        self.assertEqual(set(jobs),{'macos','signed-updates'})
-        self.assertNotIn('secrets.',jobs['macos'])
-        signed=jobs['signed-updates']
-        self.assertIn("    if: github.event_name == 'workflow_dispatch' && inputs.signed_updates && github.ref == 'refs/heads/main'\n",signed)
-        self.assertIn('    needs: macos\n',signed)
-        self.assertIn('SIGNING_MODE: ${{ needs.macos.outputs.signing_mode }}',signed)
-        self.assertIn('Picup-signed-updates-${{ needs.macos.outputs.signing_mode }}-',signed)
-        release=self.jobs(self.workflows['release.yml'])
-        self.assertNotIn('secrets.',release['checks'])
-        self.assertNotIn('secrets.',release['publish'])
-        self.assertIn('SIGNING_MODE: ${{ needs.checks.outputs.signing_mode }}',release['build'])
-        self.assertIn('SIGNING_MODE: ${{ needs.checks.outputs.signing_mode }}',release['publish'])
-        self.assertIn('--signing-mode "$SIGNING_MODE"',release['build'])
-        self.assertIn('--signing-mode "$SIGNING_MODE"',release['publish'])
+    def test_each_macos_mode_only_has_its_required_material(self):
+        steps = re.split(r'^      - name: ', self.jobs['macos'], flags=re.MULTILINE)[1:]
+        for mode in ci_release.SIGNING_MODES:
+            selected = [step for step in steps if f"if: env.SIGNING_MODE == '{mode}'" in step]
+            self.assertEqual(len(selected), 1)
+            step = selected[0]
+            self.assertIn('secrets.MYGO_UPDATER_PRIVATE_KEY', step)
+            self.assertEqual('secrets.MACOS_SIGNING_CERTIFICATE' in step, mode != 'update-only')
+            self.assertEqual('secrets.MACOS_NOTARY_' in step, mode == 'developer-id')
 
-    def test_modes_inject_only_their_required_secrets_and_pass_the_same_mode_to_wrapper(self):
-        for name,source in self.workflows.items():
-            jobs=self.jobs(source)
-            job=jobs['signed-updates' if name=='macos.yml' else 'build']
-            private=[step for step in self.steps(job) if 'secrets.' in step]
-            self.assertEqual(len(private),3)
-            for mode in ci_release.SIGNING_MODES:
-                with self.subTest(workflow=name,mode=mode):
-                    selected=[step for step in private if f"if: env.SIGNING_MODE == '{mode}'" in step]
-                    self.assertEqual(len(selected),1)
-                    step=selected[0]
-                    self.assertIn('secrets.MYGO_UPDATER_PRIVATE_KEY',step)
-                    if mode=='update-only':
-                        self.assertIn('run: make package-release',step)
-                        self.assertNotIn('secrets.MACOS_',step)
-                    else:
-                        self.assertIn('secrets.MACOS_SIGNING_CERTIFICATE',step)
-                        self.assertIn('secrets.MACOS_SIGNING_CERTIFICATE_PASSWORD',step)
-                        self.assertIn(f'--mode {mode} -- make package-release',step)
-                    self.assertEqual('secrets.MACOS_NOTARY_' in step,mode=='developer-id')
-
-    def test_mode_defaults_precedence_and_unknown_value_failure(self):
-        expression="(vars.PICUP_APPLE_DISTRIBUTION == 'true' || inputs.apple_distribution == true) && 'developer-id' || inputs.signing_mode || vars.PICUP_SIGNING_MODE || 'fixed-identity'"
-        for name,source in self.workflows.items():
-            with self.subTest(workflow=name):
-                self.assertIn(expression,source)
-                self.assertIn('options: [fixed-identity, update-only, developer-id]\n        default: fixed-identity',source)
-                jobs=self.jobs(source)
-                check=jobs['macos' if name=='macos.yml' else 'checks']
-                step=next(step for step in self.steps(check) if 'id: mode' in step)
-                script=step.split('        run: |\n',1)[1]
-                for mode in (*ci_release.SIGNING_MODES,'unknown-mode'):
-                    with self.subTest(mode=mode),tempfile.TemporaryDirectory() as temporary:
-                        output=Path(temporary)/'output'
-                        output.touch()
-                        result=subprocess.run(['bash','-e','-c',script],
-                            env=dict(os.environ,SIGNING_MODE=mode,GITHUB_OUTPUT=str(output)),
-                            text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-                        expected=mode in ci_release.SIGNING_MODES
-                        self.assertEqual(result.returncode==0,expected)
-                        self.assertEqual(output.read_text(),f'signing_mode={mode}\n' if expected else '')
+    def test_publisher_downloads_exact_successful_artifact_ids_and_attempts(self):
+        publish = self.jobs['publish']
+        for platform in ('macos', 'linux'):
+            self.assertIn(f'artifact-ids: ${{{{ needs.{platform}.outputs.artifact_id }}}}', publish)
+            self.assertIn(f'needs.{platform}.outputs.attempt', publish)
+        self.assertNotIn('pattern:', publish)
+        self.assertIn('build/downloads/darwin-arm64', publish)
+        self.assertIn('build/downloads/linux-amd64', publish)
 
 
 if __name__ == '__main__':

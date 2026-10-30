@@ -41,3 +41,38 @@ func TestInstallUpdateAndConflict(t *testing.T) {
 		t.Fatal("accepted relative install")
 	}
 }
+
+func TestCompanionSourceKeepsLaunchPathAcrossApplicationReplacement(t *testing.T) {
+	previous, previousError := companionExecutable, companionExecutableError
+	t.Cleanup(func() { companionExecutable, companionExecutableError = previous, previousError })
+	parent := t.TempDir()
+	application := filepath.Join(parent, "Picup")
+	if err := os.Mkdir(application, 0755); err != nil {
+		t.Fatal(err)
+	}
+	companionExecutable, companionExecutableError = filepath.Join(application, "picup-gui"), nil
+	if err := os.WriteFile(filepath.Join(application, Filename()), []byte("old companion"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	old := filepath.Join(parent, "old")
+	if err := os.Rename(application, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(old); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(application, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(application, Filename()), []byte("new companion"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	source, err := Source()
+	if err != nil || source != filepath.Join(application, Filename()) {
+		t.Fatal("prepared update lost the bundled CLI", source, err)
+	}
+	content, err := os.ReadFile(source)
+	if err != nil || string(content) != "new companion" {
+		t.Fatal("CLI management did not select the replacement package", err)
+	}
+}

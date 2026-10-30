@@ -6,7 +6,7 @@
 
 从 [GitHub Releases](https://github.com/knothhe/picup/releases) 下载适合本机架构的 `Picup-<version>-darwin-<arch>.zip`，解压后将 `Picup.app` 移至 `~/Applications` 或 `/Applications`，再打开应用。安装包包含 CLI，可按下文「在桌面端安装 CLI」操作；安装成品包无需 Go。
 
-当前发布流程只生成构建机器所用的 macOS 架构，目前已验证 macOS arm64。Release 中未提供的架构或平台需要自行构建并验证。
+当前 Release 提供 macOS arm64 与 Linux amd64 的 ZIP，Windows 后续支持。Linux 解压完整的 `Picup/` 到用户拥有的专用目录，运行其中的 `picup-gui`；CLI 为同目录的 `picup`。Linux 需要 GTK 3、libsecret、OpenGL/Mesa 和可用的桌面会话，托盘可使用 Ayatana AppIndicator；原生界面无需 WebKitGTK。Ubuntu 24.04 可安装 `libgtk-3-0t64 libsecret-1-0 libgl1-mesa-dri libglx-mesa0 libegl-mesa0 libayatana-appindicator3-1`。
 
 正式安装包未显式配置签名身份时，沿用 MyGo 的本地 ad-hoc 签名。已接入显式 Developer ID 签名与 Apple 公证入口；实际完成这两项需要发行者提供已有证书及公证凭据，见[macOS 分发签名](macos-distribution.md)。本机 Dev 构建会选择并记住已有签名证书，见下文。
 
@@ -17,12 +17,12 @@ make build            # 构建 Dev CLI 和桌面应用
 make run              # 构建并运行 Dev 桌面应用
 make dev-signing      # 选择或更换本机 Dev 签名证书
 make package          # 构建并打包当前平台的正式应用
-make package-release  # 构建本机 macOS 发布 ZIP
+make package-release  # 构建本机 macOS/Linux 发布 ZIP 与统一 Feed
 ```
 
 `make build` / `make run` 默认同时带 `picup_dev` 标签，输出 `build/dev/bin/picup-dev` 与 `build/dev/bin/picup-gui`，使用 `picup-dev` 配置目录、独立凭据和带右下角 Dev 标记的图标。`BUILD_TAGS` 可覆盖直接开发构建的标签；`make install` 固定安装隔离的 Dev 通道。正式打包和 `make install-release` 重新构建 `build/bin/picup` 与 `build/bin/picup-gui`，使用正式 `picup` 数据目录；正式打包产物位于 `build/dist/`，应用包包含 CLI。
 
-`make package-release` 将经过版本与内容校验的应用包输出为 `build/release/Picup-<version>-darwin-<arch>.zip`，不生成 DMG。版本来自 `mygo.json`；可传 `VERSION=0.1.0` 校验预期版本，版本不符时停止，不改写源码版本。此命令只打包，不安装或发布。
+`make package-release` 将经过版本与内容校验的应用包输出为 `build/release/Picup-<version>-<os>-<arch>.zip`，并生成只包含当前目标的 `update-feed.json`，不生成独立更新压缩包。版本来自 `mygo.json`；可传 `VERSION=0.1.0` 校验预期版本，版本不符时停止，不改写源码版本。此命令只打包，不安装或发布。
 
 跨平台包需在对应平台构建。目前已验证 macOS arm64；其他平台需另行验证。
 
@@ -97,7 +97,7 @@ make install
 
 `make uninstall` 核验后移除应用目录、CLI、菜单入口，以及指向这一 GUI 的登录自启动项（`$XDG_CONFIG_HOME/autostart` 下），保留配置、图库缓存、数据和凭据。已安装的 Dev 正在运行时，安装和卸载会先请求它正常退出。
 
-Linux 的 MyGo 打包会以应用名命名 GUI，与同名 CLI 冲突，因此 `make package` 与 `make install-release` 在 Linux 上暂不可用。
+Linux 正式发行包通过 `make package-release` 组装，区分 GUI 和 CLI；解压 Release ZIP 即可运行。普通 MyGo 的 `make package` 与从源码安装的 `make install-release` 在 Linux 上仍未接入，请使用上述正式 ZIP 或 Dev 安装入口。
 
 ## 将 CLI 加入 PATH
 

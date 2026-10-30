@@ -4,7 +4,7 @@
 
 ## 安装
 
-从 [GitHub Releases](https://github.com/knothhe/picup/releases) 下载适合本机架构的 macOS ZIP，解压后将 `Picup.app` 移至应用程序目录。安装包附带 CLI，可在「设置 → CLI」中安装。
+从 [GitHub Releases](https://github.com/knothhe/picup/releases) 下载对应平台的 ZIP。目前发布 macOS arm64 与 Linux amd64；macOS 解压后将 `Picup.app` 移至应用程序目录，Linux 解压完整的 `Picup/` 目录后运行 `Picup/picup-gui`。安装包附带 CLI，可在「设置 → CLI」中安装；Linux 运行时依赖见[安装说明](docs/install-local.md)。Windows 后续接入。
 
 本地构建需要 Go 1.27.1+；macOS 需要 13+，目前已验证 macOS arm64。
 
@@ -57,13 +57,13 @@ make check            # 静态检查与测试
 make test             # 竞态检测
 make package          # 打包当前平台到 build/dist/
 make package-ci       # 生成未签名 CI 试包，禁用应用更新
-make package-release  # 生成当前 macOS 架构的 ZIP、签名更新包与 Feed
+make package-release  # 生成本机 macOS/Linux ZIP 与 update-feed.json
 make release-initial  # 预览当前版本首次发布
 make release          # 预览 patch 升级
 ```
 
 `make build` 的 Dev CLI 为 `build/dev/bin/picup-dev`，GUI 为 `build/dev/bin/picup-gui`，与正式版配置、凭据和默认缓存隔离。
 
-发布默认仅预览；添加 `RELEASE_FLAGS=--apply` 后，本地完成检查、tag 和原子推送，后续升级还会更新版本并提交。版本 tag 随后触发 GitHub Actions 构建 macOS arm64 正式包，验证完整附件后公开 Release；本地命令不再构建或上传发行附件。完整命令、CI 状态与失败恢复见[发布流程](docs/release.md)，代码结构、设计稿和图标维护见[开发指南](docs/development.md)。
+发布默认仅预览；添加 `RELEASE_FLAGS=--apply` 后，本地完成检查、tag 和原子推送，后续升级还会更新版本并提交。版本 tag 随后触发 GitHub Actions 构建 macOS arm64、Linux amd64 正式 ZIP，验证完整附件后公开 Release；本地命令不再构建或上传发行附件。完整命令、CI 状态与失败恢复见[发布流程](docs/release.md)，代码结构、设计稿和图标维护见[开发指南](docs/development.md)。
 
-日常 GitHub CI 对 PR 和 `main` 运行检查并构建未签名试包，手动签名试包使用独立 runner；正式发布另由 tag workflow 执行，默认使用固定代码签名身份，支持复用本地自签证书。`make release-signing` 可预览并配置发行身份上传，公开证书指纹入库、私有材料保存在 GitHub Secrets。更新仍使用独立的 Ed25519 签名与完整更新包；Developer ID 与 Apple 公证可另行配置，详见[自动更新与 CI](docs/updates.md)。
+GitHub CI 仅在推送 `v*` tag 后执行两端检查、构建与 Release 发布，PR 和普通分支推送不触发。所有平台共用 `update-feed.json`，手动安装与自动更新使用同一 ZIP；macOS 默认使用固定代码签名身份，支持复用本地自签证书。`make release-signing` 可预览并配置发行身份上传，公开证书指纹入库、私有材料保存在 GitHub Secrets。ZIP 更新继续使用 Ed25519 签名；Developer ID 与 Apple 公证可另行配置，详见[自动更新与 CI](docs/updates.md)。

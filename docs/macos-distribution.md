@@ -48,7 +48,7 @@ PICUP_MACOS_NOTARY_PROFILE='picup-notary' make package-release
 
 可选 `PICUP_MACOS_CERTIFICATE_SHA256` 为叶证书 DER 字节的六十四位 SHA-256，用于额外固定公开证书。签名身份先精确解析到唯一且用途、有效期符合要求的 identity，并计算实际 SHA-256；提供的 pin 不符时在签名前停止。最终 app、主程序和附带 CLI 分别提取叶证书核对实际 SHA-1 identity 与选定证书的 SHA-256，整体运行 `codesign --verify --deep --strict`。没有证书或 profile 的机器只能验证脚本及失败分支，不能宣称完成 Developer ID 签包或公证。
 
-MyGo 需要 DMG 完成公证，因此设置 profile 时构建一个中间 DMG，提交并等待 Apple 接受，随后将票据 staple 到 app；更新归档与最终 ZIP 在此后生成。发行附件仍为 ZIP、完整更新包与 Feed，不上传中间 DMG。最终另运行 `stapler validate` 与 Gatekeeper `spctl --assess`，避免只把提交成功当作可分发验证。
+MyGo 需要 DMG 完成公证，因此设置 profile 时构建一个中间 DMG，提交并等待 Apple 接受，随后将票据 staple 到 app；更新归档与最终 ZIP 在此后生成。发行附件为 ZIP 和统一 `update-feed.json`，更新与手动安装共用该 ZIP，不上传中间 DMG。最终另运行 `stapler validate` 与 Gatekeeper `spctl --assess`，避免只把提交成功当作可分发验证。
 
 ## 将本地固定身份配置到 GitHub
 
@@ -75,9 +75,9 @@ make release-signing SIGNING_FLAGS='--identity <四十位SHA-1> --apply'
 
 ## CI 固定签名与 Apple 分发构建
 
-日常 [macos.yml](../.github/workflows/macos.yml) 的 `signed-updates` job 仅在手动运行、勾选 `signed_updates` 且分支为 `main` 时执行。普通 push 与 PR 只生成无私钥试包。手动签名默认选用 `signing_mode=fixed-identity`，检查通过后由独立 runner 签包；仅产生 Actions artifact，不创建 tag 或 Release，适合签名配置预检。
+只保留 [release.yml](../.github/workflows/release.yml)，仅在 `v*` tag 推送后构建并发布；PR、普通分支 push 和手动 dispatch 不触发。无私钥本地试包仍可使用 `make package-ci`。
 
-正式 [release.yml](../.github/workflows/release.yml) 在版本 tag 推送后构建并发布 Release，默认同样使用 `fixed-identity`。可通过 repository variable `PICUP_SIGNING_MODE` 指定 tag 构建模式，手动恢复时通过 `signing_mode` 输入选择；手动选择优先于该变量。兼容原有 Apple 配置：repository variable `PICUP_APPLE_DISTRIBUTION=true` 或手动勾选 `apple_distribution` 会优先选择 `developer-id`。
+macOS 发布默认使用 `fixed-identity`。可通过 repository variable `PICUP_SIGNING_MODE` 指定 tag 构建模式；兼容变量 `PICUP_APPLE_DISTRIBUTION=true` 优先选择 `developer-id`。失败恢复使用原运行的 Re-run failed jobs，并保留原签名模式。Linux ZIP 使用相同更新私钥签名，不使用 Apple 证书。
 
 | 模式 | 应用代码签名 | 所需材料 |
 | --- | --- | --- |

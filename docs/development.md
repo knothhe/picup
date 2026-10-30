@@ -17,8 +17,8 @@ make install-release  # 显式构建并安装正式应用与 CLI
 make check            # go vet、Go 测试和 Python 脚本测试
 make test             # Go 竞态检测
 make package          # 通过 MyGo 打包当前平台到 build/dist/
-make package-ci       # 未签名 macOS CI 试包，不参与应用更新
-make package-release  # 本机 macOS 架构的发布 ZIP 与签名更新附件
+make package-ci       # 本机无私钥 Dev 试包，不参与应用更新
+make package-release  # 本机 macOS/Linux ZIP 与 update-feed.json
 ```
 
 `make build` / `make run` 默认使用 `picup_dev` 标签：CLI 输出到 `build/dev/bin/picup-dev`，GUI 输出到 `build/dev/bin/picup-gui`，归属文本为 `build/dev/THIRD_PARTY_NOTICES.txt`。默认配置位于 `~/.config/picup-dev/config.json`，系统凭据按 development 通道隔离；默认图库缓存也使用系统缓存目录下的 `picup-dev/gallery-v1`。正式 CLI / GUI 使用 `build/bin/picup`、`build/bin/picup-gui`。开发运行时将同通道的两个程序放在同一目录。
@@ -33,9 +33,9 @@ macOS 本地 Dev 构建首次会列出钥匙串中用途及有效期符合要求
 
 `make package-dev` 生成独立的 `build/dev/dist/darwin-<arch>/Picup Dev.app`；`make install` 默认安装到 `~/Applications/Picup Dev.app` 和 `~/.local/bin/picup-dev`，`make uninstall` 安全卸载已核验的 Dev 程序并保留配置、数据与凭据。显式的 `make install-dev` / `make uninstall-dev` 分别与默认入口相同，见[Dev 安装说明](install-local.md#独立-dev-应用与卸载)。`make package-ci` 沿用该身份，CLI 和 GUI 都使用 `picup_dev` 标签及隔离数据，GUI 采用 debug 构建且包内不携带更新配置。`make package` 的正式打包输出位于 `build/dist/`，应用附带正式 CLI；跨平台包需在对应平台构建。
 
-发布附件使用 `make package-release`，构建并验证当前源码版本的 `Picup.app` 和附带 CLI，再输出 ZIP、MyGo 签名完整更新包和更新清单到 `build/release/`。脚本优先读取 `MYGO_UPDATER_PRIVATE_KEY`；未设置时自动读取本机默认签名文件，详见[密钥说明](updates.md)。此入口仅支持本机 macOS 架构，不生成 DMG；目前已验证 macOS arm64。也可传 `VERSION=0.1.0` 校验预期版本，版本不符时会停止。
+发布附件使用 `make package-release`，构建并验证当前源码版本的 macOS 应用包或 Linux 独立目录及附带 CLI，输出签名 ZIP 和统一格式的 `update-feed.json` 到 `build/release/`。脚本优先读取 `MYGO_UPDATER_PRIVATE_KEY`；未设置时自动读取本机默认签名文件，详见[密钥说明](updates.md)。此入口支持本机 macOS/Linux 架构，CI 当前构建 macOS arm64 与 Linux amd64；Windows 后续接入。也可传 `VERSION=0.1.0` 校验预期版本，版本不符时会停止。
 
-无私钥时运行 `make package-ci`，产物位于 `build/ci/`，名称包含 `ci-unsigned`，MyGo debug 构建禁用安装式更新。CI 目前只验证 macOS Apple Silicon（arm64）；手动签名构建与验证边界见[自动更新与 CI](updates.md)。每次 `make build` 会在对应通道目录生成并打包 `THIRD_PARTY_NOTICES.txt`。
+无私钥时运行 `make package-ci`，产物位于 `build/ci/`，名称包含 `ci-unsigned`，Dev 构建禁用安装式更新。CI 仅由版本 tag 触发，验证 macOS arm64 与 Linux amd64；统一 Feed 和验证边界见[自动更新与 CI](updates.md)。每次 `make build` 会在对应通道目录生成并打包 `THIRD_PARTY_NOTICES.txt`。
 
 本地开发安装使用 `make install`；正式安装显式使用 `make install-release`，默认目标为 `~/Applications/Picup.app` 和 `~/.local/bin/picup`，详见[安装说明](install-local.md)。版本与发布命令见[发布流程](release.md)。
 

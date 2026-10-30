@@ -237,22 +237,25 @@ def build_assets(target, files, source_commit=None):
             'Package command must return a nonempty JSON array of asset paths.')
     paths = [Path(path) for path in assets]
     require(len(set(paths)) == len(paths), 'Package command returned duplicate asset paths.')
-    expected = set()
+    targets = set()
     for path in paths:
-        kind = re.fullmatch(r'Picup-' + re.escape(target) + r'-(darwin-(?:arm64|amd64))\.zip', path.name)
-        archive = re.fullmatch(r'picup-' + re.escape(target) + r'-(darwin-(?:arm64|amd64))\.tar\.gz', path.name)
-        feed = re.fullmatch(r'update-(darwin-(?:arm64|amd64))\.json', path.name)
+        kind = re.fullmatch(r'Picup-' + re.escape(target) + r'-((?:darwin|linux)-(?:arm64|amd64))\.zip', path.name)
+        feed = path.name == 'update-feed.json'
         require(path.is_absolute() and path.parent.resolve() == output.resolve() and not path.is_symlink()
-                and path.is_file() and path.stat().st_size > 0 and (kind or archive or feed),
-                f'Invalid release asset (expected an exact macOS installer or signed update asset in {output}): {path}')
+                and path.is_file() and path.stat().st_size > 0 and (kind or feed),
+                f'Invalid release asset (expected a versioned platform ZIP or update-feed.json in {output}): {path}')
         if kind:
-            platform = kind.group(1)
-            expected.update((path.name, f'picup-{target}-{platform}.tar.gz', f'update-{platform}.json'))
+            targets.add(kind.group(1))
     names = {path.name for path in paths}
     # Historical tags without updater configuration keep their original ZIP-only
     # format. New signed releases must never publish a partial update set.
     if requires_updates or any(path.suffix != '.zip' for path in paths):
-        require(names == expected, 'Package command returned an incomplete or unexpected signed update asset set.')
+        require(targets and 'update-feed.json' in names,
+                'Package command returned an incomplete signed ZIP/feed asset set.')
+        feed = json.loads((output / 'update-feed.json').read_text())
+        require(type(feed.get('schema')) is int and feed['schema'] == 1 and feed.get('version') == target
+                and isinstance(feed.get('platforms'), dict) and set(feed['platforms']) == targets,
+                'Unified update feed differs from the packaged version or platform ZIP set.')
     return paths
 
 
@@ -414,7 +417,7 @@ def main():
                 'local builds/uploads and --github-release cannot be enabled.')
         require(not args.assets_only,
                 '--assets-only is unavailable with github-actions. Recover the existing '
-                'release workflow or use workflow_dispatch with the exact existing tag; '
+                'release workflow with gh run rerun <run-id> --failed; '
                 'do not bump the version or move the tag.')
     require(not (github and args.no_push), 'GitHub Release requires pushing. Use --no-github-release with --no-push.')
     if args.assets_only:
@@ -520,7 +523,7 @@ def main():
                   'publication; verify its run and Release assets before reporting release success.')
         if args.resume:
             print('Re-pushing a tag already on the remote does not trigger a new workflow run. '
-                  'Recover the existing run or use workflow_dispatch with this exact tag; '
+                  'Recover the existing run with gh run rerun <run-id> --failed; '
                   'no workflow was dispatched by this command.')
     else:
         print(f'Release complete: {tag}' + (' (local only)' if args.no_push else ''))

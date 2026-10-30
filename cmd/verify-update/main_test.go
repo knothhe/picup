@@ -10,12 +10,12 @@ import (
 	"testing"
 )
 
-func TestMyGoArchiveSignatureRejectsTamperingAndWrongKey(t *testing.T) {
+func TestZIPSignatureRejectsTamperingAndWrongKey(t *testing.T) {
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(t.TempDir(), "picup.tar.gz")
+	path := filepath.Join(t.TempDir(), "Picup.zip")
 	content := []byte("signed archive fixture")
 	if err := os.WriteFile(path, content, 0600); err != nil {
 		t.Fatal(err)

@@ -14,6 +14,7 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/knothhe/picup"
+	"github.com/knothhe/picup/internal/updatefeed"
 )
 
 type updateCandidate struct {
@@ -53,9 +54,10 @@ type updatesState struct {
 }
 
 func defaultUpdateRuntime() *updateRuntime {
+	client := releaseUpdateClient()
 	return &updateRuntime{
 		check: func(ctx context.Context) (*updateCandidate, error) {
-			u, e := mygo.Updater.Check(ctx)
+			u, e := client.Check(ctx)
 			if e != nil || u == nil {
 				return nil, e
 			}
@@ -64,6 +66,12 @@ func defaultUpdateRuntime() *updateRuntime {
 		dispatch: mygo.RunOnMain, now: time.Now, relaunch: mygo.App.Relaunch, quit: mygo.App.Quit, confirm: mygo.Dialog.Message,
 	}
 }
+
+func releaseUpdateClient() *updatefeed.Client {
+	cfg := picup.UpdateConfig()
+	return updatefeed.New(updatefeed.Config{Repository: cfg.GitHub, PublicKey: cfg.PublicKey,
+		CurrentVersion: picup.Version(), OS: runtime.GOOS, Arch: runtime.GOARCH})
+}
 func (a *application) initUpdates() {
 	a.updates.runtime = defaultUpdateRuntime()
 	a.updates.phase = "loading"
@@ -71,7 +79,7 @@ func (a *application) initUpdates() {
 		exe, e := os.Executable()
 		reason := ""
 		cfg := picup.UpdateConfig()
-		configured := cfg.PublicKey != "" && (cfg.GitHub != "" || cfg.URL != "")
+		configured := cfg.PublicKey != "" && cfg.GitHub != ""
 		if e != nil {
 			reason = "无法确定应用安装位置，更新已停用。"
 		} else {
@@ -81,7 +89,7 @@ func (a *application) initUpdates() {
 			dev := updateDevelopmentBuild()
 			reason = updateEligibilityReason(runtime.GOOS, exe, dev, configured, true)
 			if reason == "" {
-				reason = updateEligibilityReason(runtime.GOOS, exe, dev, configured, mygo.Updater.Enabled())
+				reason = updateEligibilityReason(runtime.GOOS, exe, dev, configured, releaseUpdateClient().Enabled())
 			}
 		}
 		store, loadErr := newUpdatePreferenceStore(filepath.Join(filepath.Dir(a.path), "updates-state.json"), updateScope(exe), time.Now())

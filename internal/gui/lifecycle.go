@@ -10,6 +10,7 @@ import (
 	"github.com/knothhe/picup/assets"
 	"github.com/knothhe/picup/internal/buildidentity"
 	"github.com/knothhe/picup/internal/config"
+	"github.com/knothhe/picup/internal/install"
 	"github.com/oneo-me/onevra/source/shells/plain"
 )
 
@@ -96,6 +97,9 @@ func (a *application) startNativeSettings() {
 		}
 	}
 	a.lifecycle.setOpenAtLogin = mygo.App.SetOpenAtLogin
+	if runtime.GOOS == "linux" && mygo.App.IsPackaged() && !buildidentity.Development() {
+		a.lifecycle.setOpenAtLogin = install.SetLinuxReleaseOpenAtLogin
+	}
 	a.lifecycle.openAtLogin = mygo.App.OpenAtLogin()
 	// Respect changes made in System Settings instead of re-enabling login.
 	if a.config.LaunchAtLogin != a.lifecycle.openAtLogin {

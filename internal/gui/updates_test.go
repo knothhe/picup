@@ -28,7 +28,11 @@ func TestUpdateEligibilityRequiresMacBundleAndOwnedWritableInstall(t *testing.T)
 		{"plain executable", "darwin", "/tmp/picup-gui", false, true, true, false},
 		{"package manager", "darwin", "/opt/homebrew/Caskroom/picup/1.0/Picup.app/Contents/MacOS/Picup", false, true, true, false},
 		{"read only", "darwin", app, false, true, false, false},
-		{"other target", "linux", app, false, true, true, false},
+		{"Linux release", "linux", "/home/test/.local/lib/Picup/picup-gui", false, true, true, true},
+		{"Linux Dev", "linux", "/home/test/.local/lib/Picup/picup-gui", true, true, true, false},
+		{"Linux missing package", "linux", "/home/test/.local/lib/Picup/picup-gui", false, true, false, false},
+		{"Linux plain CLI", "linux", "/usr/local/bin/picup", false, true, true, false},
+		{"other target", "windows", app, false, true, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			reason := updateEligibilityReason(tc.goos, tc.path, tc.dev, tc.configured, tc.enabled)

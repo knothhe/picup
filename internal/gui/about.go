@@ -1,14 +1,16 @@
 package gui
 
 import (
-	"github.com/knothhe/picup/internal/buildidentity"
+	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"github.com/knothhe/picup"
+	"github.com/knothhe/picup/internal/buildidentity"
 	"github.com/knothhe/picup/internal/buildinfo"
+	"github.com/knothhe/picup/internal/install"
 	"github.com/oneo-me/onevra/source/components"
 	"github.com/oneo-me/onevra/source/icons/lucide"
 )
@@ -16,6 +18,7 @@ import (
 var readAboutBuildInfo = buildinfo.Current
 var openAboutExternal = mygo.Shell.OpenExternal
 var openAboutPath = mygo.Shell.OpenPath
+var aboutCompanionSource = install.Source
 
 func aboutSource() string { return buildinfo.Source(mygo.App.IsPackaged(), mygo.IsDev()) }
 func aboutSourceLabel(source string) string {
@@ -38,13 +41,26 @@ func (a *application) openAboutLink(target string) {
 }
 
 func (a *application) openLicenseNotices() {
-	dir, err := mygo.App.Path(mygo.PathResources)
+	path, err := aboutNoticesPath()
 	if err == nil {
-		err = openAboutPath(filepath.Join(dir, "THIRD_PARTY_NOTICES.txt"))
+		err = openAboutPath(path)
 	}
 	if err != nil {
 		a.feedback("打开许可说明失败", err)
 	}
+}
+
+func aboutNoticesPath() (string, error) {
+	// The companion lookup retains the launch path. On Linux, MyGo's dynamic
+	// resource lookup can point at the deleted old executable after an update.
+	if source, err := aboutCompanionSource(); err == nil {
+		path := filepath.Join(filepath.Dir(source), "THIRD_PARTY_NOTICES.txt")
+		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
+			return path, nil
+		}
+	}
+	directory, err := mygo.App.Path(mygo.PathResources)
+	return filepath.Join(directory, "THIRD_PARTY_NOTICES.txt"), err
 }
 
 func (a *application) aboutContent(c *ui.Context) {

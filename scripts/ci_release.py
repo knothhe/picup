@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate tagged CI packages and publish the exact verified arm64 asset set.
+"""Verify native tagged builds and publish ZIPs with one cross-platform feed.
 
 The packaging job verifies app identity and Ed25519 signatures. The record here
 binds those verified bytes to that job; hashes alone are not signing evidence.
@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import stat
 import sys
 import tempfile
@@ -22,6 +23,9 @@ import release
 
 
 RECORD = 'ci-release.json'
+FEED = 'update-feed.json'
+TARGETS = ('darwin-arm64', 'linux-amd64')
+BUILD_JOBS = {'darwin-arm64': 'macos', 'linux-amd64': 'linux'}
 SIGNING_MODES = ('fixed-identity', 'update-only', 'developer-id')
 require = release.require
 
@@ -55,17 +59,16 @@ def identity(tag):
     return {'tag': tag, 'version': version, 'commit': commit}, repo, prefix
 
 
-def expected_names(version):
-    return (f'Picup-{version}-darwin-arm64.zip', f'picup-{version}-darwin-arm64.tar.gz',
-            'update-darwin-arm64.json')
+def expected_names(version, targets=TARGETS):
+    return (*(f'Picup-{version}-{target}.zip' for target in targets), FEED)
 
 
-def assets(directory, version):
+def assets(directory, version, targets=TARGETS):
     directory = Path(directory)
     require(directory.is_dir() and not directory.is_symlink(), 'Package directory is missing or symlinked.')
-    names = expected_names(version)
+    names = expected_names(version, targets)
     require({path.name for path in directory.iterdir()} - {RECORD} == set(names),
-            'Release directory has missing or unexpected assets; only the exact arm64 set is allowed.')
+            'Release directory has missing or unexpected assets; only the exact target set is allowed.')
     paths = [directory / name for name in names]
     for path in paths:
         require(not path.is_symlink() and stat.S_ISREG(path.stat().st_mode) and path.stat().st_size > 0,
@@ -73,28 +76,41 @@ def assets(directory, version):
     return paths
 
 
-def validate_feed(directory, repo, tag, version):
+def validate_feed(directory, repo, tag, version, targets=TARGETS):
     directory = Path(directory)
-    archive = directory / expected_names(version)[1]
-    feed = directory / 'update-darwin-arm64.json'
+    feed = directory / FEED
     require(feed.stat().st_size <= 1024 * 1024, 'Update feed is too large.')
     data = json.loads(feed.read_text())
-    require(isinstance(data, dict) and data.get('version') == version,
-            'Update feed version differs from the release tag.')
-    require(type(data.get('size')) is int and data['size'] == archive.stat().st_size,
-            'Update feed size differs from the full archive.')
-    require(not data.get('deltas') and not data.get('previous'), 'CI release requires a full update archive.')
-    address = urlsplit(data.get('url', ''))
-    require(address.scheme == 'https' and address.netloc == 'github.com' and not address.query
-            and not address.fragment and unquote(address.path) ==
-            f'/{repo}/releases/download/{tag}/{archive.name}',
-            'Update feed must reference this exact public release archive.')
+    require(isinstance(data, dict) and set(data) <= {'schema', 'version', 'date', 'notes', 'platforms'}
+            and type(data.get('schema')) is int and data['schema'] == 1
+            and data.get('version') == version and isinstance(data.get('platforms'), dict)
+            and set(data['platforms']) == set(targets) and isinstance(data.get('notes', ''), str),
+            'Update feed schema, version or target set differs from the release.')
     try:
-        signature = base64.b64decode(data.get('signature', ''), validate=True)
         date = datetime.datetime.fromisoformat(data.get('date', '').replace('Z', '+00:00'))
     except (ValueError, TypeError):
-        raise release.ReleaseError('Update feed signature or date is invalid.') from None
-    require(len(signature) == 64 and date.tzinfo is not None, 'Update feed signature or date is invalid.')
+        raise release.ReleaseError('Update feed date is invalid.') from None
+    require(date.tzinfo is not None, 'Update feed date is invalid.')
+    for target in targets:
+        asset = data['platforms'][target]
+        archive = directory / expected_names(version, (target,))[0]
+        require(isinstance(asset, dict) and set(asset) == {'url', 'size', 'sha256', 'signature'},
+                'Update feed platform asset fields are invalid.')
+        require(type(asset.get('size')) is int and asset['size'] == archive.stat().st_size,
+                'Update feed size differs from the ZIP.')
+        require(asset.get('sha256') == file_records([archive])[0]['sha256'],
+                'Update feed SHA-256 differs from the ZIP.')
+        address = urlsplit(asset.get('url', ''))
+        require(address.scheme == 'https' and address.netloc == 'github.com' and not address.query
+                and not address.fragment and unquote(address.path) ==
+                f'/{repo}/releases/download/{tag}/{archive.name}',
+                'Update feed must reference this exact public release ZIP.')
+        try:
+            signature = base64.b64decode(asset.get('signature', ''), validate=True)
+        except (ValueError, TypeError):
+            signature = b''
+        require(len(signature) == 64, 'Update feed signature is invalid.')
+    return data
 
 
 def file_records(paths):
@@ -118,12 +134,16 @@ def run_identity():
     return {'run_id': run_id, 'run_attempt': int(attempt), 'job': job}
 
 
-def record(tag, directory, signing_mode):
+def record(tag, directory, target, signing_mode):
     require(signing_mode in SIGNING_MODES, 'Unknown CI signing mode.')
+    require(target in TARGETS, 'Unknown CI target.')
+    require(target != 'linux-amd64' or signing_mode == 'update-only', 'Linux uses update-only signing.')
+    require(run_identity()['job'] == BUILD_JOBS[target], 'CI build job does not match the target.')
     selected, repo, _ = identity(tag)
-    paths = assets(directory, selected['version'])
-    validate_feed(directory, repo, tag, selected['version'])
-    data = {'schema': 1, **selected, 'channel': 'release', 'os': 'darwin', 'arch': 'arm64',
+    paths = assets(directory, selected['version'], (target,))
+    validate_feed(directory, repo, tag, selected['version'], (target,))
+    goos, goarch = target.split('-')
+    data = {'schema': 1, **selected, 'channel': 'release', 'os': goos, 'arch': goarch,
             'signing_mode': signing_mode, 'source': run_identity(), 'files': file_records(paths)}
     target = Path(directory) / RECORD
     with tempfile.NamedTemporaryFile(mode='w', prefix='.ci-release-', dir=target.parent, delete=False) as stream:
@@ -137,14 +157,16 @@ def record(tag, directory, signing_mode):
     return data
 
 
-def verify_record(tag, directory, signing_mode, build_attempt, build_job):
+def verify_record(tag, directory, target, signing_mode, build_attempt):
     require(signing_mode in SIGNING_MODES, 'Unknown CI signing mode.')
+    require(target in TARGETS, 'Unknown CI target.')
+    require(target != 'linux-amd64' or signing_mode == 'update-only', 'Linux uses update-only signing.')
     selected, repo, prefix = identity(tag)
-    paths = assets(directory, selected['version'])
-    target = Path(directory) / RECORD
-    require(target.is_file() and not target.is_symlink() and target.stat().st_size <= 1024 * 1024,
+    paths = assets(directory, selected['version'], (target,))
+    record_path = Path(directory) / RECORD
+    require(record_path.is_file() and not record_path.is_symlink() and record_path.stat().st_size <= 1024 * 1024,
             'Missing or invalid CI build record.')
-    data = json.loads(target.read_text())
+    data = json.loads(record_path.read_text())
     require(isinstance(data, dict) and type(data.get('schema')) is int
             and isinstance(data.get('source'), dict) and type(data['source'].get('run_attempt')) is int
             and isinstance(data.get('files'), list)
@@ -152,13 +174,56 @@ def verify_record(tag, directory, signing_mode, build_attempt, build_job):
             'Invalid CI build record schema or field types.')
     current = run_identity()
     require(type(build_attempt) is int and 0 < build_attempt <= current['run_attempt'], 'Invalid build attempt.')
-    expected = {'schema': 1, **selected, 'channel': 'release', 'os': 'darwin', 'arch': 'arm64',
+    goos, goarch = target.split('-')
+    expected = {'schema': 1, **selected, 'channel': 'release', 'os': goos, 'arch': goarch,
                 'signing_mode': signing_mode,
-                'source': {'run_id': current['run_id'], 'run_attempt': build_attempt, 'job': build_job},
+                'source': {'run_id': current['run_id'], 'run_attempt': build_attempt, 'job': BUILD_JOBS[target]},
                 'files': file_records(paths)}
     require(data == expected, 'CI build record identity, source attempt, exact asset set or content hashes differ.')
-    validate_feed(directory, repo, tag, selected['version'])
+    validate_feed(directory, repo, tag, selected['version'], (target,))
     return selected, repo, prefix, paths
+
+
+def aggregate(tag, input_directory, directory, signing_mode, build_attempts):
+    """Collect both exact, verified build outputs before creating the public feed."""
+    inputs = Path(input_directory)
+    require(inputs.is_dir() and not inputs.is_symlink() and {path.name for path in inputs.iterdir()} == set(TARGETS),
+            'Build inputs have missing or unexpected platforms.')
+    require(set(build_attempts) == set(TARGETS), 'Build attempts must identify every required platform.')
+    selected, repo, prefix = identity(tag)
+    verified = []
+    feeds = []
+    for target in TARGETS:
+        mode = signing_mode if target.startswith('darwin-') else 'update-only'
+        _, _, _, paths = verify_record(tag, inputs / target, target, mode, build_attempts[target])
+        verified.append(paths[0])
+        feeds.append(validate_feed(inputs / target, repo, tag, selected['version'], (target,)))
+    output = Path(directory)
+    require(not output.is_symlink(), 'Release output must not be a symlink.')
+    output.mkdir(parents=True, exist_ok=True)
+    require(not any(output.iterdir()), 'Release aggregation output must be empty.')
+    feed = {'schema': 1, 'version': selected['version'],
+            'date': max(datetime.datetime.fromisoformat(item['date'].replace('Z', '+00:00'))
+                        for item in feeds).astimezone(datetime.timezone.utc).isoformat().replace('+00:00', 'Z'),
+            'notes': release.release_notes(repo, prefix, selected['version'], selected['commit'], tag),
+            'platforms': {target: item['platforms'][target] for target, item in zip(TARGETS, feeds)}}
+    for source in verified:
+        shutil.copyfile(source, output / source.name)
+    (output / FEED).write_text(json.dumps(feed, indent=2) + '\n')
+    paths = assets(output, selected['version'])
+    validate_feed(output, repo, tag, selected['version'])
+    verify_archives(output, selected['version'])
+    return selected, repo, prefix, paths
+
+
+def verify_archives(directory, version):
+    """Recheck each final ZIP's signature, identity and native binary headers."""
+    for target in TARGETS:
+        goos, goarch = target.split('-')
+        release.run(os.environ.get('GO', 'go'), 'run', './cmd/verify-update',
+                    '--feed', str(Path(directory) / FEED),
+                    '--archive', str(Path(directory) / expected_names(version, (target,))[0]),
+                    '--version', version, '--os', goos, '--arch', goarch)
 
 
 def verify_public_files(repo, tag, version, paths):
@@ -185,8 +250,8 @@ def verify_public_files(repo, tag, version, paths):
         validate_feed(directory, repo, tag, version)
 
 
-def publish(tag, directory, signing_mode, build_attempt, build_job='build', notes_file=None):
-    selected, repo, prefix, paths = verify_record(tag, directory, signing_mode, build_attempt, build_job)
+def publish(tag, input_directory, directory, signing_mode, build_attempts, notes_file=None):
+    selected, repo, prefix, paths = aggregate(tag, input_directory, directory, signing_mode, build_attempts)
     notes = release.release_notes(repo, prefix, selected['version'], selected['commit'], tag)
     if notes_file is not None:
         require(Path(notes_file).read_text() == notes, 'Release notes file differs from the canonical tagged history.')
@@ -208,7 +273,7 @@ def publish(tag, directory, signing_mode, build_attempt, build_job='build', note
             'Release is still a draft or does not have the exact required asset set.')
     release.verify_release_assets(public, paths, complete=True)
     verify_public_files(repo, tag, selected['version'], paths)
-    print(f'Public release and all three arm64 assets verified: {public["url"]}', flush=True)
+    print(f'Public release, both platform ZIPs and unified feed verified: {public["url"]}', flush=True)
 
 
 def main(argv=None):
@@ -222,9 +287,12 @@ def main(argv=None):
         else:
             command.add_argument('--directory', type=Path, default=Path('build/release'))
             command.add_argument('--signing-mode', choices=SIGNING_MODES, required=True)
+        if name == 'record':
+            command.add_argument('--target', choices=TARGETS, required=True)
         if name == 'publish':
-            command.add_argument('--build-attempt', type=int, required=True)
-            command.add_argument('--build-job', default='build')
+            command.add_argument('--input-directory', type=Path, default=Path('build/downloads'))
+            command.add_argument('--macos-build-attempt', type=int, required=True)
+            command.add_argument('--linux-build-attempt', type=int, required=True)
             command.add_argument('--notes-file', type=Path)
     args = parser.parse_args(argv)
     try:
@@ -236,9 +304,10 @@ def main(argv=None):
                         stream.write(f'{key}={value}\n')
             print(json.dumps(selected))
         elif args.command == 'record':
-            print(json.dumps(record(args.tag, args.directory, args.signing_mode)))
+            print(json.dumps(record(args.tag, args.directory, args.target, args.signing_mode)))
         else:
-            publish(args.tag, args.directory, args.signing_mode, args.build_attempt, args.build_job, args.notes_file)
+            publish(args.tag, args.input_directory, args.directory, args.signing_mode,
+                    {'darwin-arm64': args.macos_build_attempt, 'linux-amd64': args.linux_build_attempt}, args.notes_file)
         return 0
     except (release.ReleaseError, OSError, ValueError, TypeError, KeyError, AttributeError) as error:
         print(f'CI release: {error}', file=sys.stderr)

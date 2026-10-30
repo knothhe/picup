@@ -25,12 +25,27 @@ func DefaultDir() string {
 	}
 	return filepath.Join(h, ".local", "bin")
 }
-func Source() (string, error) {
-	exe, err := os.Executable()
+
+// Keep the launch path before an in-app update replaces the application. On
+// Linux, /proc/self/exe can subsequently refer to the deleted old executable.
+var companionExecutable, companionExecutableError = launchExecutable()
+
+func launchExecutable() (string, error) {
+	executable, err := os.Executable()
 	if err != nil {
 		return "", err
 	}
-	exe, _ = filepath.EvalSymlinks(exe)
+	if real, err := filepath.EvalSymlinks(executable); err == nil {
+		executable = real
+	}
+	return executable, nil
+}
+
+func Source() (string, error) {
+	if companionExecutableError != nil {
+		return "", companionExecutableError
+	}
+	exe := companionExecutable
 	for _, p := range []string{filepath.Join(filepath.Dir(exe), "..", "Resources", Filename()), filepath.Join(filepath.Dir(exe), "..", "Helpers", Filename()), filepath.Join(filepath.Dir(exe), Filename())} {
 		st, err := os.Stat(p)
 		if err == nil && st.Mode().IsRegular() {

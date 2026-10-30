@@ -1,4 +1,4 @@
-// Verify the pinned MyGo update format without depending on platform crypto CLIs.
+// Verify a release ZIP against the unified feed and pinned update public key.
 package main
 
 import (
@@ -34,7 +34,7 @@ func verify(path, public, signature string) error {
 	if _, err := io.Copy(digest, f); err != nil {
 		return err
 	}
-	// MyGo v0.5.5 signs the archive's SHA-256 digest with Ed25519.
+	// Keep the existing trust root: Ed25519 signs the archive's SHA-256 digest.
 	if !ed25519.Verify(key, digest.Sum(nil), sig) {
 		return errors.New("update archive signature does not match its public key")
 	}
@@ -47,10 +47,11 @@ func main() {
 		feed := flags.String("feed", "", "local update feed JSON")
 		archive := flags.String("archive", "", "local full update archive")
 		version := flags.String("version", "", "explicit expected release version")
-		arch := flags.String("arch", "", "expected darwin architecture: arm64 or amd64")
+		goos := flags.String("os", "", "expected release OS: darwin or linux")
+		arch := flags.String("arch", "", "expected release architecture: arm64 or amd64")
 		public := flags.String("public-key", picup.UpdateConfig().PublicKey, "trusted Ed25519 public key (defaults to the compiled release key)")
 		flags.Parse(os.Args[1:])
-		report, err := verifyBundle(*feed, *archive, *public, *version, *arch)
+		report, err := verifyBundle(*feed, *archive, *public, *version, *goos, *arch)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "verify-update:", err)
 			os.Exit(1)

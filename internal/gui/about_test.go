@@ -9,11 +9,65 @@ import (
 	"testing"
 	"time"
 
+	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"github.com/knothhe/picup"
 	"github.com/knothhe/picup/internal/buildinfo"
 	"github.com/knothhe/picup/internal/config"
 )
+
+func TestLicenseNoticesFollowCompanionAfterApplicationReplacement(t *testing.T) {
+	beforeSource, beforeOpen := aboutCompanionSource, openAboutPath
+	t.Cleanup(func() { aboutCompanionSource, openAboutPath = beforeSource, beforeOpen })
+	parent := t.TempDir()
+	app := filepath.Join(parent, "Picup")
+	writeApp := func(notices string) {
+		t.Helper()
+		if err := os.Mkdir(app, 0755); err != nil {
+			t.Fatal(err)
+		}
+		for name, content := range map[string]string{"picup": "companion", "THIRD_PARTY_NOTICES.txt": notices} {
+			if err := os.WriteFile(filepath.Join(app, name), []byte(content), 0644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	writeApp("old notices")
+	aboutCompanionSource = func() (string, error) { return filepath.Join(app, "picup"), nil }
+	old := filepath.Join(parent, "old")
+	if err := os.Rename(app, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(old); err != nil {
+		t.Fatal(err)
+	}
+	writeApp("new notices")
+	var opened string
+	openAboutPath = func(path string) error { opened = path; return nil }
+	(&application{}).openLicenseNotices()
+	if opened != filepath.Join(app, "THIRD_PARTY_NOTICES.txt") {
+		t.Fatalf("license notices lost the installed application path: %s", opened)
+	}
+	if content, err := os.ReadFile(opened); err != nil || string(content) != "new notices" {
+		t.Fatal("license notices did not follow the replacement package", err)
+	}
+}
+
+func TestLicenseNoticesFallBackToResourcesWithoutCompanion(t *testing.T) {
+	beforeSource, beforeOpen := aboutCompanionSource, openAboutPath
+	t.Cleanup(func() { aboutCompanionSource, openAboutPath = beforeSource, beforeOpen })
+	aboutCompanionSource = func() (string, error) { return "", os.ErrNotExist }
+	directory, err := mygo.App.Path(mygo.PathResources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var opened string
+	openAboutPath = func(path string) error { opened = path; return nil }
+	(&application{}).openLicenseNotices()
+	if opened != filepath.Join(directory, "THIRD_PARTY_NOTICES.txt") {
+		t.Fatal("missing companion prevented opening bundled notices", opened)
+	}
+}
 
 func aboutTestInfo() buildinfo.Info {
 	info := buildinfo.Current()

@@ -135,8 +135,8 @@ func updateScope(executable string) string {
 	return hex.EncodeToString(sum[:])
 }
 func updateEligibilityReason(goos, executable string, dev, configured, enabled bool) string {
-	if goos != "darwin" {
-		return "内置更新目前仅支持 macOS。"
+	if goos != "darwin" && goos != "linux" {
+		return "内置更新目前支持 macOS 和 Linux。"
 	}
 	if dev {
 		return "开发版本不检查正式更新，请使用正式安装包。"
@@ -147,6 +147,15 @@ func updateEligibilityReason(goos, executable string, dev, configured, enabled b
 	clean := filepath.ToSlash(executable)
 	if strings.Contains(clean, "/Cellar/") || strings.Contains(clean, "/Caskroom/") {
 		return "请使用安装此应用的包管理器更新。"
+	}
+	if goos == "linux" {
+		if filepath.Base(executable) != "picup-gui" {
+			return "请从正式 ZIP 解压后的独立 Picup 应用目录检查更新。"
+		}
+		if !enabled {
+			return "当前应用目录不可更新，请保留正式 ZIP 的完整目录并确保有写入权限。"
+		}
+		return ""
 	}
 	bundle := filepath.Dir(filepath.Dir(filepath.Dir(executable)))
 	if !strings.HasSuffix(bundle, ".app") || filepath.Base(filepath.Dir(executable)) != "MacOS" || filepath.Base(filepath.Dir(filepath.Dir(executable))) != "Contents" {

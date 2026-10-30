@@ -46,9 +46,9 @@ def verify_development_icon(root):
 
 
 @contextmanager
-def packaging_configuration(root, development=False, signing=None):
+def packaging_configuration(root, development=False, signing=None, disable_updates=False):
     root = Path(root).resolve()
-    if not development and not signing:
+    if not development and not signing and not disable_updates:
         yield root
         return
     if development:
@@ -64,6 +64,10 @@ def packaging_configuration(root, development=False, signing=None):
             changelog = data['updates'].get('changelog', 'CHANGELOG.md')
             if (root / changelog).is_file():
                 data['updates']['changelog'] = str(root / changelog)
+    if disable_updates:
+        # Picup signs its distributable ZIP and writes its own shared feed.
+        # Keep MyGo from generating a second archive and updater manifest.
+        data.pop('updates', None)
     if signing:
         data['macos']['signingIdentity'] = signing.identity_hash
         if signing.profile:

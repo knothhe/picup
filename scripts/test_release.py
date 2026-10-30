@@ -378,7 +378,7 @@ class ReleaseTests(unittest.TestCase):
         result = self.release('patch', '--github-release', success=False)
         self.assertIn('github-actions requires', result.stderr)
         result = self.release('0.1.0', '--assets-only', success=False)
-        self.assertIn('workflow_dispatch with the exact existing tag', result.stderr)
+        self.assertIn('gh run rerun <run-id> --failed', result.stderr)
         self.assertEqual(self.events('package'), [])
         self.assertEqual(self.events('git', ['push']), [])
         self.assertEqual(self.events('gh'), [])
@@ -664,13 +664,40 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(self.release_state(), {})
 
 
+class PackageAssetContractTests(unittest.TestCase):
+    def test_local_package_requires_one_feed_matching_all_zip_targets(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = Path.cwd()
+            os.chdir(root)
+            self.addCleanup(os.chdir, original)
+            (root / 'mygo.json').write_text(json.dumps({'updates': {'publicKey': 'configured'}}))
+            output = root / 'build/release'
+            output.mkdir(parents=True)
+            archive = output / 'Picup-1.2.3-linux-amd64.zip'
+            archive.write_bytes(b'validated package fixture')
+            feed = output / 'update-feed.json'
+            feed.write_text(json.dumps({'schema': 1, 'version': '1.2.3', 'platforms': {'linux-amd64': {}}}))
+            result = subprocess.CompletedProcess([], 0, json.dumps([str(archive), str(feed)]))
+            with mock.patch.object(release_module, 'check_state'), mock.patch.object(release_module, 'verify_state'), \
+                    mock.patch.object(release_module.subprocess, 'run', return_value=result):
+                self.assertEqual(release_module.build_assets('1.2.3', {}), [archive, feed])
+                for version, platforms in (('1.2.4', {'linux-amd64': {}}), ('1.2.3', {'darwin-arm64': {}})):
+                    feed.write_text(json.dumps({'schema': 1, 'version': version, 'platforms': platforms}))
+                    with self.assertRaisesRegex(release_module.ReleaseError, 'differs'):
+                        release_module.build_assets('1.2.3', {})
+                result.stdout = json.dumps([str(archive)])
+                with self.assertRaisesRegex(release_module.ReleaseError, 'incomplete'):
+                    release_module.build_assets('1.2.3', {})
+
+
 class PublicationOrderingTests(unittest.TestCase):
     def test_public_backfill_verifies_archive_before_exposing_feed(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             assets = [root / name for name in (
-                'Picup-0.1.0-darwin-arm64.zip', 'picup-0.1.0-darwin-arm64.tar.gz',
-                'update-darwin-arm64.json')]
+                'Picup-0.1.0-darwin-arm64.zip', 'Picup-0.1.0-linux-amd64.zip',
+                'update-feed.json')]
             for asset in assets:
                 asset.write_bytes(('fixture ' + asset.name).encode())
             commands = []
@@ -682,7 +709,7 @@ class PublicationOrderingTests(unittest.TestCase):
                     state = []
                     for path in uploaded:
                         digest = 'sha256:' + hashlib.sha256(path.read_bytes()).hexdigest()
-                        if path.name.endswith('.tar.gz'):
+                        if path.name.endswith('-linux-amd64.zip'):
                             digest = 'sha256:' + '0' * 64
                         state.append({'name': path.name, 'size': path.stat().st_size, 'digest': digest})
                     return subprocess.CompletedProcess(args, 0, json.dumps({
