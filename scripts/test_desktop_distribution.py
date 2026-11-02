@@ -3,6 +3,7 @@ import base64
 import hashlib
 import json
 import os
+import plistlib
 from pathlib import Path
 import subprocess
 import tempfile
@@ -70,6 +71,18 @@ class DesktopDistributionTests(unittest.TestCase):
 
     def test_checked_in_development_icons_match_source_generator_parameters_and_all_files(self):
         build_manifest.verify_development_icon(Path(__file__).resolve().parent.parent)
+
+    def test_derived_packages_keep_finder_permission_and_resolvable_entitlements(self):
+        root = Path(__file__).resolve().parent.parent
+        for development in (False, True):
+            with self.subTest(development=development):
+                with build_manifest.packaging_configuration(root, development, disable_updates=True) as directory:
+                    manifest = json.loads((directory / 'mygo.json').read_text())
+                    self.assertTrue(manifest['macos']['infoPlist']['NSAppleEventsUsageDescription'])
+                    entitlements_path = Path(manifest['macos']['entitlements'])
+                    self.assertTrue(entitlements_path.is_absolute())
+                    entitlements = plistlib.loads(entitlements_path.read_bytes())
+                    self.assertTrue(entitlements['com.apple.security.automation.apple-events'])
 
     def test_explicit_identity_must_be_unique_and_notary_requires_developer_id(self):
         digest='A'*40

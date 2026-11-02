@@ -2,6 +2,7 @@ package gui
 
 import (
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -24,6 +25,67 @@ func TestSidebarDefaultUsesCommandB(t *testing.T) {
 	a.config.Shortcuts = map[string]string{"sidebar": "CmdOrCtrl+Alt+B"}
 	if a.shortcutBinding("sidebar") != (shortcutBinding{mods: ui.Cmd | ui.Alt, key: ui.KeyB}) {
 		t.Fatal("new default replaced an explicit user shortcut")
+	}
+}
+
+func TestQuickImageShortcutAvoidsTextPasteAndPreservesPreferences(t *testing.T) {
+	a := shortcutTestApplication(t)
+	want := shortcutBinding{mods: ui.Cmd | ui.Alt, key: ui.KeyU}
+	if runtime.GOOS == "darwin" {
+		want.mods = ui.Cmd | ui.Ctrl
+	} else if runtime.GOOS == "windows" {
+		want.mods |= ui.Shift
+	}
+	if got := a.shortcutBinding("quick-paste"); got != want || editorShortcut(got) {
+		t.Fatal("quick image shortcut conflicts with text editing", got)
+	}
+	for _, mods := range []ui.Modifiers{ui.Cmd, ui.Cmd | ui.Shift, ui.Cmd | ui.Alt | ui.Shift} {
+		if a.setShortcut("quick-paste", shortcutBinding{mods: mods, key: ui.KeyV}) || a.shortcutBinding("quick-paste") != want {
+			t.Fatal("quick upload accepted a text paste shortcut", mods)
+		}
+	}
+	for _, value := range []string{"CmdOrCtrl+Alt+F10", ""} {
+		a.config.Shortcuts = map[string]string{"quick-paste": value}
+		want, _ := parseShortcut(value)
+		if a.shortcutBinding("quick-paste") != want {
+			t.Fatal("default change replaced an explicit or cleared binding", value)
+		}
+	}
+}
+
+func TestNewQuickImageDefaultDoesNotOverrideExistingBindings(t *testing.T) {
+	for _, id := range []string{"quick-upload", "choose", "sidebar", "upload", "preview-next"} {
+		t.Run(id, func(t *testing.T) {
+			a := shortcutTestApplication(t)
+			value := quickImageDefaultShortcut()
+			a.config.Shortcuts = map[string]string{id: value}
+			want, _ := parseShortcut(value)
+			if a.shortcutBinding(id) != want || a.shortcutBinding("quick-paste").key != ui.KeyUnknown {
+				t.Fatal("new default took over an existing binding", a.config.Shortcuts)
+			}
+			if target := nativeHotkeyBindings(a.config)[want.value()]; target == "quick-paste" || id == "quick-upload" && target != id {
+				t.Fatal("existing binding was silently rerouted", id, target)
+			}
+			if a.nativeShortcut("quick-paste") != "" || a.quickImageConflictMessage() == "" {
+				t.Fatal("suppressed default kept a menu accelerator or lacks an explanation")
+			}
+			if err := config.Save(a.path, a.config); err != nil {
+				t.Fatal(err)
+			}
+			loaded, err := config.Load(a.path)
+			if err != nil || loaded.Shortcuts[id] != value || len(loaded.Shortcuts) != 1 {
+				t.Fatal("conflict handling changed stored preferences", loaded.Shortcuts, err)
+			}
+			a.config.Shortcuts["quick-paste"] = ""
+			if a.quickImageConflictMessage() != "" {
+				t.Fatal("explicitly cleared binding still reports an implicit conflict")
+			}
+			delete(a.config.Shortcuts, "quick-paste")
+			delete(a.config.Shortcuts, id)
+			if a.shortcutBinding("quick-paste") != want || a.quickImageConflictMessage() != "" {
+				t.Fatal("default did not recover after the other binding was freed")
+			}
+		})
 	}
 }
 

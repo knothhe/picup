@@ -172,6 +172,27 @@ func TestExistingGlobalConflictDoesNotBlockUnrelatedSettings(t *testing.T) {
 	}
 }
 
+func TestNativeStartupPreservesShortcutClaimedBeforeDefaultChange(t *testing.T) {
+	for _, id := range []string{"quick-upload", "choose"} {
+		t.Run(id, func(t *testing.T) {
+			f := newFakeNativeHotkeys()
+			a := shortcutTestApplication(t)
+			a.config.Shortcuts = map[string]string{id: quickImageDefaultShortcut()}
+			a.nativeActions.hotkeys = f.controller(nil)
+			a.nativeActions.notificationSupport = func() bool { return false }
+			a.initNativeActions()
+			t.Cleanup(a.stopNativeActions)
+			binding, _ := parseShortcut(quickImageDefaultShortcut())
+			if target := a.nativeActions.hotkeys.routes[binding.value()]; target == "quick-paste" || id == "quick-upload" && target != id {
+				t.Fatal("startup replaced a saved shortcut with the new default", a.nativeActions.hotkeys.routes)
+			}
+			if len(a.notifications) != 1 || a.notifications[0].OnAction == nil || !a.messageError {
+				t.Fatal("suppressed default did not explain how to choose a new key", a.notifications)
+			}
+		})
+	}
+}
+
 func notificationTestApplication() (*application, *[]mygo.NotificationOptions) {
 	var shown []mygo.NotificationOptions
 	a := &application{config: config.Default()}

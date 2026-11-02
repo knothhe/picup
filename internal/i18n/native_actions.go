@@ -2,6 +2,13 @@ package i18n
 
 func init() {
 	for chinese, english := range map[string]string{
+		"快捷键需要调整": "Shortcut needs attention",
+		"默认快捷键 %s 已用于「%s」，快捷上传默认键已停用，请设置其他快捷键。":      "The default shortcut %s is already used by “%s”. The quick upload default is disabled; choose another shortcut.",
+		"Finder 响应超时。如有自动化授权提示，请允许后重试；也可在系统设置中检查权限。": "Finder timed out. If an Automation permission prompt is open, allow it and retry, or check permissions in System Settings.",
+		"上传选中或剪贴板图片": "Upload selected or clipboard images",
+		"读取选中图片失败":   "Could not read selected images",
+		"请在系统设置 → 隐私与安全性 → 自动化中允许 Picup 访问 Finder，然后重试。": "Allow Picup to access Finder in System Settings → Privacy & Security → Automation, then retry.",
+		"请在 Finder 中选中图片文件后重试；支持多选，不会读取剪贴板。":             "Select one or more image files in Finder, then retry. The clipboard will not be used.",
 		"注册全局快捷键失败":                          "Could not register global shortcuts",
 		"全局快捷键未能生效，原有效绑定继续可用":                "Global shortcuts could not be applied; previous bindings remain active",
 		"快捷上传与通知":                            "Quick upload and notifications",

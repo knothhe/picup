@@ -316,7 +316,7 @@ func TestQuickUploadShortcutLabelsFollowCustomization(t *testing.T) {
 	previous := uiLanguage()
 	t.Cleanup(func() { SetUILanguage(previous) })
 	SetUILanguage("zh-CN")
-	defaults := map[string]string{"quick-upload": "CmdOrCtrl+Shift+U", "quick-paste": "CmdOrCtrl+Shift+V"}
+	defaults := map[string]string{"quick-upload": "CmdOrCtrl+Shift+U", "quick-paste": quickImageDefaultShortcut()}
 	custom := map[string]string{"quick-upload": "CmdOrCtrl+Alt+F9", "quick-paste": "CmdOrCtrl+Alt+F10"}
 	for _, state := range []string{"default", "custom", "cleared"} {
 		t.Run(state, func(t *testing.T) {

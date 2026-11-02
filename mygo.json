@@ -10,7 +10,11 @@
     "build/THIRD_PARTY_NOTICES.txt"
   ],
   "macos": {
-    "minimumSystemVersion": "13.0"
+    "minimumSystemVersion": "13.0",
+    "infoPlist": {
+      "NSAppleEventsUsageDescription": "Picup reads the image files you select in Finder when you use the quick upload shortcut."
+    },
+    "entitlements": "assets/macos.entitlements.plist"
   },
   "updates": {
     "publicKey": "rRRDKckokpqNjkGQXS47gEhxVqgeoxjy6JPSO9z3XYQ=",

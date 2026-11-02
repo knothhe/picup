@@ -50,6 +50,7 @@ type application struct {
 	win                                   *mygo.Window
 	tray                                  *mygo.Tray
 	quickUpload                           quickUploadState
+	quickInput                            *quickInputRuntime
 	quitting                              bool
 	quitAfterUpload                       bool
 	languagePreview                       bool

@@ -153,7 +153,7 @@ func (a *application) initNativeActions() {
 		case "quick-upload":
 			a.chooseFiles(true)
 		case "quick-paste":
-			a.pasteImage(true)
+			a.uploadCurrentImage()
 		}
 	}
 	// A registered OS hotkey can consume its key event before the recorder's
@@ -204,6 +204,9 @@ func (a *application) initNativeActions() {
 	}
 	if s.hotkeyErr != nil {
 		a.feedbackWithAction("注册全局快捷键失败", s.hotkeyErr, "重试", a.retryNativeActions)
+	}
+	if message := a.quickImageConflictMessage(); message != "" {
+		a.feedbackWithAction("快捷键需要调整", errors.New(message), "设置", func() { a.openSettings(4); a.showWindow() })
 	}
 	if a.win != nil || a.tray != nil {
 		a.updateMenus()

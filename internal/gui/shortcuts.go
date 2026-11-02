@@ -26,7 +26,7 @@ var shortcutCommands = []shortcutCommand{
 	{id: "paste", title: "粘贴图片", scope: "上传", defaults: "CmdOrCtrl+V"},
 	{id: "upload", title: "上传队列", scope: "上传", defaults: "CmdOrCtrl+Enter"},
 	{id: "quick-upload", title: "选择并上传", scope: "快捷上传", defaults: "CmdOrCtrl+Shift+U"},
-	{id: "quick-paste", title: "上传剪贴板图片", scope: "快捷上传", defaults: "CmdOrCtrl+Shift+V"},
+	{id: "quick-paste", title: "上传选中或剪贴板图片", scope: "快捷上传", defaults: quickImageDefaultShortcut()},
 	{id: "gallery-select-all", title: "全选当前页", scope: "图库", defaults: "CmdOrCtrl+A"},
 	{id: "preview-close", title: "返回图库", scope: "图片预览", defaults: "Escape"},
 	{id: "preview-previous", title: "上一张图片", scope: "图片预览", defaults: "Left"},
@@ -35,6 +35,16 @@ var shortcutCommands = []shortcutCommand{
 	{id: "window-minimize", title: "最小化窗口", scope: "窗口", defaults: "CmdOrCtrl+M"},
 	{id: "window-hide", title: "隐藏 Picup", scope: "窗口", defaults: "CmdOrCtrl+H", macOnly: true},
 	{id: "window-hide-others", title: "隐藏其他应用", scope: "窗口", defaults: "CmdOrCtrl+Alt+H", macOnly: true},
+}
+
+func quickImageDefaultShortcut() string {
+	if runtime.GOOS == "darwin" {
+		return "CmdOrCtrl+Ctrl+U"
+	}
+	if runtime.GOOS == "windows" {
+		return "CmdOrCtrl+Alt+Shift+U"
+	}
+	return "CmdOrCtrl+Alt+U"
 }
 
 type shortcutBinding struct {
@@ -168,8 +178,39 @@ func (a *application) shortcutBinding(id string) shortcutBinding {
 			return b
 		}
 	}
+	if id == "quick-paste" {
+		if _, conflict := a.quickImageDefaultConflict(); conflict {
+			return shortcutBinding{}
+		}
+	}
 	b, _ := parseShortcut(command.defaults)
 	return b
+}
+
+// A changed default must not take over a shortcut the user already assigned.
+// Suppress only the implicit default, leaving stored choices untouched. This
+// also applies to configurations reloaded from disk while Picup is running.
+func (a *application) quickImageDefaultConflict() (shortcutCommand, bool) {
+	if value, exists := a.config.Shortcuts["quick-paste"]; exists {
+		if _, valid := parseShortcut(value); valid {
+			return shortcutCommand{}, false
+		}
+	}
+	binding, _ := parseShortcut(quickImageDefaultShortcut())
+	for _, command := range shortcutCommands {
+		if command.id != "quick-paste" && (!command.macOnly || runtime.GOOS == "darwin") && a.shortcutBinding(command.id) == binding {
+			return command, true
+		}
+	}
+	return shortcutCommand{}, false
+}
+
+func (a *application) quickImageConflictMessage() string {
+	if command, conflict := a.quickImageDefaultConflict(); conflict {
+		binding, _ := parseShortcut(quickImageDefaultShortcut())
+		return tf("默认快捷键 %s 已用于「%s」，快捷上传默认键已停用，请设置其他快捷键。", binding.label(), tr(command.title))
+	}
+	return ""
 }
 
 func globalShortcut(command shortcutCommand) bool {
@@ -221,8 +262,7 @@ func (a *application) setShortcut(id string, b shortcutBinding) bool {
 			a.shortcutError = tr("请组合 Command、Control 或 Option 等修饰键。")
 			return false
 		}
-		defaults, _ := parseShortcut(command.defaults)
-		if globalShortcut(command) && editorShortcut(b) && !(command.id == "quick-paste" && b == defaults) {
+		if globalShortcut(command) && editorShortcut(b) {
 			a.shortcutError = tr("此快捷键用于文本编辑，请使用其他组合。")
 			return false
 		}
@@ -293,7 +333,7 @@ func (a *application) registerShortcuts(c *ui.Context) {
 	a.onShortcut(c, "sidebar", a.toggleSidebar)
 	a.onShortcut(c, "choose", a.choose)
 	a.onShortcut(c, "quick-upload", func() { a.chooseFiles(true) })
-	a.onShortcut(c, "quick-paste", func() { a.pasteImage(true) })
+	a.onShortcut(c, "quick-paste", a.uploadCurrentImage)
 	a.onShortcut(c, "window-close", func() {
 		if a.win != nil {
 			a.win.Close()
@@ -380,6 +420,11 @@ func (a *application) shortcutPreference(c *ui.Context, command shortcutCommand)
 	b := a.shortcutBinding(command.id)
 	defaults, _ := parseShortcut(command.defaults)
 	description := tf("默认：%s", defaults.label())
+	if command.id == "quick-paste" {
+		if message := a.quickImageConflictMessage(); message != "" {
+			description = message
+		}
+	}
 	if a.shortcutEditing == command.id {
 		description = tr("请按下快捷键，Esc 取消。")
 		if a.shortcutError != "" {

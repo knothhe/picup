@@ -18,6 +18,8 @@ def development_manifest(root):
     data['macos'].pop('signingIdentity', None)
     data['macos'].setdefault('infoPlist', {})['PicupDevMaintenanceProtocol'] = '1'
     data['main'] = str(root / 'cmd/picup-gui')
+    if data['macos'].get('entitlements'):
+        data['macos']['entitlements'] = str(root / data['macos']['entitlements'])
     return data
 
 
@@ -60,6 +62,8 @@ def packaging_configuration(root, development=False, signing=None):
             if field in data:
                 data[field] = str(root / data[field])
         data['resources'] = [str(root / path) for path in data.get('resources', [])]
+        if data['macos'].get('entitlements'):
+            data['macos']['entitlements'] = str(root / data['macos']['entitlements'])
         if data.get('updates'):
             changelog = data['updates'].get('changelog', 'CHANGELOG.md')
             if (root / changelog).is_file():
