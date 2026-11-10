@@ -11,6 +11,7 @@ from build_flags import build_environment, BuildFlagsError
 from build_manifest import packaging_configuration, verify_development_icon
 from dev_signing import configuration as development_signing
 from macos_signing import configuration, sign_development_binaries, verify_application, SigningError
+from mygo_patch import PatchError, patched_environment
 
 
 def build(package=False, skip_dmg=False, development=False):
@@ -48,7 +49,9 @@ def build(package=False, skip_dmg=False, development=False):
                 arguments.append('-debug')
             if config_dir != Path.cwd():
                 arguments.append(str(config_dir))
-            subprocess.run(arguments, env=environment, check=True)
+            # Packages always use the DMG-update MyGo patch (scripts/mygo_patch.py).
+            with patched_environment(environment) as patched:
+                subprocess.run(arguments, env=patched, check=True)
         if signing:
             host = subprocess.check_output([go, 'env', 'GOHOSTOS', 'GOHOSTARCH'], text=True).split()
             app = directory / 'dist' / '-'.join(host) / ('Picup Dev.app' if is_dev else 'Picup.app')
@@ -82,7 +85,7 @@ def main():
         executable=build(args.package, args.skip_dmg, args.development)
         if args.run:
             return subprocess.run([str(executable.resolve())]).returncode
-    except (BuildFlagsError, SigningError, ValueError, OSError, subprocess.CalledProcessError) as error:
+    except (BuildFlagsError, PatchError, SigningError, ValueError, OSError, subprocess.CalledProcessError) as error:
         print(f'build: {error}', file=sys.stderr)
         return 1
     return 0

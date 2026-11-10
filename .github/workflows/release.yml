@@ -141,8 +141,7 @@ jobs:
         with:
           name: Picup-release-darwin-arm64-${{ needs.checks.outputs.commit }}-${{ github.run_id }}-attempt-${{ github.run_attempt }}
           path: |
-            build/release/Picup-${{ needs.checks.outputs.version }}-darwin-arm64.zip
-            build/release/picup-${{ needs.checks.outputs.version }}-darwin-arm64.tar.gz
+            build/release/picup-${{ needs.checks.outputs.version }}-arm64.dmg
             build/release/update-darwin-arm64.json
             build/release/ci-release.json
           if-no-files-found: error

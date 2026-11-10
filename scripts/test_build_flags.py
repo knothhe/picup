@@ -59,9 +59,14 @@ class BuildFlagsTests(unittest.TestCase):
             self.assertTrue(all(call.kwargs['env']['GOFLAGS'].endswith('-tags=extra,picup_dev') for call in compiled))
             if build_binaries.sys.platform == 'darwin':
                 self.assertTrue(all(call.kwargs['env']['CGO_ENABLED'] == '1' for call in compiled))
-            with mock.patch.object(build_binaries.subprocess, 'run') as execute:
+            # The MyGo patch preflight keeps the selected formal GOFLAGS/CGO.
+            passthrough = mock.MagicMock()
+            passthrough.return_value.__enter__.side_effect = lambda: passthrough.call_args.args[0]
+            with mock.patch.object(build_binaries.subprocess, 'run') as execute, \
+                    mock.patch.object(build_binaries, 'patched_environment', passthrough):
                 with mock.patch.object(build_binaries.Path, 'mkdir'):
                     build_binaries.build(package=True, skip_dmg=True)
+            passthrough.assert_called_once()
             self.assertEqual(execute.call_args_list[-1].args[0], ['go', 'tool', 'mygo', 'build', '-skip-dmg'])
             self.assertTrue(all('picup_dev' not in call.kwargs['env']['GOFLAGS'] for call in execute.call_args_list))
             if build_binaries.sys.platform == 'darwin':

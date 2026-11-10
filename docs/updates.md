@@ -4,17 +4,31 @@
 
 ## 更新包与信任
 
-Picup 沿用锁定的 MyGo `v0.5.5` 更新引擎，更新源为公开仓库 `knothhe/picup` 的 GitHub Releases。`mygo.json` 固定公开验证密钥，私钥由发行者保存，打包脚本仅将它注入 MyGo 签名子进程的环境。私钥不进入源码、普通 CI、日志或应用包。
+Picup 使用锁定的 MyGo `v0.7.3` 更新引擎（构建时打补丁，见下文），更新源为公开仓库 `knothhe/picup` 的 GitHub Releases。`mygo.json` 固定公开验证密钥，私钥由发行者保存，打包脚本仅将它注入 MyGo 签名子进程的环境。私钥不进入源码、普通 CI、日志或应用包。
 
 本机发行私钥保存在 `~/Library/Application Support/picup-release/mygo-update.key`，权限为 `0600`；公钥在同目录的 `mygo-update.pub`，其公开值已写入 `mygo.json`。独立本地构建 `make package-release` 在未设置 `MYGO_UPDATER_PRIVATE_KEY` 时自动读取该文件，拒绝符号链接、其他用户所有或权限不为 `0600` 的文件。显式设置的环境变量优先；显式空值会报错，不回退本机文件。Actions 发布模式下 `make release` 只执行本地 Git 阶段，不读取发行私钥或打包上传。
 
 CI 使用仓库 secret `MYGO_UPDATER_PRIVATE_KEY`。无签名试包不会读取本机私钥，普通构建和验证子进程也不会继承此签名变量。私钥不展开为命令参数、不打印到日志，共享 manifest 不记录本机私钥路径。备份并延续同一密钥，不在普通构建时重新生成。
 
-每个 macOS 架构有独立的 `update-darwin-<arch>.json`。清单引用同版本的完整 `.tar.gz` 更新包，MyGo 验证包大小及其 SHA-256 摘要的 Ed25519 签名后安装。当前 `updates.deltas` 为 `0`，不使用差分包。手动安装的 ZIP 与更新包包含同一份应用、CLI 和第三方许可说明。[MyGo 更新文档](https://github.com/egoist/mygo/blob/v0.5.5/docs/updates.md)
+macOS 只发布一种格式：DMG 既是手动安装包，也是更新包。每个架构有独立的 `update-darwin-<arch>.json`，指向同版本的 `picup-<version>-<arch>.dmg`；应用验证 DMG 大小及其 SHA-256 摘要的 Ed25519 签名后，只读挂载 DMG 取出 `Picup.app` 安装。`updates.deltas` 为 `0`，不使用差分包。[MyGo 更新文档](https://github.com/egoist/mygo/blob/v0.7.3/docs/updates.md)
+
+### MyGo 补丁
+
+上游 MyGo v0.7.3 只支持 tar.gz 更新。[scripts/mygo_patch.py](../scripts/mygo_patch.py) 在构建时把模块缓存中的 MyGo 复制到临时目录并打补丁，通过临时 `go.work` 替换依赖，不修改模块缓存或 `go.mod`：
+
+- `mygo build` 在签名、公证、staple 之后对最终 DMG 字节签名，写出指向 DMG 的 Feed，不再生成 tar.gz；
+- 应用内更新下载 `update.dmg`，交给 Picup 的 UpdateSource `Extract` 解出应用；
+- 替换安装辅助脚本为 [patches/mygo-v0.7.3/install-after-exit.sh](../patches/mygo-v0.7.3/install-after-exit.sh)（失败时保留旧应用与恢复说明）。
+
+补丁固定 `updater.go` 与 `cmd/mygo/updates.go` 的 SHA-256，MyGo 版本或源码变化时构建直接失败，需重新审阅补丁。`make package`、`make package-ci`、`make package-release` 的 `mygo build` 均经补丁运行；`scripts/go-patched.py <go 参数>` 可用同一环境运行任意 go 命令。
+
+### 从 v0.1.3 迁移
+
+v0.1.3 内置的 MyGo v0.5.5 更新器只接受 tar.gz。新 Feed 指向 DMG，v0.1.3 会在验证或解包阶段失败，不会改动已安装的应用。v0.1.3 用户需手动下载一次新版 DMG，将 `Picup.app` 拖入「应用程序」覆盖；之后即可正常应用内更新。
 
 版本来自 `mygo.json`。普通 `make build` / `make run` 的开发程序、默认 `make install` 安装的程序和 `make package-ci` 的 debug 试包使用 `picup_dev` 编译标签，名称为 Picup Dev、bundle ID 为 `com.knothhe.picup.dev`，默认数据目录为 `picup-dev`，系统凭据与正式通道隔离；Dev 的公开更新配置与 MyGo 包配置均不携带正式 Feed。正式 `make package`、`make install-release` 和 `make package-release` 统一编译无此标签的 CLI 与 GUI；正式包还需满足 MyGo 的安装位置写入要求。更新签名证明更新来源；CI 的固定代码签名、自签身份上传及 Developer ID／Apple 公证配置见[分发签名说明](macos-distribution.md)。
 
-`make package-release` 缺私钥、密钥不匹配、更新签名无效、包内版本/架构不符或 Feed 指向错误附件时都会失败，不生成可继续发布的附件集合。`make release` 保留版本与 tag 的本地入口，tag 推送后由 CI 构建；发布 job 先验证草稿全部附件，再一次公开 Feed 与更新包，并复核实际公开下载。
+`make package-release` 缺私钥、密钥不匹配、更新签名无效、包内版本/架构不符或 Feed 指向错误附件时都会失败，不生成可继续发布的附件集合。`make release` 保留版本与 tag 的本地入口，tag 推送后由 CI 构建；发布 job 先验证草稿全部附件，先上传 DMG、再公开 Feed，并复核实际公开下载。
 
 如果添加 `CHANGELOG.md`，应提供当前版本的 `## <version>` 小节，MyGo 会将该段写入更新清单；文件存在但缺少当前版本时构建失败。GitHub Release 正文继续由现有发布脚本从 Git 历史生成。
 
@@ -32,12 +46,12 @@ CI 使用仓库 secret `MYGO_UPDATER_PRIVATE_KEY`。无签名试包不会读取�
 
 | 工作流 | 触发 | 产物与去向 |
 | --- | --- | --- |
-| `macos.yml` | PR、`main` push、手动运行 | 默认 `ci-unsigned` ZIP；可选签名试包，均只上传 Actions artifact |
-| `release.yml` | `v*` tag push、输入精确 tag 的手动恢复 | 正式 ZIP、签名完整更新包与 Feed，验证后发布 GitHub Release |
+| `macos.yml` | PR、`main` push、手动运行 | 默认未签名 `ci-unsigned` DMG；可选签名试包，均只上传 Actions artifact |
+| `release.yml` | `v*` tag push、输入精确 tag 的手动恢复 | 正式 DMG 与签名 Feed，验证后发布 GitHub Release |
 
 两条流程都使用 `macos-15` 原生 arm64 runner，核对实际宿主架构，并运行 `make check`、`make test`。普通检查只有仓库只读权限，不访问生产签名密钥，不运行安装或发布命令。[GitHub 官方 runner 架构表](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
 
-手动运行 workflow 时，默认仍是无私钥试包；勾选 `signed_updates` 只允许 `main`，普通 push 中该 job 按条件跳过。检查通过后，独立的 `signed-updates` job 在全新 runner 检出同一个精确提交，核对版本和架构，再生成 arm64 的正式应用 ZIP、Ed25519 签名更新包和 Feed。签名材料只注入对应构建步骤，不提供给检查或 PR job。
+手动运行 workflow 时，默认仍是无私钥试包；勾选 `signed_updates` 只允许 `main`，普通 push 中该 job 按条件跳过。检查通过后，独立的 `signed-updates` job 在全新 runner 检出同一个精确提交，核对版本和架构，再生成 arm64 的正式 DMG 与 Ed25519 签名 Feed。签名材料只注入对应构建步骤，不提供给检查或 PR job。
 
 手动签名与正式 tag 构建默认使用 `fixed-identity`：从 `MACOS_SIGNING_CERTIFICATE`、`MACOS_SIGNING_CERTIFICATE_PASSWORD` 导入既有代码签名身份，与已提交的 `config/macos-signing.json` 指纹匹配后签包；支持固定自签证书。可先用 `make release-signing` 预览本机身份及 GitHub 配置，再显式 `--apply` 导出、备份并上传。缺配置或验签失败直接停止，不回退 ad-hoc。
 
@@ -47,7 +61,7 @@ CI 使用仓库 secret `MYGO_UPDATER_PRIVATE_KEY`。无签名试包不会读取�
 
 上传前逐项确认必需文件存在且非空，并按 `mygo.json` 的精确版本列出附件，不使用版本通配符。日常 artifact 名称包含架构、构建模式、提交 SHA 与运行 attempt，重跑不会覆盖前一次 attempt 的附件，保留七天。签名模式区分 `fixed-identity`、`update-only` 和 `developer-id`；日常工作流的所有模式都只上传 Actions artifact，不创建 tag、Release 或公开 Feed。
 
-正式 tag 流程依次运行检查、独立签名构建、唯一发布 job。每个阶段检出并核对同一 tag commit，校验 tag 与版本一致、提交属于 `main` 历史。构建产物包含三份正式附件及内部 `ci-release.json` 记录，记录版本、commit、渠道、架构、签名模式、大小/hash 和 run/attempt/job 来源；该记录不作为公开附件。发布 job 仅下载成功 build 输出的确切 artifact ID，重新校验完整集合与来源，只有此 job 获得 `contents: write`。
+正式 tag 流程依次运行检查、独立签名构建、唯一发布 job。每个阶段检出并核对同一 tag commit，校验 tag 与版本一致、提交属于 `main` 历史。构建产物包含两份正式附件（DMG 与 Feed）及内部 `ci-release.json` 记录，记录版本、commit、渠道、架构、签名模式、大小/hash 和 run/attempt/job 来源；该记录不作为公开附件。发布 job 仅下载成功 build 输出的确切 artifact ID，重新校验完整集合与来源，只有此 job 获得 `contents: write`。
 
 同一 tag 的自动和手动发布共用不主动取消运行的并发组。重跑可复用同 run 内仍完整可获取的成功 build artifact，但必须与其实际 build attempt 和输入一致；缺包、错身份、hash 不符或来源不明时停止。新 Release 先创建草稿，全部附件核对后公开，再从实际 URL 下载复核；已有同名附件只在大小与 SHA-256 一致时复用，不覆盖。手动恢复须从 `main` workflow 输入精确 tag，保留原签名模式，见[发布与恢复命令](release.md)。
 
@@ -58,9 +72,9 @@ Actions 固定为核对过的提交 SHA，版本与 Go 工具链分别来自 `my
 ## 独立更新制品验收
 
 ```sh
-make verify-update VERIFY_FLAGS='-feed /path/update-darwin-arm64.json -archive /path/picup-0.1.1-darwin-arm64.tar.gz -version 0.1.1 -arch arm64'
+make verify-update VERIFY_FLAGS='-feed /path/update-darwin-arm64.json -archive /path/picup-0.1.4-arm64.dmg -version 0.1.4 -arch arm64'
 ```
 
-工具默认使用源码固定的发行公钥，先核对明确版本、架构、精确 GitHub Release URL、包名与大小，再验 Ed25519 签名、归档路径与链接范围、Info.plist 身份/版本以及 GUI/CLI 的 Mach-O 架构和执行权限。隔离 fixture 可显式传 `-public-key` 测试公钥；它不能替代真实发行公钥验收。旧的三个位置参数仍可仅验证归档签名。
+工具默认使用源码固定的发行公钥，核对 Feed 的版本、精确 Release URL 与大小，验证 DMG 字节 SHA-256 的 Ed25519 签名，再只读挂载 DMG 检查 `Picup.app` 的身份、版本与架构，输出 JSON 报告。`make package-release` 在此之外还会挂载 DMG，逐一比对其中应用文件与刚构建的应用。隔离 fixture 可显式传 `-public-key` 测试公钥。
 
-成功输出 `signature-and-archive-verified`，表示本地制品通过静态验证；不会解压、安装、启动应用或修改数据。它不证明公开附件可下载、旧客户端升级、真实文件替换、启动健康或回滚。发布后仍须用对应版本客户端与真实默认 Feed，在隔离安装中验证实际链路。
+这是本地静态验证，不安装或启动应用；不证明公开附件可下载、旧客户端升级、真实替换或回滚。发布后仍须用对应版本客户端与真实默认 Feed，在隔离安装中验证实际链路。

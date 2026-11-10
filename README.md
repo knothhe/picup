@@ -4,7 +4,9 @@
 
 ## 安装
 
-从 [GitHub Releases](https://github.com/knothhe/picup/releases) 下载适合本机架构的 macOS ZIP，解压后将 `Picup.app` 移至应用程序目录。安装包附带 CLI，可在「设置 → CLI」中安装。
+从 [GitHub Releases](https://github.com/knothhe/picup/releases) 下载 `picup-<version>-arm64.dmg`，打开后将 `Picup.app` 拖入「应用程序」。同一个 DMG 也是应用内自动更新的更新包。安装包附带 CLI，可在「设置 → CLI」中安装。
+
+> 从 v0.1.3 升级：v0.1.3 的内置更新只能安装旧格式，无法安装新版本，请手动下载一次 DMG 覆盖安装；之后可正常应用内更新。
 
 本地构建需要 Go 1.27.1+；macOS 需要 13+，目前已验证 macOS arm64。
 
@@ -57,7 +59,7 @@ make check            # 静态检查与测试
 make test             # 竞态检测
 make package          # 打包当前平台到 build/dist/
 make package-ci       # 生成未签名 CI 试包，禁用应用更新
-make package-release  # 生成当前 macOS 架构的 ZIP、签名更新包与 Feed
+make package-release  # 生成当前 macOS 架构的 DMG 与签名更新 Feed
 make release-initial  # 预览当前版本首次发布
 make release          # 预览 patch 升级
 ```
@@ -66,4 +68,4 @@ make release          # 预览 patch 升级
 
 发布默认仅预览；添加 `RELEASE_FLAGS=--apply` 后，本地完成检查、tag 和原子推送，后续升级还会更新版本并提交。版本 tag 随后触发 GitHub Actions 构建 macOS arm64 正式包，验证完整附件后公开 Release；本地命令不再构建或上传发行附件。完整命令、CI 状态与失败恢复见[发布流程](docs/release.md)，代码结构、设计稿和图标维护见[开发指南](docs/development.md)。
 
-日常 GitHub CI 对 PR 和 `main` 运行检查并构建未签名试包，手动签名试包使用独立 runner；正式发布另由 tag workflow 执行，默认使用固定代码签名身份，支持复用本地自签证书。`make release-signing` 可预览并配置发行身份上传，公开证书指纹入库、私有材料保存在 GitHub Secrets。更新仍使用独立的 Ed25519 签名与完整更新包；Developer ID 与 Apple 公证可另行配置，详见[自动更新与 CI](docs/updates.md)。
+日常 GitHub CI 对 PR 和 `main` 运行检查并构建未签名试包，手动签名试包使用独立 runner；正式发布另由 tag workflow 执行，默认使用固定代码签名身份，支持复用本地自签证书。`make release-signing` 可预览并配置发行身份上传，公开证书指纹入库、私有材料保存在 GitHub Secrets。更新使用对 DMG 的独立 Ed25519 签名；Developer ID 与 Apple 公证可另行配置，详见[自动更新与 CI](docs/updates.md)。

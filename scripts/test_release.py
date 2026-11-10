@@ -48,11 +48,13 @@ output = Path(os.environ.get('TEST_PACKAGE_OUTSIDE_DIR', args.output_dir))
 output.mkdir(parents=True, exist_ok=True)
 assets = []
 for arch in os.environ.get('TEST_PACKAGE_ARCHES', 'arm64').split(','):
-    asset = output / f'Picup-{args.version}-darwin-{arch}.zip'
-    with zipfile.ZipFile(asset, 'w') as archive:
+    image = output / f'picup-{args.version}-{arch}.dmg'
+    with zipfile.ZipFile(image, 'w') as archive:  # Opaque DMG fixture bytes.
         archive.writestr(zipfile.ZipInfo('source.txt', (1980, 1, 1, 0, 0, 0)), event['source'])
         archive.writestr(zipfile.ZipInfo('version.txt', (1980, 1, 1, 0, 0, 0)), version)
-    assets.append(str(asset.resolve()))
+    feed = output / f'update-darwin-{arch}.json'
+    feed.write_text(json.dumps({'source': event['source'], 'version': version}))
+    assets.extend((str(image.resolve()), str(feed.resolve())))
 print(json.dumps(assets))
 '''
 
@@ -74,12 +76,16 @@ if args[:2] in (['release', 'upload'], ['release', 'create']):
     event['assets'] = []
     for name in args[3:]:
         path = Path(name)
-        if path.is_file():
+        if path.is_file() and path.suffix == '.json':
+            content = json.loads(path.read_text())
+        elif path.is_file():
             with zipfile.ZipFile(path) as archive:
-                event['assets'].append({'name': path.name, 'size': path.stat().st_size,
-                                        'digest': 'sha256:' + hashlib.sha256(path.read_bytes()).hexdigest(),
-                                        'source': archive.read('source.txt').decode(),
-                                        'version': archive.read('version.txt').decode()})
+                content = {'source': archive.read('source.txt').decode(),
+                           'version': archive.read('version.txt').decode()}
+        if path.is_file():
+            event['assets'].append({'name': path.name, 'size': path.stat().st_size,
+                                    'digest': 'sha256:' + hashlib.sha256(path.read_bytes()).hexdigest(),
+                                    **content})
 with open(os.environ['TEST_RELEASE_EVENTS'], 'a') as stream:
     stream.write(json.dumps(event) + '\n')
 if args[:2] == ['auth', 'status']:
@@ -475,7 +481,7 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(self.events('gh', ['release', 'upload']), [])
         for version in ('0.1.0', '0.1.1'):
             asset = self.release_state()['v' + version]['assets'][0]
-            self.assertEqual(asset['name'], f'Picup-{version}-darwin-arm64.zip')
+            self.assertEqual(asset['name'], f'picup-{version}-arm64.dmg')
             self.assertEqual(asset['version'], version)
             self.assertEqual(asset['source'], 'tagged source')
         self.assertEqual(self.git('status', '--porcelain'), '')
@@ -532,7 +538,7 @@ class ReleaseTests(unittest.TestCase):
         self.release('initial', '--apply')
         state = self.release_state()
         state['v0.1.0']['assets'] = [asset for asset in state['v0.1.0']['assets']
-                                   if asset['name'].endswith('-amd64.zip')]
+                                   if 'amd64' in asset['name']]
         self.state_path.write_text(json.dumps(state))
         self.events_path.write_text('')
         self.release('0.1.0', '--resume', '--apply')
@@ -540,14 +546,16 @@ class ReleaseTests(unittest.TestCase):
         self.assertNotEqual(package['cwd'], str(self.root))
         self.assertEqual(package['source'], 'tagged source')
         self.assertEqual(package['version'], '0.1.0')
-        upload, = self.events('gh', ['release', 'upload'])
-        self.assertEqual([asset['name'] for asset in upload['assets']], ['Picup-0.1.0-darwin-arm64.zip'])
+        # The DMG is uploaded and verified before its feed becomes public.
+        uploads = self.events('gh', ['release', 'upload'])
+        self.assertEqual([[asset['name'] for asset in upload['assets']] for upload in uploads],
+                         [['picup-0.1.0-arm64.dmg'], ['update-darwin-arm64.json']])
         self.assertEqual(self.events('gh', ['release', 'create']), [])
         self.events_path.write_text('')
         self.release('0.1.0', '--resume', '--apply')
         self.assertEqual(len(self.events('package')), 1)
         self.assertEqual(self.events('gh', ['release', 'upload']), [])
-        self.assertEqual(len(self.release_state()['v0.1.0']['assets']), 2)
+        self.assertEqual(len(self.release_state()['v0.1.0']['assets']), 4)
 
     def test_missing_asset_after_create_is_detected_and_resume_repairs_it(self):
         self.configure_assets()
@@ -563,8 +571,8 @@ class ReleaseTests(unittest.TestCase):
         self.events_path.write_text('')
         self.release('0.1.0', '--resume', '--apply')
         self.assertEqual(self.events('gh', ['release', 'create']), [])
-        self.assertEqual(len(self.events('gh', ['release', 'upload'])), 1)
-        self.assertEqual(len(self.release_state()['v0.1.0']['assets']), 1)
+        self.assertEqual(len(self.events('gh', ['release', 'upload'])), 2)
+        self.assertEqual(len(self.release_state()['v0.1.0']['assets']), 2)
         self.assertFalse(self.release_state()['v0.1.0']['isDraft'])
 
     def test_same_name_wrong_digest_stops_without_overwrite_or_publication(self):
@@ -636,7 +644,8 @@ class ReleaseTests(unittest.TestCase):
         create, = self.events('gh', ['release', 'create'])
         self.assertEqual(create['args'][2], 'v0.1.0')
         self.assertEqual(create['assets'], self.release_state()['v0.1.0']['assets'])
-        self.assertEqual(create['assets'][0]['name'], 'Picup-0.1.0-darwin-arm64.zip')
+        self.assertEqual([asset['name'] for asset in create['assets']],
+                         ['picup-0.1.0-arm64.dmg', 'update-darwin-arm64.json'])
         self.assertEqual(create['assets'][0]['source'], 'tagged source')
         self.assertEqual(self.events('gh', ['release', 'upload']), [])
         self.assertEqual(self.events('git', ['push']), [])
@@ -665,12 +674,10 @@ class ReleaseTests(unittest.TestCase):
 
 
 class PublicationOrderingTests(unittest.TestCase):
-    def test_public_backfill_verifies_archive_before_exposing_feed(self):
+    def test_public_backfill_verifies_dmg_before_exposing_feed(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            assets = [root / name for name in (
-                'Picup-0.1.0-darwin-arm64.zip', 'picup-0.1.0-darwin-arm64.tar.gz',
-                'update-darwin-arm64.json')]
+            assets = [root / name for name in ('picup-0.1.0-arm64.dmg', 'update-darwin-arm64.json')]
             for asset in assets:
                 asset.write_bytes(('fixture ' + asset.name).encode())
             commands = []
@@ -682,7 +689,7 @@ class PublicationOrderingTests(unittest.TestCase):
                     state = []
                     for path in uploaded:
                         digest = 'sha256:' + hashlib.sha256(path.read_bytes()).hexdigest()
-                        if path.name.endswith('.tar.gz'):
+                        if path.name.endswith('.dmg'):
                             digest = 'sha256:' + '0' * 64
                         state.append({'name': path.name, 'size': path.stat().st_size, 'digest': digest})
                     return subprocess.CompletedProcess(args, 0, json.dumps({
@@ -698,8 +705,8 @@ class PublicationOrderingTests(unittest.TestCase):
                 with mock.patch.object(release_module, 'run', side_effect=command):
                     with self.assertRaisesRegex(release_module.ReleaseError, 'differs from the verified local file'):
                         release_module.publish_github_release('knothhe/picup', 'v0.1.0', '0.1.0', 'notes', assets)
-            self.assertEqual(uploaded, assets[:2])
-            self.assertFalse(any(str(assets[2]) in args for args in commands))
+            self.assertEqual(uploaded, assets[:1])
+            self.assertFalse(any(str(assets[1]) in args for args in commands))
             self.assertFalse(any(args[:3] == ('gh', 'release', 'edit') for args in commands))
 
 

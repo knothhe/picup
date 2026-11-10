@@ -188,6 +188,30 @@ def verify_application(app, signing, executable='Picup', cli='picup'):
         command('/usr/sbin/spctl', '--assess', '--type', 'execute', str(app))
 
 
+def verify_disk_image(image, signing):
+    """Verify the DMG's own signature by the selected certificate.
+
+    MyGo staples the notarization ticket to the DMG, not to the app copy inside
+    it, so Developer ID images are checked for their ticket and Gatekeeper's
+    primary-signature assessment here.
+    """
+    image = str(image)
+    command('/usr/bin/codesign', '--verify', '--strict', image)
+    command('/usr/bin/codesign', '--verify', '--strict', '--test-requirement',
+            f'=certificate leaf = H"{signing.identity_hash}"', image)
+    if signing.profile:
+        command('/usr/bin/xcrun', 'stapler', 'validate', image)
+        command('/usr/sbin/spctl', '--assess', '--type', 'open',
+                '--context', 'context:primary-signature', image)
+
+
+def verify_disk_image_application(app, signing, executable='Picup', cli='picup'):
+    """Verify an app mounted from a DMG; its notarization ticket is on the image."""
+    verify_application(app, replace(signing, profile=''), executable, cli)
+    if signing.profile:
+        command('/usr/sbin/spctl', '--assess', '--type', 'execute', str(app))
+
+
 def _requirement_literal(value):
     """Match the Security framework's C-locale requirement dumper spelling."""
     encoded = value.encode('utf-8')

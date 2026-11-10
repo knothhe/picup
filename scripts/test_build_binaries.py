@@ -33,6 +33,8 @@ class DevBuildTests(unittest.TestCase):
         self.package = contexts.enter_context(mock.patch.object(build_binaries, 'packaging_configuration'))
         self.package.return_value.__enter__.return_value = Path.cwd()
         self.verify = contexts.enter_context(mock.patch.object(build_binaries, 'verify_application'))
+        self.patched = contexts.enter_context(mock.patch.object(build_binaries, 'patched_environment'))
+        self.patched.return_value.__enter__.side_effect = lambda: {'PATCHED': '1'}
 
     def test_bare_dev_build_selects_before_compilation_and_signs_both_outputs(self):
         events = []
@@ -65,6 +67,8 @@ class DevBuildTests(unittest.TestCase):
             Path('build/dev/dist/darwin-arm64/Picup Dev.app'), self.signing, 'Picup Dev', 'picup-dev')
         self.assertEqual(self.execute.call_args_list[-1].args[0],
                          ['go', 'tool', 'mygo', 'build', '-skip-dmg', '-debug'])
+        self.assertEqual(self.execute.call_args_list[-1].kwargs['env'], {'PATCHED': '1'})
+        self.assertIn('-tags=picup_dev', self.patched.call_args.args[0]['GOFLAGS'])
         self.release_select.assert_not_called()
 
     def test_run_signs_before_launching_the_exact_gui(self):
@@ -91,6 +95,14 @@ class DevBuildTests(unittest.TestCase):
         self.sign.assert_not_called()
         self.release_select.assert_called_once()
         self.package.assert_called_once_with(Path.cwd(), False, None)
+        self.assertEqual(self.execute.call_args_list[-1].args[0], ['go', 'tool', 'mygo', 'build', '-skip-dmg'])
+        self.assertEqual(self.execute.call_args_list[-1].kwargs['env'], {'PATCHED': '1'})
+
+    def test_formal_package_builds_the_dmg_under_the_mygo_patch(self):
+        build_binaries.build(package=True)
+        self.assertEqual(self.execute.call_args_list[-1].args[0], ['go', 'tool', 'mygo', 'build'])
+        self.patched.assert_called_once()
+        self.assertEqual(self.execute.call_args_list[-1].kwargs['env'], {'PATCHED': '1'})
 
     def test_linux_dev_package_skips_macos_signing_and_bundle_packaging(self):
         self.select.side_effect = dev_signing.configuration

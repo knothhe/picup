@@ -1,18 +1,16 @@
-"""Test installer validation and ZIP integrity without building or publishing."""
+"""Test DMG/update validation without building or publishing."""
 import contextlib
 import base64
+import shutil
 import importlib.util
 import io
 import json
 import os
 from pathlib import Path
 import plistlib
-import stat
-import tarfile
 import tempfile
 import unittest
 from unittest import mock
-import zipfile
 
 
 SPEC = importlib.util.spec_from_file_location('package_release', Path(__file__).with_name('package_release.py'))
@@ -40,6 +38,22 @@ class PackageReleaseTests(unittest.TestCase):
         self.environment = {'GOHOSTOS': 'darwin', 'GOHOSTARCH': 'arm64', 'GOOS': 'darwin', 'GOARCH': 'arm64'}
         self.tags = ''
         self.cgo = '1'
+        self.verify_fails = False
+        self.mounts = []
+        self.detached = []
+        self.patched_calls = []
+        patched = mock.patch.object(package, 'patched_environment', side_effect=self.patched_environment)
+        patched.start()
+        self.addCleanup(patched.stop)
+
+    @contextlib.contextmanager
+    def patched_environment(self, env):
+        self.patched_calls.append(dict(env))
+        yield dict(env, GOWORK='/patched/go.work')
+
+    def image(self, version=None):
+        prefix = 'picup-dev' if 'picup_dev' in self.tags else 'picup'
+        return self.app.parent / f'{prefix}-{version or self.version}-arm64.dmg'
 
     def make_app(self, version=None, cli_version=None):
         version = version or self.version
@@ -69,9 +83,15 @@ class PackageReleaseTests(unittest.TestCase):
         binary = framework.parent.parent / 'Example'
         if not binary.is_symlink():
             binary.symlink_to('Versions/Current/Example')
-        update = self.app.parent / f'picup-{version}-darwin-arm64.tar.gz'
-        with tarfile.open(update, 'w:gz') as archive:
-            archive.add(self.app, arcname='Picup.app')
+        update = self.image(version)
+        update.write_bytes(b'final signed DMG fixture')
+        # The fixture "image" contents are the app directory as it is now.
+        self.image_contents = self.root / 'image-contents'
+        if self.image_contents.exists():
+            shutil.rmtree(self.image_contents)
+        shutil.copytree(self.app, self.image_contents / self.app.name, symlinks=True)
+        if development:
+            return
         (self.app.parent / 'update-darwin-arm64.json').write_text(json.dumps({
             'version': version, 'date': '2026-10-26T00:00:00Z',
             'url': f'https://github.com/knothhe/picup/releases/download/v{version}/{update.name}',
@@ -83,7 +103,8 @@ class PackageReleaseTests(unittest.TestCase):
             return json.dumps(self.environment)
         if args[:2] == ('make', 'build'):
             return None
-        if args[1:5] == ('tool', 'mygo', 'build', '-skip-dmg'):
+        if args[1:4] == ('tool', 'mygo', 'build'):
+            self.assertNotIn('-skip-dmg', args)
             self.tags = 'picup_dev' if '-debug' in args else ''
             if self.tags:
                 self.app = self.root / 'build/dev/dist/darwin-arm64/Picup Dev.app'
@@ -94,16 +115,26 @@ class PackageReleaseTests(unittest.TestCase):
         if args[:2] == ('/usr/bin/lipo', '-archs'):
             return 'arm64'
         if args[1:3] == ('run', './cmd/verify-update'):
-            if args[-1] == 'invalid':
+            if self.verify_fails:
                 raise package.PackageError('signature verification failed')
-            return None
+            return json.dumps({'version': self.version})
+        if args[:2] == ('/usr/bin/hdiutil', 'attach'):
+            self.assertEqual(args[2:6], ('-readonly', '-nobrowse', '-noautoopen', '-mountpoint'))
+            mount = Path(args[6])
+            self.mounts.append(args[7])
+            mount.rmdir()
+            shutil.copytree(self.image_contents, mount, symlinks=True)
+            return ''
+        if args[:2] == ('/usr/bin/hdiutil', 'detach'):
+            self.detached.append(args[-1])
+            return ''
         return self.original_run(*args, cwd=cwd, capture=capture, env=env)
 
     def patch_commands(self, side_effect=None):
         self.original_run = package.run
         return mock.patch.object(package, 'run', side_effect=side_effect or self.run_command)
 
-    def test_package_preserves_executables_companion_and_framework_symlinks(self):
+    def test_formal_package_outputs_exactly_the_dmg_and_update_feed(self):
         # A stale package on another platform must never become an attachment.
         stale = self.root / 'build/dist/darwin-amd64/Picup.app'
         stale.mkdir(parents=True)
@@ -111,31 +142,59 @@ class PackageReleaseTests(unittest.TestCase):
         with self.patch_commands() as commands:
             artifacts = package.package_release(self.root, self.version, self.output)
         self.assertEqual(artifacts, [str(self.output / name) for name in (
-            'Picup-0.1.0-darwin-arm64.zip', 'picup-0.1.0-darwin-arm64.tar.gz', 'update-darwin-arm64.json')])
+            'picup-0.1.0-arm64.dmg', 'update-darwin-arm64.json')])
+        self.assertEqual(sorted(path.name for path in self.output.iterdir()),
+                         ['picup-0.1.0-arm64.dmg', 'update-darwin-arm64.json'])
+        self.assertEqual((self.output / 'picup-0.1.0-arm64.dmg').read_bytes(), b'final signed DMG fixture')
         self.assertEqual(commands.call_args_list[1].args, ('make', 'build', 'BUILD_TAGS='))
         self.assertNotIn('MYGO_UPDATER_PRIVATE_KEY', commands.call_args_list[1].kwargs['env'])
         build = commands.call_args_list[2]
-        self.assertEqual(build.args, ('go', 'tool', 'mygo', 'build', '-skip-dmg'))
+        self.assertEqual(build.args, ('go', 'tool', 'mygo', 'build'))
         self.assertEqual(build.kwargs['env']['MYGO_UPDATER_PRIVATE_KEY'], 'private-test-key')
+        self.assertEqual(build.kwargs['env']['GOWORK'], '/patched/go.work')
+        # The patch preflight itself never sees the update signing key.
+        self.assertEqual(len(self.patched_calls), 1)
+        self.assertNotIn('MYGO_UPDATER_PRIVATE_KEY', self.patched_calls[0])
+        verify = next(call for call in commands.call_args_list if call.args[1:3] == ('run', './cmd/verify-update'))
+        self.assertEqual(verify.args[3:], (
+            '-feed', str(self.app.parent / 'update-darwin-arm64.json'),
+            '-archive', str(self.image()), '-version', self.version, '-arch', 'arm64',
+            '-public-key', self.data['updates']['publicKey']))
+        self.assertEqual(self.mounts, [str(self.image())])
+        self.assertEqual(len(self.detached), 1)
         if package.sys.platform == 'darwin':
             self.assertEqual(build.kwargs['env']['CGO_ENABLED'], '1')
             self.assertEqual(commands.call_args_list[1].kwargs['env']['CGO_ENABLED'], '1')
-        with zipfile.ZipFile(artifacts[0]) as archive:
-            self.assertIsNone(archive.testzip())
-            names = archive.namelist()
-            self.assertFalse(any('stale' in name for name in names))
-            self.assertTrue(all(name.startswith('Picup.app/') for name in names))
-            for name in ('Contents/MacOS/Picup', 'Contents/Resources/picup'):
-                info = archive.getinfo(f'Picup.app/{name}')
-                mode = info.external_attr >> 16
-                self.assertTrue(stat.S_ISREG(mode))
-                self.assertEqual(mode & 0o777, 0o755)
-            link = archive.getinfo('Picup.app/Contents/Frameworks/Example.framework/Versions/Current')
-            self.assertTrue(stat.S_ISLNK(link.external_attr >> 16))
-            self.assertEqual(archive.read(link), b'A')
-            self.assertEqual(archive.read('Picup.app/Contents/Frameworks/Example.framework/Example'),
-                             b'Versions/Current/Example')
-            self.assertFalse(any('/Current/' in name for name in names))
+
+    def test_disk_image_must_contain_the_exact_validated_app_and_always_detaches(self):
+        self.make_app()
+        for relative in ('Contents/MacOS/Picup', 'Contents/Resources/picup', 'Contents/Info.plist',
+                         'Contents/Resources/THIRD_PARTY_NOTICES.txt'):
+            with self.subTest(file=relative):
+                self.make_app()
+                (self.image_contents / 'Picup.app' / relative).write_bytes(b'different bytes')
+                self.detached.clear()
+                with self.patch_commands():
+                    with self.assertRaisesRegex(package.PackageError, 'different application file'):
+                        package.verify_disk_image(self.image(), self.app, self.root)
+                self.assertEqual(len(self.detached), 1)
+        self.make_app()
+        shutil.rmtree(self.image_contents / 'Picup.app')
+        with self.patch_commands():
+            with self.assertRaisesRegex(package.PackageError, 'does not contain Picup.app'):
+                package.verify_disk_image(self.image(), self.app, self.root)
+
+    def test_signed_disk_image_verifies_image_and_mounted_app(self):
+        self.make_app()
+        signing = mock.sentinel.signing
+        with self.patch_commands():
+            with mock.patch.object(package, 'verify_signed_disk_image') as image, \
+                    mock.patch.object(package, 'verify_disk_image_application') as application:
+                package.verify_disk_image(self.image(), self.app, self.root, signing)
+        image.assert_called_once_with(self.image(), signing)
+        mounted = application.call_args.args[0]
+        self.assertEqual(mounted.name, 'Picup.app')
+        self.assertEqual(application.call_args.args[1:], (signing, 'Picup', 'picup'))
 
     def test_manifest_mismatch_stops_before_build(self):
         with self.patch_commands() as commands:
@@ -170,7 +229,7 @@ class PackageReleaseTests(unittest.TestCase):
     def test_packaging_failure_never_packages_stale_app(self):
         self.make_app()
         def fail_package(*args, cwd, capture=False, env=None):
-            if args[1:] == ('tool', 'mygo', 'build', '-skip-dmg'):
+            if args[1:] == ('tool', 'mygo', 'build'):
                 raise package.PackageError('packaging failed')
             return self.run_command(*args, cwd=cwd, capture=capture, env=env)
         with self.patch_commands(fail_package):
@@ -205,7 +264,7 @@ class PackageReleaseTests(unittest.TestCase):
 
     def test_main_prints_only_json_paths_on_stdout(self):
         stdout = io.StringIO()
-        expected = [str(self.output / 'Picup-0.1.0-darwin-arm64.zip')]
+        expected = [str(self.output / 'picup-0.1.0-arm64.dmg'), str(self.output / 'update-darwin-arm64.json')]
         with mock.patch.object(package, 'package_release', return_value=expected) as build:
             with contextlib.redirect_stdout(stdout):
                 self.assertEqual(package.main(['--version', self.version, '--output-dir', str(self.output)]), 0)
@@ -229,7 +288,8 @@ class PackageReleaseTests(unittest.TestCase):
                         self.data['macos'] = {}
                         (self.root / 'mygo.json').write_text(json.dumps(self.data))
                         artifacts = package.package_release(self.root, self.version, self.output, unsigned=True)
-        self.assertEqual(artifacts, [str(self.output / 'Picup-0.1.0-darwin-arm64-ci-unsigned.zip')])
+        self.assertEqual(artifacts, [str(self.output / 'picup-dev-0.1.0-arm64-ci-unsigned.dmg')])
+        self.assertEqual([path.name for path in self.output.iterdir()], ['picup-dev-0.1.0-arm64-ci-unsigned.dmg'])
         build = commands.call_args_list[2]
         self.assertIn('-debug', build.args)
         self.assertEqual(build.kwargs['env']['MYGO_UPDATER_PRIVATE_KEY'], '')
@@ -237,10 +297,11 @@ class PackageReleaseTests(unittest.TestCase):
             self.assertEqual(call.kwargs['env']['CI'], '1')
             self.assertTrue(all(variable not in call.kwargs['env']
                                 for variable in package.SIGNING_VARIABLES))
+        self.assertNotIn('-skip-dmg', build.args)
+        self.assertEqual(build.kwargs['env']['GOWORK'], '/patched/go.work')
         self.assertFalse(any('./cmd/verify-update' in call.args for call in commands.call_args_list))
-        with zipfile.ZipFile(artifacts[0]) as archive:
-            info = plistlib.loads(archive.read('Picup Dev.app/Contents/Info.plist'))
-            self.assertEqual(info['CFBundleIdentifier'],'com.knothhe.picup.dev')
+        self.assertEqual(self.mounts, [str(self.image())])
+        self.assertEqual(len(self.detached), 1)
 
     def test_default_local_signer_is_loaded_only_into_mygo_environment(self):
         key = self.home / 'Library/Application Support/picup-release/mygo-update.key'
@@ -319,25 +380,40 @@ class PackageReleaseTests(unittest.TestCase):
                     with self.assertRaisesRegex(package.PackageError, 'native R2 Keychain support'):
                         package.validate_app(self.app, self.version, self.root)
 
-    def test_update_metadata_and_signature_must_match_exact_app(self):
+    def test_update_metadata_and_signature_must_match_exact_dmg(self):
         self.make_app()
         feed = self.app.parent / 'update-darwin-arm64.json'
         baseline = json.loads(feed.read_text())
-        for change in ({'version': '0.0.9'}, {'size': 1}, {'signature': 'invalid'},
+        for change in ({'version': '0.0.9'}, {'size': 1}, {'signature': 1},
                        {'url': baseline['url'].replace('knothhe/picup', 'other/app')},
-                       {'deltas': [{'from': '0.0.9'}]}, {'date': 'yesterday'}):
+                       {'url': baseline['url'] + '?x=1'},
+                       {'url': baseline['url'].replace('.dmg', '.tar.gz')},
+                       {'url': baseline['url'].replace('https:', 'http:')},
+                       {'deltas': [{'from': '0.0.9'}]}, {'previous': [{'version': '0.0.9'}]},
+                       {'date': 'yesterday'}, {'date': '2026-10-26T00:00:00'}):
             with self.subTest(change=change):
                 feed.write_text(json.dumps(dict(baseline, **change)))
                 with self.patch_commands():
                     with self.assertRaises(package.PackageError):
                         package.validate_update_files(self.root, self.data, self.version,
-                                                      'darwin-arm64', self.app, 'go')
+                                                      'arm64', self.image(), 'go')
         feed.write_text(json.dumps(baseline))
-        (self.app / 'Contents/MacOS/Picup').write_bytes(b'different compiled app')
+        self.verify_fails = True
         with self.patch_commands():
-            with self.assertRaisesRegex(package.PackageError, 'different application file'):
-                package.validate_update_files(self.root, self.data, self.version,
-                                              'darwin-arm64', self.app, 'go')
+            with self.assertRaisesRegex(package.PackageError, 'signature verification failed'):
+                package.validate_update_files(self.root, self.data, self.version, 'arm64', self.image(), 'go')
+        self.verify_fails = False
+        def report(*args, **kwargs):
+            if args[1:3] == ('run', './cmd/verify-update'):
+                return 'not json'
+            return self.run_command(*args, **kwargs)
+        with self.patch_commands(report):
+            with self.assertRaisesRegex(package.PackageError, 'JSON report'):
+                package.validate_update_files(self.root, self.data, self.version, 'arm64', self.image(), 'go')
+        with self.patch_commands():
+            self.assertEqual(package.validate_update_files(self.root, self.data, self.version, 'arm64',
+                                                           self.image(), 'go'),
+                             [self.image(), feed])
 
 
 if __name__ == '__main__':
