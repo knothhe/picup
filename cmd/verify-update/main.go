@@ -1,69 +1,71 @@
-// Verify the pinned MyGo update format without depending on platform crypto CLIs.
+// verify-update checks a local release DMG and its update feed exactly as an
+// installed Picup would, without installing or running the application.
 package main
 
 import (
-	"crypto/ed25519"
-	"crypto/sha256"
-	"encoding/base64"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"os"
-	"strings"
+	"path/filepath"
+	"time"
 
 	"github.com/knothhe/picup"
+	"github.com/knothhe/picup/internal/updatedmg"
 )
 
-func verify(path, public, signature string) error {
-	key, err := base64.StdEncoding.DecodeString(strings.TrimSpace(public))
-	if err != nil || len(key) != ed25519.PublicKeySize {
-		return errors.New("invalid update public key")
+func verify(ctx context.Context, feedPath, archive, public, version, arch string) (updatedmg.BundleReport, error) {
+	var report updatedmg.BundleReport
+	if version == "" || (arch != "arm64" && arch != "amd64") {
+		return report, errors.New("explicit expected version and arm64/amd64 architecture are required")
 	}
-	sig, err := base64.StdEncoding.DecodeString(signature)
-	if err != nil || len(sig) != ed25519.SignatureSize {
-		return errors.New("invalid update signature")
-	}
-	f, err := os.Open(path)
+	info, err := os.Lstat(feedPath)
 	if err != nil {
-		return err
+		return report, err
 	}
-	defer f.Close()
-	digest := sha256.New()
-	if _, err := io.Copy(digest, f); err != nil {
-		return err
+	if !info.Mode().IsRegular() || info.Size() > 1<<20 {
+		return report, errors.New("feed is not a regular file of at most one MiB")
 	}
-	// MyGo v0.5.5 signs the archive's SHA-256 digest with Ed25519.
-	if !ed25519.Verify(key, digest.Sum(nil), sig) {
-		return errors.New("update archive signature does not match its public key")
+	data, err := os.ReadFile(feedPath)
+	if err != nil {
+		return report, err
 	}
-	return nil
+	var m updatedmg.Manifest
+	if err := json.Unmarshal(data, &m); err != nil {
+		return report, errors.New("invalid update feed")
+	}
+	if m.Version != version {
+		return report, errors.New("feed version does not match the expected release")
+	}
+	if err := updatedmg.ValidateManifest(m, updatedmg.Repository, arch); err != nil {
+		return report, err
+	}
+	if filepath.Base(archive) != updatedmg.AssetName(version, arch) {
+		return report, errors.New("local DMG name does not match the expected version and architecture")
+	}
+	if err := updatedmg.Inspect(ctx, archive, m, public, arch, ""); err != nil {
+		return report, err
+	}
+	return updatedmg.BundleReport{Version: version, Architecture: arch, Identifier: updatedmg.BundleIdentifier,
+		Stage: "signature-dmg-and-bundle-verified"}, nil
 }
 
 func main() {
-	if len(os.Args) > 1 && strings.HasPrefix(os.Args[1], "-") {
-		flags := flag.NewFlagSet("verify-update", flag.ExitOnError)
-		feed := flags.String("feed", "", "local update feed JSON")
-		archive := flags.String("archive", "", "local full update archive")
-		version := flags.String("version", "", "explicit expected release version")
-		arch := flags.String("arch", "", "expected darwin architecture: arm64 or amd64")
-		public := flags.String("public-key", picup.UpdateConfig().PublicKey, "trusted Ed25519 public key (defaults to the compiled release key)")
-		flags.Parse(os.Args[1:])
-		report, err := verifyBundle(*feed, *archive, *public, *version, *arch)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "verify-update:", err)
-			os.Exit(1)
-		}
-		json.NewEncoder(os.Stdout).Encode(report)
-		return
-	}
-	if len(os.Args) != 4 {
-		fmt.Fprintln(os.Stderr, "usage: verify-update ARCHIVE PUBLIC_KEY SIGNATURE")
-		os.Exit(2)
-	}
-	if err := verify(os.Args[1], os.Args[2], os.Args[3]); err != nil {
+	flags := flag.NewFlagSet("verify-update", flag.ExitOnError)
+	feed := flags.String("feed", "", "local update feed JSON")
+	archive := flags.String("archive", "", "local release DMG")
+	version := flags.String("version", "", "explicit expected release version")
+	arch := flags.String("arch", "", "expected darwin architecture: arm64 or amd64")
+	public := flags.String("public-key", picup.UpdateConfig().PublicKey, "trusted Ed25519 public key (defaults to the compiled release key)")
+	flags.Parse(os.Args[1:])
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	report, err := verify(ctx, *feed, *archive, *public, *version, *arch)
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "verify-update:", err)
 		os.Exit(1)
 	}
+	json.NewEncoder(os.Stdout).Encode(report)
 }
