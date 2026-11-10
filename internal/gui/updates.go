@@ -14,6 +14,7 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/knothhe/picup"
+	"github.com/knothhe/picup/internal/updatedmg"
 )
 
 type updateCandidate struct {
@@ -71,7 +72,9 @@ func (a *application) initUpdates() {
 		exe, e := os.Executable()
 		reason := ""
 		cfg := picup.UpdateConfig()
-		configured := cfg.PublicKey != "" && (cfg.GitHub != "" || cfg.URL != "")
+		// Releases publish one DMG per architecture on GitHub; the patched MyGo
+		// updater hands it to updatedmg.Source to verify and stage Picup.app.
+		configured := cfg.PublicKey != "" && cfg.GitHub == updatedmg.Repository && cfg.URL == ""
 		if e != nil {
 			reason = "无法确定应用安装位置，更新已停用。"
 		} else {
@@ -82,6 +85,9 @@ func (a *application) initUpdates() {
 			reason = updateEligibilityReason(runtime.GOOS, exe, dev, configured, true)
 			if reason == "" {
 				reason = updateEligibilityReason(runtime.GOOS, exe, dev, configured, mygo.Updater.Enabled())
+			}
+			if reason == "" {
+				mygo.Updater.SetSource(updatedmg.NewSource(cfg.GitHub, cfg.PublicKey, nil))
 			}
 		}
 		store, loadErr := newUpdatePreferenceStore(filepath.Join(filepath.Dir(a.path), "updates-state.json"), updateScope(exe), time.Now())
