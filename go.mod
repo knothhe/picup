@@ -1,6 +1,6 @@
 module github.com/knothhe/picup
 
-go 1.27.1
+go 1.27.3
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.47.3
@@ -9,7 +9,7 @@ require (
 	github.com/aws/smithy-go v1.28.5
 	github.com/disintegration/imaging v1.6.2
 	github.com/ebitengine/purego v0.11.1
-	github.com/egoist/mygo v0.5.5
+	github.com/egoist/mygo v0.7.3
 	github.com/gen2brain/avif v0.6.0
 	github.com/gen2brain/webp v0.6.4
 	github.com/knothhe/r2connect v0.1.1
@@ -32,6 +32,7 @@ require (
 	github.com/go-text/typesetting v0.3.5 // indirect
 	github.com/godbus/dbus/v5 v5.2.2 // indirect
 	github.com/tetratelabs/wazero v1.12.0 // indirect
+	golang.org/x/net v0.59.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 )
 
