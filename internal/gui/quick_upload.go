@@ -198,7 +198,7 @@ func (a *application) quickUploadView(c *ui.Context) {
 	a.onShortcut(c, "choose", func() { a.chooseFiles(true) })
 	a.onShortcut(c, "paste", func() { a.pasteImage(true) })
 	a.onShortcut(c, "quick-upload", func() { a.chooseFiles(true) })
-	a.onShortcut(c, "quick-paste", func() { a.pasteImage(true) })
+	a.onShortcut(c, "quick-paste", a.uploadCurrentImage)
 	a.onShortcut(c, "settings", func() { a.openSettings(0); a.showWindow() })
 	a.onShortcut(c, "quit", mygo.App.Quit)
 	t := c.Theme()

@@ -51,7 +51,7 @@ func (a *application) quickUploadReady() bool {
 func (a *application) quickUploadItems() []*mygo.MenuItem {
 	return []*mygo.MenuItem{
 		{ID: "quick-upload", Label: tr("上传图片…"), Accelerator: a.nativeShortcut("quick-upload"), Click: func(*mygo.MenuItem, *mygo.Window) { a.chooseFiles(true) }},
-		{ID: "quick-paste", Label: tr("上传剪贴板图片"), Accelerator: a.nativeShortcut("quick-paste"), Click: func(*mygo.MenuItem, *mygo.Window) { a.pasteImage(true) }},
+		{ID: "quick-paste", Label: tr("上传选中或剪贴板图片"), Accelerator: a.nativeShortcut("quick-paste"), Click: func(*mygo.MenuItem, *mygo.Window) { a.uploadCurrentImage() }},
 	}
 }
 
