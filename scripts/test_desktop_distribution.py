@@ -76,7 +76,7 @@ class DesktopDistributionTests(unittest.TestCase):
         root = Path(__file__).resolve().parent.parent
         for development in (False, True):
             with self.subTest(development=development):
-                with build_manifest.packaging_configuration(root, development, disable_updates=True) as directory:
+                with build_manifest.packaging_configuration(root, development, self.ci_identity()) as directory:
                     manifest = json.loads((directory / 'mygo.json').read_text())
                     self.assertTrue(manifest['macos']['infoPlist']['NSAppleEventsUsageDescription'])
                     entitlements_path = Path(manifest['macos']['entitlements'])
