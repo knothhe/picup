@@ -4,7 +4,7 @@
 
 ## 从 Release 安装
 
-从 [GitHub Releases](https://github.com/knothhe/picup/releases) 下载适合本机架构的 `Picup-<version>-darwin-<arch>.zip`，解压后将 `Picup.app` 移至 `~/Applications` 或 `/Applications`，再打开应用。安装包包含 CLI，可按下文「在桌面端安装 CLI」操作；安装成品包无需 Go。
+从 [GitHub Releases](https://github.com/knothhe/picup/releases) 下载适合本机架构的 `picup-<version>-<arch>.dmg`，打开后将 `Picup.app` 拖入 `/Applications`（或 `~/Applications`），再打开应用。v0.1.3 用户需手动下载一次 DMG 覆盖安装，见[自动更新](updates.md#从-v013-迁移)。安装包包含 CLI，可按下文「在桌面端安装 CLI」操作；安装成品包无需 Go。
 
 当前发布流程只生成构建机器所用的 macOS 架构，目前已验证 macOS arm64。Release 中未提供的架构或平台需要自行构建并验证。
 
@@ -17,12 +17,12 @@ make build            # 构建 Dev CLI 和桌面应用
 make run              # 构建并运行 Dev 桌面应用
 make dev-signing      # 选择或更换本机 Dev 签名证书
 make package          # 构建并打包当前平台的正式应用
-make package-release  # 构建本机 macOS 发布 ZIP
+make package-release  # 构建本机 macOS 发布 DMG 与更新 Feed
 ```
 
 `make build` / `make run` 默认同时带 `picup_dev` 标签，输出 `build/dev/bin/picup-dev` 与 `build/dev/bin/picup-gui`，使用 `picup-dev` 配置目录、独立凭据和带右下角 Dev 标记的图标。`BUILD_TAGS` 可覆盖直接开发构建的标签；`make install` 固定安装隔离的 Dev 通道。正式打包和 `make install-release` 重新构建 `build/bin/picup` 与 `build/bin/picup-gui`，使用正式 `picup` 数据目录；正式打包产物位于 `build/dist/`，应用包包含 CLI。
 
-`make package-release` 将经过版本与内容校验的应用包输出为 `build/release/Picup-<version>-darwin-<arch>.zip`，不生成 DMG。版本来自 `mygo.json`；可传 `VERSION=0.1.0` 校验预期版本，版本不符时停止，不改写源码版本。此命令只打包，不安装或发布。
+`make package-release` 将经过版本与内容校验的 `build/release/picup-<version>-<arch>.dmg` 与 `update-darwin-<arch>.json` 输出到 `build/release/`。版本来自 `mygo.json`；可传 `VERSION=0.1.0` 校验预期版本，版本不符时停止，不改写源码版本。此命令只打包，不安装或发布。
 
 跨平台包需在对应平台构建。目前已验证 macOS arm64；其他平台需另行验证。
 

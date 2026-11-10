@@ -53,10 +53,10 @@ make release VERSION_BUMP=1.2.0-rc.1 RELEASE_FLAGS=--apply
 流程依次为：
 
 1. 在 macOS arm64 runner 检出精确 tag，校验来源和版本，运行 `make check` 与 `make test`。
-2. 检查成功后，在全新 macOS arm64 runner 重新检出同一提交，构建正式 ZIP、完整更新包和 Feed；仅对应签名步骤取得发行私钥。
+2. 检查成功后，在全新 macOS arm64 runner 重新检出同一提交，构建正式 DMG 与 Feed；仅对应签名步骤取得发行私钥。
 3. 记录制品的版本、tag、commit、正式渠道、OS/arch、签名模式、大小和 SHA-256，以及构建 run、attempt 和 job 来源。只上传精确的预期文件集合，缺包、空文件或身份不一致即失败。
 4. 唯一发布 job 按确切 artifact ID 获取构建产物，重新核对来源与文件 hash，生成正文，再创建草稿并上传附件。构建和检查 job 只有只读权限，发布 job 才有 `contents: write`。
-5. 草稿内全部附件的大小与 SHA-256 验证通过后才公开；公开后从实际下载地址下载并复核三类附件，成功后才报告发布完成。
+5. 草稿内全部附件的大小与 SHA-256 验证通过后才公开；公开后从实际下载地址下载并复核两个附件，成功后才报告发布完成。
 
 CI 内部的制品记录用于汇总与重跑校验，不作为公开附件，也不代替更新包的 Ed25519 签名。Actions artifact 与 GitHub Release 附件分开；本地推送成功只表示 Git 阶段完成。可用以下命令查看后续状态：
 
@@ -71,14 +71,13 @@ gh release view vX.Y.Z
 当前正式 CI 上传以下 arm64 附件：
 
 ```text
-Picup-<version>-darwin-arm64.zip
-picup-<version>-darwin-arm64.tar.gz
+picup-<version>-arm64.dmg
 update-darwin-arm64.json
 ```
 
-ZIP 内含 `Picup.app`、附带 CLI 与第三方许可说明，不上传 DMG 或额外源码包。更新包使用同一份应用内容，Feed 指向该版本在 `knothhe/picup` 的精确附件。打包会校验版本、bundle 标识、实际架构、Feed 的 URL 与大小、更新包内容及 Ed25519 签名；策略使用完整包，不生成差分包。
+DMG 内含 `Picup.app`（附带 CLI 与第三方许可说明），同时用于手动安装和应用内更新；不上传 ZIP、tar.gz 或源码包。Feed 指向该版本在 `knothhe/picup` 的精确 DMG。打包会校验版本、bundle 标识、实际架构、Feed 的 URL 与大小、DMG 的 Ed25519 签名，并只读挂载 DMG 比对其中的应用文件；不生成差分包。
 
-正式 CI 默认使用 `fixed-identity`：用已提交的公开证书 pin 固定代码签名身份，从证书和口令 Secrets 导入临时钥匙串后签名，同时生成 Ed25519 签名更新包。可复用长期保存的本地自签身份，无需为 CI 每次生成证书；缺配置或验签失败即停止，不降级。先运行 `make release-signing` 预览，以 `make release-signing SIGNING_FLAGS='--identity <SHA-1> --apply'` 导出、备份并上传，再将生成的 pin 提交后发布。
+正式 CI 默认使用 `fixed-identity`：用已提交的公开证书 pin 固定代码签名身份，从证书和口令 Secrets 导入临时钥匙串后签名，同时对 DMG 生成 Ed25519 更新签名。可复用长期保存的本地自签身份，无需为 CI 每次生成证书；缺配置或验签失败即停止，不降级。先运行 `make release-signing` 预览，以 `make release-signing SIGNING_FLAGS='--identity <SHA-1> --apply'` 导出、备份并上传，再将生成的 pin 提交后发布。
 
 repository variable `PICUP_SIGNING_MODE` 可显式选择 `fixed-identity`、`developer-id` 或兼容的 `update-only`；手动恢复的 `signing_mode` 输入优先。原有 `PICUP_APPLE_DISTRIBUTION=true` 或手动 `apple_distribution` 会优先选择 `developer-id`，该模式要求 Developer ID Application 证书；公证凭据可选，但三项须完整。`update-only` 只做更新签名，应用代码签名沿用 MyGo ad-hoc，需显式选择。固定自签代码身份不代表 Apple 受信任分发，更新包签名也不能代替 Apple 代码签名与公证，详见[分发签名配置](macos-distribution.md)。
 

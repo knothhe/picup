@@ -199,5 +199,37 @@ class SigningIdentityTests(unittest.TestCase):
             self.assertEqual(len(security_calls), 2)
 
 
+class DiskImageSigningTests(unittest.TestCase):
+    def test_disk_image_checks_selected_certificate_and_developer_id_ticket(self):
+        for profile, expected_extra in (('', []), ('notary', [
+                ('/usr/bin/xcrun', 'stapler', 'validate', '/tmp/picup.dmg'),
+                ('/usr/sbin/spctl', '--assess', '--type', 'open', '--context',
+                 'context:primary-signature', '/tmp/picup.dmg')])):
+            with self.subTest(profile=profile):
+                signing = macos_signing.Signing('A' * 40, 'Developer ID Application: Example (ABCDE12345)', profile)
+                with mock.patch.object(macos_signing, 'command') as command:
+                    macos_signing.verify_disk_image('/tmp/picup.dmg', signing)
+                self.assertEqual([call.args for call in command.call_args_list], [
+                    ('/usr/bin/codesign', '--verify', '--strict', '/tmp/picup.dmg'),
+                    ('/usr/bin/codesign', '--verify', '--strict', '--test-requirement',
+                     '=certificate leaf = H"' + 'A' * 40 + '"', '/tmp/picup.dmg'),
+                    *expected_extra])
+
+    def test_mounted_app_skips_app_staple_but_requires_gatekeeper_for_developer_id(self):
+        signing = macos_signing.Signing('A' * 40, 'Developer ID Application: Example (ABCDE12345)', 'notary')
+        with mock.patch.object(macos_signing, 'verify_application') as verify, \
+                mock.patch.object(macos_signing, 'command') as command:
+            macos_signing.verify_disk_image_application(Path('/Volumes/x/Picup.app'), signing)
+        self.assertEqual(verify.call_args.args[1].profile, '')
+        self.assertEqual(verify.call_args.args[1].identity_hash, 'A' * 40)
+        command.assert_called_once_with('/usr/sbin/spctl', '--assess', '--type', 'execute', '/Volumes/x/Picup.app')
+        fixed = macos_signing.Signing('B' * 40, 'Picup Release')
+        with mock.patch.object(macos_signing, 'verify_application') as verify, \
+                mock.patch.object(macos_signing, 'command') as command:
+            macos_signing.verify_disk_image_application(Path('/Volumes/x/Picup.app'), fixed)
+        verify.assert_called_once_with(Path('/Volumes/x/Picup.app'), fixed, 'Picup', 'picup')
+        command.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()

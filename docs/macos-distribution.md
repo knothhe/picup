@@ -48,7 +48,7 @@ PICUP_MACOS_NOTARY_PROFILE='picup-notary' make package-release
 
 可选 `PICUP_MACOS_CERTIFICATE_SHA256` 为叶证书 DER 字节的六十四位 SHA-256，用于额外固定公开证书。签名身份先精确解析到唯一且用途、有效期符合要求的 identity，并计算实际 SHA-256；提供的 pin 不符时在签名前停止。最终 app、主程序和附带 CLI 分别提取叶证书核对实际 SHA-1 identity 与选定证书的 SHA-256，整体运行 `codesign --verify --deep --strict`。没有证书或 profile 的机器只能验证脚本及失败分支，不能宣称完成 Developer ID 签包或公证。
 
-MyGo 需要 DMG 完成公证，因此设置 profile 时构建一个中间 DMG，提交并等待 Apple 接受，随后将票据 staple 到 app；更新归档与最终 ZIP 在此后生成。发行附件仍为 ZIP、完整更新包与 Feed，不上传中间 DMG。最终另运行 `stapler validate` 与 Gatekeeper `spctl --assess`，避免只把提交成功当作可分发验证。
+DMG 是唯一发行格式：MyGo 签名 app 后生成 DMG，用同一身份签名 DMG；设置 profile 时提交 DMG 公证并将票据 staple 到 DMG，之后补丁版 MyGo 才对最终 DMG 字节生成更新签名。DMG 内的 app 副本不单独 staple，票据随 DMG 提供。打包脚本对 DMG 运行 `codesign --verify`、`stapler validate` 与 `spctl --assess --type open`，并只读挂载后对其中的 app 核对签名身份与 `spctl --assess --type execute`。
 
 ## 将本地固定身份配置到 GitHub
 

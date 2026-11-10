@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and validate the current macOS installer, then print its paths as JSON.
+"""Build and validate the macOS DMG and its update feed, then print their paths as JSON.
 
 The source tree is the current working directory. This lets release.py invoke
 this helper against an existing release tag without changing that tag's source.
@@ -7,6 +7,7 @@ Python 3.9+, Make, and the project's Go toolchain are required.
 """
 import argparse
 import base64
+from contextlib import contextmanager
 import datetime
 import hashlib
 import json
@@ -19,15 +20,14 @@ import stat
 import subprocess
 import sys
 import tempfile
-import tarfile
-import time
-import zipfile
-from urllib.parse import unquote, urlsplit
 
 from build_flags import build_environment
 from build_manifest import packaging_configuration
 from dev_signing import SIGNING_VARIABLES
-from macos_signing import configuration as signing_configuration, verify_application, SigningError
+from macos_signing import (configuration as signing_configuration, verify_application,
+                           verify_disk_image as verify_signed_disk_image,
+                           verify_disk_image_application, SigningError)
+from mygo_patch import PatchError, patched_environment
 
 
 class PackageError(Exception):
@@ -169,55 +169,92 @@ def signing_environment():
     return environment
 
 
-def validate_update_files(root, data, version, platform, app, go):
-    directory = app.parent
-    archive = directory / f'picup-{version}-{platform}.tar.gz'
-    feed = directory / f'update-{platform}.json'
-    for path in (archive, feed):
+APPLICATION_FILES = ('Contents/Info.plist', 'Contents/MacOS/{name}', 'Contents/Resources/{cli}',
+                     'Contents/Resources/THIRD_PARTY_NOTICES.txt')
+
+
+def disk_image_name(version, goarch, formal=True):
+    """MyGo v0.7.3 names images <slug>-<version>-<goarch>.dmg."""
+    return f"{'picup' if formal else 'picup-dev'}-{version}-{goarch}.dmg"
+
+
+def sha256(path):
+    digest = hashlib.sha256()
+    with Path(path).open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+@contextmanager
+def mounted_image(image, root):
+    """Attach a DMG read-only at a private mount point; always detach it."""
+    with tempfile.TemporaryDirectory(prefix='picup-dmg-verify-') as temporary:
+        mount = Path(temporary) / 'mount'
+        mount.mkdir()
+        run('/usr/bin/hdiutil', 'attach', '-readonly', '-nobrowse', '-noautoopen',
+            '-mountpoint', str(mount), str(image), cwd=root, capture=True)
+        try:
+            yield mount
+        finally:
+            try:
+                run('/usr/bin/hdiutil', 'detach', str(mount), cwd=root, capture=True)
+            except PackageError:
+                run('/usr/bin/hdiutil', 'detach', '-force', str(mount), cwd=root, capture=True)
+
+
+def verify_disk_image(image, app, root, signing=None, formal=True):
+    """Check that the DMG holds exactly the application validated above."""
+    require(image.is_file() and not image.is_symlink() and image.stat().st_size > 0,
+            f'Missing disk image: {image.name}')
+    name, cli = ('Picup', 'picup') if formal else ('Picup Dev', 'picup-dev')
+    if signing:
+        verify_signed_disk_image(image, signing)
+    with mounted_image(image, root) as mount:
+        mounted = mount / app.name
+        require(mounted.is_dir() and not mounted.is_symlink(), f'Disk image does not contain {app.name}.')
+        for relative in APPLICATION_FILES:
+            relative = relative.format(name=name, cli=cli)
+            source, copy = app / relative, mounted / relative
+            require(copy.is_file() and not copy.is_symlink(),
+                    f'Disk image is missing an application file: {relative}')
+            require(sha256(copy) == sha256(source),
+                    f'Disk image contains a different application file: {relative}')
+        if signing:
+            verify_disk_image_application(mounted, signing, name, cli)
+
+
+def validate_update_files(root, data, version, goarch, image, go):
+    feed = image.parent / f'update-darwin-{goarch}.json'
+    for path in (image, feed):
         require(path.is_file() and not path.is_symlink() and path.stat().st_size > 0,
                 f'Missing signed update asset: {path.name}')
     require(feed.stat().st_size <= 1024 * 1024, 'Update manifest is too large.')
     info = json.loads(feed.read_text())
     require(isinstance(info, dict), 'Update manifest must be a JSON object.')
     require(info.get('version') == version, 'Update manifest version does not match the application.')
-    require(not info.get('deltas') and not info.get('previous'), 'Release policy requires full update archives only.')
-    require(type(info.get('size')) is int and info['size'] == archive.stat().st_size,
-            'Update manifest size does not match its archive.')
+    require(not info.get('deltas') and not info.get('previous'), 'Release policy requires full DMG updates only.')
+    require(type(info.get('size')) is int and info['size'] == image.stat().st_size,
+            'Update manifest size does not match its DMG.')
     require(isinstance(info.get('url'), str) and isinstance(info.get('signature'), str)
             and isinstance(info.get('date'), str), 'Update manifest fields are invalid.')
-    address = urlsplit(info['url'])
-    require(address.scheme == 'https' and address.netloc == 'github.com' and not address.query
-            and not address.fragment and unquote(address.path) ==
-            f'/knothhe/picup/releases/download/v{version}/{archive.name}',
-            'Update manifest points outside this exact release archive.')
+    require(info['url'] == f'https://github.com/knothhe/picup/releases/download/v{version}/{image.name}',
+            'Update manifest points outside this exact release DMG.')
     try:
-        date = datetime.datetime.fromisoformat(info.get('date', '').replace('Z', '+00:00'))
+        date = datetime.datetime.fromisoformat(info['date'].replace('Z', '+00:00'))
     except (ValueError, TypeError):
         raise PackageError('Update manifest date is invalid.')
     require(date.tzinfo is not None, 'Update manifest date needs a time zone.')
-    run(go, 'run', './cmd/verify-update', str(archive), data['updates']['publicKey'],
-        info.get('signature', ''), cwd=root)
-    # Verify that MyGo archived the application just validated above, rather
-    # than another architecture, stale bundle or a package of another identity.
-    expected = {f'Picup.app/{path}': app / path for path in (
-        'Contents/Info.plist', 'Contents/MacOS/Picup', 'Contents/Resources/picup',
-        'Contents/Resources/THIRD_PARTY_NOTICES.txt')}
-    seen = set()
-    with tarfile.open(archive, 'r:gz') as content:
-        for member in content:
-            path = Path(member.name)
-            require(not path.is_absolute() and '..' not in path.parts and path.parts
-                    and path.parts[0] == 'Picup.app' and member.name not in seen,
-                    'Invalid or duplicate path in update archive.')
-            seen.add(member.name)
-            if member.name in expected:
-                require(member.isfile(), 'Update archive replaces an application file with a link.')
-                with content.extractfile(member) as stream:
-                    digest = hashlib.file_digest(stream, 'sha256').hexdigest() if hasattr(hashlib, 'file_digest') else hashlib.sha256(stream.read()).hexdigest()
-                require(digest == hashlib.sha256(expected[member.name].read_bytes()).hexdigest(),
-                        f'Update archive contains a different application file: {member.name}')
-    require(set(expected) <= seen, 'Update archive is missing required application files.')
-    return [archive, feed]
+    # Verifies the Ed25519 signature over the DMG bytes and the mounted app.
+    report = run(go, 'run', './cmd/verify-update', '-feed', str(feed), '-archive', str(image),
+                 '-version', version, '-arch', goarch, '-public-key', data['updates']['publicKey'],
+                 cwd=root, capture=True)
+    try:
+        report = json.loads(report)
+    except ValueError:
+        report = None
+    require(isinstance(report, dict), 'verify-update did not print a JSON report.')
+    return [image, feed]
 
 
 def copy_asset(source, destination):
@@ -225,44 +262,11 @@ def copy_asset(source, destination):
     os.close(descriptor)
     try:
         shutil.copyfile(source, temporary)
+        os.chmod(temporary, 0o644)
         os.replace(temporary, destination)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
-
-
-def write_zip(app, destination):
-    """Preserve Unix modes and store symlinks as links without following them."""
-    with zipfile.ZipFile(destination, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
-        def add(path):
-            metadata = path.lstat()
-            name = path.relative_to(app.parent).as_posix()
-            mode = metadata.st_mode
-            if stat.S_ISDIR(mode):
-                name += '/'
-            timestamp = time.localtime(metadata.st_mtime)[:6]
-            timestamp = max((1980, 1, 1, 0, 0, 0), min(timestamp, (2107, 12, 31, 23, 59, 58)))
-            entry = zipfile.ZipInfo(name, timestamp)
-            entry.create_system = 3
-            entry.external_attr = (mode & 0xFFFF) << 16
-            entry.compress_type = zipfile.ZIP_DEFLATED
-            if stat.S_ISLNK(mode):
-                archive.writestr(entry, os.fsencode(os.readlink(path)))
-            elif stat.S_ISDIR(mode):
-                entry.external_attr |= 0x10
-                archive.writestr(entry, b'')
-                for child in sorted(path.iterdir()):
-                    add(child)
-            elif stat.S_ISREG(mode):
-                with path.open('rb') as source, archive.open(entry, 'w') as target:
-                    while True:
-                        chunk = source.read(1024 * 1024)
-                        if not chunk:
-                            break
-                        target.write(chunk)
-            else:
-                raise PackageError(f'Unsupported file type in application bundle: {path}')
-        add(app)
 
 
 def package_release(root, version, output_dir, unsigned=False):
@@ -284,49 +288,37 @@ def package_release(root, version, output_dir, unsigned=False):
     go = os.environ.get('GO', 'go')
     goos, goarch = host_platform(go, root)
     signing = None if unsigned else signing_configuration()
-    # Use the same build and MyGo packaging steps as make package, without a DMG.
     # MyGo atomically replaces only this platform's directory after a successful
     # build, so failed builds and old packages from other platforms cannot leak in.
     run('make', 'build', 'BUILD_TAGS=picup_dev' if unsigned else 'BUILD_TAGS=', cwd=root, env=compile_environment)
-    arguments = [go, 'tool', 'mygo', 'build', '-skip-dmg']
+    # Never -skip-dmg: the DMG is both the installer and the update payload.
+    # The patched MyGo signs the final (notarized, stapled) DMG bytes.
+    arguments = [go, 'tool', 'mygo', 'build']
     if unsigned:
         arguments.append('-debug')  # MyGo disables updater eligibility in this build.
-    if signing and signing.profile:
-        # MyGo notarizes its DMG and staples the app before creating update
-        # archives. Only ZIP/update assets are collected for publication.
-        arguments.remove('-skip-dmg')
+    key = environment.pop('MYGO_UPDATER_PRIVATE_KEY')
     with packaging_configuration(root, unsigned, signing) as config_dir:
         if config_dir != root:
             arguments.append(str(config_dir))
-        run(*arguments, cwd=root, env=environment)
+        # The patch preflight runs go without the update signing key.
+        with patched_environment(environment) as patched:
+            run(*arguments, cwd=root, env=dict(patched, MYGO_UPDATER_PRIVATE_KEY=key))
     manifest(root, version)
+    formal = not unsigned
     app = (root / 'build/dev/dist' / f'{goos}-{goarch}' / 'Picup Dev.app') if unsigned else (
         root / data.get('out', 'dist') / f'{goos}-{goarch}' / 'Picup.app')
-    validate_app(app, version, root, goarch, formal=not unsigned)
+    image = app.parent / disk_image_name(version, goarch, formal)
+    validate_app(app, version, root, goarch, formal=formal)
     if signing:
         verify_application(app, signing)
-    update_assets = [] if unsigned else validate_update_files(root, data, version, f'{goos}-{goarch}', app, go)
+    assets = [image] if unsigned else validate_update_files(root, data, version, goarch, image, go)
+    verify_disk_image(image, app, root, signing, formal)
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    suffix = '-ci-unsigned' if unsigned else ''
-    target = output_dir / f'Picup-{version}-{goos}-{goarch}{suffix}.zip'
-    descriptor, temporary = tempfile.mkstemp(prefix=f'.{target.stem}-', suffix='.zip', dir=output_dir)
-    os.close(descriptor)
-    try:
-        write_zip(app, temporary)
-        if signing:
-            # Verify the distributable's extracted bytes, permissions, resource
-            # seals and stapled ticket, rather than only its build directory.
-            with tempfile.TemporaryDirectory(prefix='picup-final-zip-') as extracted:
-                run('/usr/bin/ditto', '-x', '-k', temporary, extracted, cwd=root)
-                verify_application(Path(extracted) / 'Picup.app', signing)
-        os.replace(temporary, target)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
-    collected = [str(target)]
-    for asset in update_assets:
-        destination = output_dir / asset.name
+    collected = []
+    for asset in assets:
+        name = f'{image.stem}-ci-unsigned.dmg' if unsigned else asset.name
+        destination = output_dir / name
         copy_asset(asset, destination)
         collected.append(str(destination))
     return collected
@@ -335,12 +327,12 @@ def package_release(root, version, output_dir, unsigned=False):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--version', required=True, help='Version that must match mygo.json and the built application')
-    parser.add_argument('--output-dir', default='build/release', help='Directory for the versioned ZIP installer')
-    parser.add_argument('--unsigned', action='store_true', help='Build a CI test ZIP with application updates disabled; no signing key needed')
+    parser.add_argument('--output-dir', default='build/release', help='Directory for the release DMG and update feed')
+    parser.add_argument('--unsigned', action='store_true', help='Build an unsigned CI test DMG with application updates disabled; no signing key needed')
     args = parser.parse_args(argv)
     try:
         artifacts = package_release(Path.cwd(), args.version, args.output_dir, unsigned=args.unsigned)
-    except (PackageError, SigningError, OSError, ValueError, tarfile.TarError, plistlib.InvalidFileException) as error:
+    except (PackageError, PatchError, SigningError, OSError, ValueError, plistlib.InvalidFileException) as error:
         print(f'error: {error}', file=sys.stderr)
         return 1
     print(json.dumps(artifacts))

@@ -56,8 +56,9 @@ def identity(tag):
 
 
 def expected_names(version):
-    return (f'Picup-{version}-darwin-arm64.zip', f'picup-{version}-darwin-arm64.tar.gz',
-            'update-darwin-arm64.json')
+    # MyGo v0.7.3 names the DMG <slug>-<version>-<goarch>.dmg; it is both the
+    # installer and the signed update payload.
+    return (f'picup-{version}-arm64.dmg', 'update-darwin-arm64.json')
 
 
 def assets(directory, version):
@@ -75,20 +76,20 @@ def assets(directory, version):
 
 def validate_feed(directory, repo, tag, version):
     directory = Path(directory)
-    archive = directory / expected_names(version)[1]
+    archive = directory / expected_names(version)[0]
     feed = directory / 'update-darwin-arm64.json'
     require(feed.stat().st_size <= 1024 * 1024, 'Update feed is too large.')
     data = json.loads(feed.read_text())
     require(isinstance(data, dict) and data.get('version') == version,
             'Update feed version differs from the release tag.')
     require(type(data.get('size')) is int and data['size'] == archive.stat().st_size,
-            'Update feed size differs from the full archive.')
-    require(not data.get('deltas') and not data.get('previous'), 'CI release requires a full update archive.')
+            'Update feed size differs from the DMG.')
+    require(not data.get('deltas') and not data.get('previous'), 'CI release requires a full DMG update.')
     address = urlsplit(data.get('url', ''))
     require(address.scheme == 'https' and address.netloc == 'github.com' and not address.query
             and not address.fragment and unquote(address.path) ==
             f'/{repo}/releases/download/{tag}/{archive.name}',
-            'Update feed must reference this exact public release archive.')
+            'Update feed must reference this exact public release DMG.')
     try:
         signature = base64.b64decode(data.get('signature', ''), validate=True)
         date = datetime.datetime.fromisoformat(data.get('date', '').replace('Z', '+00:00'))
@@ -208,7 +209,7 @@ def publish(tag, directory, signing_mode, build_attempt, build_job='build', note
             'Release is still a draft or does not have the exact required asset set.')
     release.verify_release_assets(public, paths, complete=True)
     verify_public_files(repo, tag, selected['version'], paths)
-    print(f'Public release and all three arm64 assets verified: {public["url"]}', flush=True)
+    print(f'Public release and both arm64 assets verified: {public["url"]}', flush=True)
 
 
 def main(argv=None):

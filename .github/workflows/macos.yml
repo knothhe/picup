@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       signed_updates:
-        description: Build signed update artifacts from main without publishing
+        description: Build the signed DMG and update feed from main without publishing
         type: boolean
         default: false
       signing_mode:
@@ -90,7 +90,7 @@ jobs:
         run: |
           make check
           make test
-      - name: Build unsigned CI application
+      - name: Build unsigned CI DMG
         if: github.event_name != 'workflow_dispatch' || !inputs.signed_updates
         env:
           VERSION: ${{ steps.package-version.outputs.version }}
@@ -99,13 +99,13 @@ jobs:
         if: github.event_name != 'workflow_dispatch' || !inputs.signed_updates
         env:
           VERSION: ${{ steps.package-version.outputs.version }}
-        run: test -s "build/ci/Picup-${VERSION}-darwin-arm64-ci-unsigned.zip"
+        run: test -s "build/ci/picup-dev-${VERSION}-arm64-ci-unsigned.dmg"
       - name: Upload unsigned CI package
         if: github.event_name != 'workflow_dispatch' || !inputs.signed_updates
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: Picup-ci-unsigned-darwin-arm64-${{ github.sha }}-attempt-${{ github.run_attempt }}
-          path: build/ci/Picup-${{ steps.package-version.outputs.version }}-darwin-arm64-ci-unsigned.zip
+          path: build/ci/picup-dev-${{ steps.package-version.outputs.version }}-arm64-ci-unsigned.dmg
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
@@ -161,8 +161,7 @@ jobs:
       - name: Verify every required signed update artifact
         run: |
           for path in \
-            "build/release/Picup-${VERSION}-darwin-arm64.zip" \
-            "build/release/picup-${VERSION}-darwin-arm64.tar.gz" \
+            "build/release/picup-${VERSION}-arm64.dmg" \
             build/release/update-darwin-arm64.json; do
             test -s "$path" || { echo "::error::Missing or empty required artifact: $path"; exit 1; }
           done
@@ -171,8 +170,7 @@ jobs:
         with:
           name: Picup-signed-updates-${{ needs.macos.outputs.signing_mode }}-darwin-arm64-${{ github.sha }}-attempt-${{ github.run_attempt }}
           path: |
-            build/release/Picup-${{ needs.macos.outputs.version }}-darwin-arm64.zip
-            build/release/picup-${{ needs.macos.outputs.version }}-darwin-arm64.tar.gz
+            build/release/picup-${{ needs.macos.outputs.version }}-arm64.dmg
             build/release/update-darwin-arm64.json
           if-no-files-found: error
           compression-level: 0

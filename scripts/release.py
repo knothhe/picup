@@ -227,7 +227,6 @@ def build_assets(target, files, source_commit=None):
         if source_commit:
             source = Path(temporary) / 'source'
             extract_source(source_commit, source)
-        requires_updates = bool(json.loads((source / 'mygo.json').read_text()).get('updates'))
         print(f'Building release packages for {target} from {source_commit or "working tree"}...', flush=True)
         result = subprocess.run(package_command(target, output), cwd=source, text=True, stdout=subprocess.PIPE)
     verify_state(before, versions)
@@ -239,20 +238,16 @@ def build_assets(target, files, source_commit=None):
     require(len(set(paths)) == len(paths), 'Package command returned duplicate asset paths.')
     expected = set()
     for path in paths:
-        kind = re.fullmatch(r'Picup-' + re.escape(target) + r'-(darwin-(?:arm64|amd64))\.zip', path.name)
-        archive = re.fullmatch(r'picup-' + re.escape(target) + r'-(darwin-(?:arm64|amd64))\.tar\.gz', path.name)
-        feed = re.fullmatch(r'update-(darwin-(?:arm64|amd64))\.json', path.name)
+        image = re.fullmatch(r'picup-' + re.escape(target) + r'-(arm64|amd64)\.dmg', path.name)
+        feed = re.fullmatch(r'update-darwin-(arm64|amd64)\.json', path.name)
         require(path.is_absolute() and path.parent.resolve() == output.resolve() and not path.is_symlink()
-                and path.is_file() and path.stat().st_size > 0 and (kind or archive or feed),
-                f'Invalid release asset (expected an exact macOS installer or signed update asset in {output}): {path}')
-        if kind:
-            platform = kind.group(1)
-            expected.update((path.name, f'picup-{target}-{platform}.tar.gz', f'update-{platform}.json'))
-    names = {path.name for path in paths}
-    # Historical tags without updater configuration keep their original ZIP-only
-    # format. New signed releases must never publish a partial update set.
-    if requires_updates or any(path.suffix != '.zip' for path in paths):
-        require(names == expected, 'Package command returned an incomplete or unexpected signed update asset set.')
+                and path.is_file() and path.stat().st_size > 0 and (image or feed),
+                f'Invalid release asset (expected the exact macOS DMG or its signed update feed in {output}): {path}')
+        if image:
+            expected.update((path.name, f'update-darwin-{image.group(1)}.json'))
+    # The DMG is both installer and update payload: never publish one without the other.
+    require({path.name for path in paths} == expected,
+            'Package command returned an incomplete or unexpected DMG/update asset set.')
     return paths
 
 

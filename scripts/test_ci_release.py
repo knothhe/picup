@@ -57,15 +57,15 @@ class CIReleaseTests(unittest.TestCase):
 
     def create_assets(self):
         self.names = ci_release.expected_names(self.version)
-        (self.directory / self.names[0]).write_bytes(b'formal app fixture, validated by package_release')
-        (self.directory / self.names[1]).write_bytes(b'full signed update archive fixture')
-        self.feed = {'version': self.version, 'size': (self.directory / self.names[1]).stat().st_size,
-                     'url': f'https://github.com/example/picup/releases/download/{self.tag}/{self.names[1]}',
+        self.assertEqual(self.names, (f'picup-{self.version}-arm64.dmg', 'update-darwin-arm64.json'))
+        (self.directory / self.names[0]).write_bytes(b'signed DMG fixture, validated by package_release')
+        self.feed = {'version': self.version, 'size': (self.directory / self.names[0]).stat().st_size,
+                     'url': f'https://github.com/example/picup/releases/download/{self.tag}/{self.names[0]}',
                      'signature': base64.b64encode(bytes(64)).decode(), 'date': '2026-10-28T12:00:00Z'}
         self.save_feed()
 
     def save_feed(self):
-        (self.directory / self.names[2]).write_text(json.dumps(self.feed))
+        (self.directory / self.names[1]).write_text(json.dumps(self.feed))
 
     def record(self):
         return ci_release.record(self.tag, self.directory, 'update-only')
@@ -149,23 +149,26 @@ class CIReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ci_release.release.ReleaseError, 'empty'):
             self.record()
         target.unlink()
-        linked = self.root / 'build/elsewhere.zip'
+        linked = self.root / 'build/elsewhere.dmg'
         linked.write_bytes(content)
         target.symlink_to(linked)
         with self.assertRaisesRegex(ci_release.release.ReleaseError, 'symlinked'):
             self.record()
         target.unlink()
         target.write_bytes(content)
-        extra = self.directory / 'old-darwin-amd64.zip'
-        extra.write_bytes(content)
-        with self.assertRaisesRegex(ci_release.release.ReleaseError, 'unexpected'):
-            self.record()
+        for name in (f'picup-{self.version}-darwin-arm64.tar.gz', f'Picup-{self.version}-darwin-arm64.zip'):
+            extra = self.directory / name
+            extra.write_bytes(content)
+            with self.subTest(extra=name), self.assertRaisesRegex(ci_release.release.ReleaseError, 'unexpected'):
+                self.record()
+            extra.unlink()
 
-    def test_feed_must_reference_this_full_release_archive(self):
+    def test_feed_must_reference_this_full_release_dmg(self):
         original = copy.deepcopy(self.feed)
         for change in ({'version': '1.2.4'}, {'size': 1}, {'deltas': [{'url': 'delta'}]},
                        {'url': self.feed['url'].replace('example/picup', 'another/picup')},
                        {'url': self.feed['url'] + '?token=unexpected'}, {'signature': 'invalid'},
+                       {'url': self.feed['url'].replace('.dmg', '.tar.gz')}, {'previous': [{'version': '1.2.2'}]},
                        {'date': '2026-10-28'}):
             with self.subTest(change=change):
                 self.feed = {**original, **change}
@@ -248,18 +251,18 @@ class CIReleaseTests(unittest.TestCase):
         notes.write_text(ci_release.release.release_notes('example/picup', 'v', self.version, self.commit, self.tag))
         with mock.patch('sys.stdout', new=io.StringIO()) as stdout:
             ci_release.publish(self.tag, self.directory, 'update-only', 2, notes_file=notes)
-        self.assertIn('all three arm64 assets verified', stdout.getvalue())
-        self.assertEqual(opened.call_count, 3)
+        self.assertIn('both arm64 assets verified', stdout.getvalue())
+        self.assertEqual(opened.call_count, 2)
         args = mocks['publish_github_release'].call_args.args
         self.assertEqual(args[:4], ('example/picup', self.tag, self.version, notes.read_text()))
         self.assertEqual([path.name for path in args[4]], list(self.names))
 
     def test_public_byte_corruption_is_failure(self):
-        mocks, opened = self.mock_publish(corrupt=self.names[1])
+        mocks, opened = self.mock_publish(corrupt=self.names[0])
         with self.assertRaisesRegex(ci_release.release.ReleaseError, 'Public asset differs'):
             ci_release.publish(self.tag, self.directory, 'update-only', 2)
         self.assertEqual(mocks['publish_github_release'].call_count, 1)
-        self.assertEqual(opened.call_count, 2)
+        self.assertEqual(opened.call_count, 1)
 
     def test_wrong_remote_digest_is_not_a_completed_release(self):
         remote = self.public_release()
@@ -271,7 +274,7 @@ class CIReleaseTests(unittest.TestCase):
 
     def test_existing_release_extra_asset_blocks_mutation(self):
         remote = self.public_release()
-        remote['assets'].append({'name': 'old-darwin-amd64.zip', 'size': 1, 'digest': 'sha256:' + 'a' * 64})
+        remote['assets'].append({'name': 'picup-1.2.3-darwin-arm64.tar.gz', 'size': 1, 'digest': 'sha256:' + 'a' * 64})
         mocks, opened = self.mock_publish(remote=remote)
         mocks['published_tags'].return_value = [self.tag]
         with self.assertRaisesRegex(ci_release.release.ReleaseError, 'unexpected assets'):
